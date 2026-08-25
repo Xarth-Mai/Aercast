@@ -1,92 +1,179 @@
 # Aercast
 
-> **Pre-alpha:** Aercast currently defines a product direction. There is no
-> runnable application yet, and no performance or compatibility claim below
-> has been verified.
+> **Pre-alpha:** Aercast currently defines a product and technical direction.
+> There is no runnable application yet, and no performance or compatibility
+> claim below has been verified.
 
-Aercast is a Linux/Wayland-first screen-sharing app. A host selects a screen or
-window through the Wayland portal, then serves live video and system audio
-directly over HTTP to viewers in a modern browser.
+Aercast is a Linux/Wayland-first, one-way screen-sharing app for a small number
+of viewers. A native host selects one screen or window, then serves live video
+and selected system audio directly over HTTP to a browser. It is not a meeting
+system.
 
 **One host. One ephemeral session. One capture/encode/mux pipeline. One HTTP
 stream. No cloud.**
 
 ## Product philosophy
 
-- **Native permission model.** Capture goes through `xdg-desktop-portal` and
-  PipeWire, not compositor-specific shortcuts.
-- **Mature media tools.** GStreamer should handle capture, encoding, muxing,
-  and clocks. Aercast will not rebuild a media pipeline for the sake of being
-  pure Rust.
-- **Encode once.** Every viewer receives the same encoded stream; adding a
+- **Use the native permission model.** Capture goes through
+  `xdg-desktop-portal` and PipeWire, not compositor-specific shortcuts.
+- **Use mature media components.** GStreamer owns capture, encoding, muxing,
+  and clocks; Aercast will not rebuild a media stack for the sake of pure Rust.
+- **Encode once.** Every viewer receives the same encoded stream. Adding a
   viewer must not add another encoder.
-- **Selective audio is core.** Viewers should hear system audio except excluded
-  applications, while the host's local audio remains unchanged.
+- **Treat selective audio as a release requirement.** Viewers hear PipeWire
+  system audio except excluded applications, while the host's local mix stays
+  unchanged.
 - **Measure before optimizing.** Hardware encoding, DMA-BUF, fragment sizing,
   and copy avoidance follow real profiling and compatibility results.
-- **Ship vertical slices.** Each milestone must run end to end on real Wayland
-  systems before the next layer is added.
+- **Ship vertical slices.** Every milestone must run end to end on real
+  Wayland systems before the next layer is added.
 
-## Intended flow
+## Product boundary
+
+The first host target is a native, unsandboxed Linux application. GNOME, KDE
+Plasma, and niri are the initial compositor targets, but none is verified yet.
+Flatpak support is deferred because selective audio needs access to the user's
+regular PipeWire graph in addition to the restricted ScreenCast Portal remote.
+
+The first release-blocking viewer target is the current stable desktop release
+of Google Chrome. The page must still check the exact codec MIME at
+runtime. Firefox is experimental when the operating system provides H.264 and
+AAC decoding and the live stream passes a real smoke test. Distribution-built
+Chromium, Safari, and mobile browsers are not initial compatibility promises.
+Firefox's general H.264 support depends on platform codecs, while Chromium
+builds can omit proprietary codecs; see the
+[Mozilla codec documentation](https://support.mozilla.org/en-US/kb/audio-and-video-firefox)
+and [Chromium codec documentation](https://www.chromium.org/audio-video/).
+
+The host and viewer use the same HTTP origin. Plain HTTP is acceptable only on
+a trusted LAN. Public or otherwise untrusted access requires an external HTTPS
+reverse proxy. Aercast does not provide certificates, public hosting, port
+forwarding, tunnels, or NAT traversal.
+
+## Session lifecycle
+
+1. On launch, the app starts its HTTP server and creates an opaque share token
+   from 32 bytes supplied by the operating-system CSPRNG. No capture has
+   started yet.
+2. **Start Sharing** creates a non-persistent ScreenCast Portal session. The
+   host selects one monitor or window; an embedded cursor is preferred when the
+   portal supports it.
+3. One capture/encode/mux pipeline serves every connected viewer.
+4. **End Sharing** closes the media and Portal sessions, revokes the old token,
+   and creates a fresh link for the next session.
+
+The share URL is a bearer credential, not transport security. Tokens must not
+be written to ordinary logs or sent to third-party page resources.
+
+## Architecture
 
 ```text
-Wayland screen or window + application audio
-                    |
-        xdg-desktop-portal / PipeWire
-                    |
-      GStreamer capture, encode, and A/V mux
-                    |
-          Host HTTP fragmented MP4 stream
-                    |
-             Browser MediaSource <video>
+ScreenCast Portal -> restricted PipeWire remote -> video capture ----\
+                                                                  |
+regular PipeWire graph -> allowed playback-stream taps -> mixer ---+->
+     GStreamer H.264 + AAC-LC -> fragmented MP4 -> host HTTP -> browser MSE
 ```
 
-On launch, the intended app starts its HTTP server and creates an ephemeral
-share URL backed by a cryptographically secure token with at least about 128
-bits of entropy. Capture starts only after the host presses **Start Sharing**
-and approves a source in the portal picker.
+The Portal remote contains only the sources approved by the user. Application
+audio therefore comes from a separate connection to the regular PipeWire
+graph. Each allowed playback stream is tapped without moving its existing
+speaker link, then mixed only for Aercast. This follows the
+[Portal ScreenCast lifecycle](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html)
+and [WirePlumber stream-linking model](https://pipewire.pages.freedesktop.org/wireplumber/policies/linking.html).
 
-The share URL is a bearer credential, not a substitute for transport security.
-Aercast does not provide TLS termination, public hosting, port forwarding,
-reverse proxies, tunnels, or NAT traversal. Those remain external deployment
-concerns.
+The MVP audio policy is **all PipeWire playback audio minus exclusions**.
+Applications are grouped by `application.id`, then by process binary or
+application name when needed; PID is diagnostic data, never persistent
+identity. New, removed, and restarted streams must be matched dynamically, and
+Aercast excludes itself by default. Direct ALSA, exclusive, or passthrough
+streams outside the normal PipeWire graph are not promised. Audio-off and
+no-source states retain a silent audio track so the browser's track layout does
+not change mid-session.
 
-## Technical baseline
+## Technical direction
 
-The initial baseline to validate is:
+Aercast remains one Rust process. Dependencies enter only when their milestone
+needs them:
 
-- Rust for the host application
-- `xdg-desktop-portal` and PipeWire for Wayland capture and audio discovery
-- GStreamer through `gstreamer-rs` for the media pipeline
-- H.264 video and AAC-LC audio in one fragmented MP4 stream
-- HTTP delivery to browser MediaSource Extensions
-- `iced`, Tokio, and Axum as host UI/runtime/server candidates
+- Phase 1: Tokio, `ashpd`, and `gstreamer-rs`
+- Phase 2: Axum and `gstreamer-app` for HTTP streaming
+- Phase 3: `pipewire-rs` for the dynamic audio registry
+- Phase 4: `iced` for the host UI
 
-These are working assumptions, not implemented or irreversible decisions. A
-component may change when an end-to-end test shows a simpler, more compatible,
-or more reliable path.
+The viewer is embedded plain HTML, CSS, and JavaScript. There is no TypeScript
+or Node build chain.
+
+The media contract is H.264 video and AAC-LC audio in one multiplexed
+fragmented MP4 stream. Phase 2 first tests GStreamer's existing `mp4mux` in
+fragmented mode. `isofmp4mux` is considered only if real MSE, latency, or join
+tests show that `mp4mux` is insufficient. The first browser slice uses one
+software encoder and no encoder-selection abstraction. VA-API, NVENC, DMA-BUF,
+AMF, and adaptive bitrate wait for measured need. See the
+[GStreamer `mp4mux` documentation](https://gstreamer.freedesktop.org/documentation/isomp4/mp4mux.html).
+
+The final HTTP surface is deliberately small:
+
+```text
+GET /s/{token}
+GET /s/{token}/stream
+```
+
+The first route serves the viewer; the second is a continuous fMP4 response.
+An invalid token returns HTTP 404. A new stream response starts with the
+latest init segment and the latest decodable keyframe-started GOP. That is the
+entire server-side media cache. A slow viewer is disconnected and reconnects
+instead of applying backpressure to GStreamer.
+
+The viewer derives the exact codec MIME from the real pipeline output, calls
+`MediaSource.isTypeSupported()`, serializes `SourceBuffer` appends, removes old
+buffered ranges, handles quota failures, and offers an explicit **Play / Enable
+Audio** action. It does not parse MP4 transport chunks in JavaScript. The byte
+stream must satisfy the [MSE ISO BMFF format](https://www.w3.org/TR/mse-byte-stream-format-isobmff/).
 
 ## Targets
 
-These are targets, not current benchmark results:
+These remain targets, not benchmark results:
 
-- Linux and Wayland, with GNOME, KDE Plasma, and niri/wlroots-like environments
-  as the first compatibility targets
 - 1080p at 60 FPS as the primary operating point
 - less than 250 ms end-to-end latency on a LAN
-- 1440p60 and 4K60 validation only after the primary path works; 4K60 should
-  use hardware encoding in normal operation
+- one encoder serving at least three simultaneous viewers
+- a new viewer starting within one GOP
+- 1440p60 and 4K60 only after the primary path works; 4K60 should use hardware
+  encoding in normal operation
 
-## Roadmap
+## Current milestone: capture feasibility
 
-1. Prove portal and PipeWire video capture through a local diagnostic sink.
-2. Deliver H.264 fragmented MP4 over HTTP to a localhost browser.
-3. Add dynamic application-audio discovery, exclusions, AAC-LC, and a single
-   synchronized A/V mux without changing the host's local mix.
-4. Add the minimal product shell: ephemeral link, copy action, Start/End,
-   viewer states and count, reconnect, and small-scale multi-viewer fan-out.
-5. Profile the working path, then add only the hardware encoding and zero-copy
-   optimizations justified by measurements.
+The current milestone contains no desktop UI, HTTP server, encoder, or product
+scaffolding.
+
+1. Build one CLI probe for Portal -> PipeWire -> GStreamer local preview.
+2. Use existing PipeWire tools to prove that one application's playback stream
+   can be tapped without interrupting or changing its local output.
+3. Record Portal capabilities, selected stream identity, negotiated caps,
+   memory type, first-frame time, and errors.
+4. Handle user cancellation, session closure, PipeWire disconnect, and Ctrl-C.
+5. Preview continuously for 60 seconds on the current niri environment. GNOME
+   and KDE must pass the same smoke check before compatibility is claimed.
+
+## Later milestones
+
+1. **Local browser video:** H.264 -> fMP4 -> Axum -> Chrome MSE; record first
+   frame, fragment behavior, and latency rather than claiming success in
+   advance.
+2. **Selective A/V:** dynamically track playback nodes, apply exclusions, mix
+   AAC-LC with video, and verify that excluded audio remains audible locally
+   but absent for the viewer.
+3. **Product lifecycle:** add iced, secure link handling, Start/End, waiting and
+   error states, viewer count, reconnect, and three-viewer fan-out from one
+   encoder.
+4. **Measured optimization:** validate 1080p60 and LAN latency, then add one
+   hardware path and only the copy reductions justified by profiling before
+   testing higher resolutions.
+
+If selective audio cannot work without altering the host mix on the target
+desktops, it is a product-direction failure, not a feature to silently remove.
+If MSE misses the latency target, measure and tune it before considering a
+different browser decoding path; WebRTC remains out of scope.
 
 ## Non-goals
 
@@ -96,7 +183,8 @@ Aercast does not plan to provide:
 - cloud media relays, accounts, chat, voice calls, or camera sharing
 - recording, remote control, clipboard sync, or file transfer
 - Windows or macOS support
-- speculative cross-platform, encoder, transport, or plugin abstractions
+- microservices, a custom media protocol, or speculative cross-platform,
+  encoder, transport, and plugin abstractions
 
 ## Development
 
