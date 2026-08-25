@@ -1,8 +1,8 @@
 # Aercast
 
-> **Pre-alpha:** Aercast currently defines a product and technical direction.
-> There is no runnable application yet, and no performance or compatibility
-> claim below has been verified.
+> **Pre-alpha:** Aercast currently provides only a capture-feasibility CLI
+> probe. There is no product application yet. Only the host-specific
+> feasibility results recorded below have been verified.
 
 Aercast is a Linux/Wayland-first, one-way screen-sharing app for a small number
 of viewers. A native host selects one screen or window, then serves live video
@@ -95,7 +95,7 @@ not change mid-session.
 Aercast remains one Rust process. Dependencies enter only when their milestone
 needs them:
 
-- Phase 1: Tokio, `ashpd`, and `gstreamer-rs`
+- Phase 1: Tokio, `futures-util`, `ashpd`, and `gstreamer-rs`
 - Phase 2: Axum and `gstreamer-app` for HTTP streaming
 - Phase 3: `pipewire-rs` for the dynamic audio registry
 - Phase 4: `iced` for the host UI
@@ -155,6 +155,27 @@ scaffolding.
 5. Preview continuously for 60 seconds on the current niri environment. GNOME
    and KDE must pass the same smoke check before compatibility is claimed.
 
+### Recorded feasibility result: 2026-08-26
+
+These observations apply only to the current host: niri 26.04, ScreenCast
+Portal v5, PipeWire 1.6.8, GStreamer 1.28.6, and an AMD Radeon RX 6650 XT.
+
+- Monitor preview ran for 65 seconds and window preview continued for 65
+  seconds across a live resize; both then stopped cleanly through SIGINT.
+- Successful source caps used DMA-BUF with `XR24` for monitor capture and
+  `AR24` for window capture. First buffers arrived 17-27 ms after the probe
+  started the pipeline transition; this is not end-to-end latency.
+- Direct `waylandsink` and `glimagesink` could not consume the modifier first
+  offered on this host. The installed `vapostproc` negotiated a compatible
+  modifier and normalized frames to `BGRx` for local preview. This is a current
+  compatibility path, not a future encoder decision.
+- A 48 kHz stereo application stream remained linked to the local output while
+  a second capture link recorded five seconds of non-silent PCM. Removing the
+  temporary capture stream left the local route unchanged.
+
+GNOME, KDE, other GPUs, and systems without the required GStreamer VA plugin
+remain unverified.
+
 ## Later milestones
 
 1. **Local browser video:** H.264 -> fMP4 -> Axum -> Chrome MSE; record first
@@ -188,10 +209,21 @@ Aercast does not plan to provide:
 
 ## Development
 
-There is no buildable source tree yet, so there are no installation, build, or
-run commands to publish. Contributors and coding agents must follow
-[AGENTS.md](AGENTS.md), including its mandatory Ponytail review before every
-commit.
+The current source tree builds only the Phase 1 CLI probe. It opens the system
+ScreenCast Portal picker and previews the selected monitor or window locally:
+
+```sh
+cargo fmt --check
+cargo test
+cargo run -- --monitor
+```
+
+The optional `--monitor` or `--window` argument restricts the Portal source
+type. With no argument, the Portal may offer both. The current niri/AMD preview
+path requires the GStreamer `pipewiresrc`, `vapostproc`, and `waylandsink`
+elements. Press Ctrl-C to stop the preview and close the Portal session.
+Contributors and coding agents must follow [AGENTS.md](AGENTS.md), including its
+mandatory Ponytail review before every commit.
 
 ## License
 

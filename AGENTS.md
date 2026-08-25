@@ -40,8 +40,9 @@ current milestone, and non-goals.
 - Keep public documentation honest: distinguish implemented behavior, verified
   results, working assumptions, and targets.
 
-No build or test commands exist yet. Add the smallest canonical commands when
-they do; never invent placeholders.
+The canonical checks are `cargo fmt --check` and `cargo test`. A real capture
+smoke check uses `cargo run -- --monitor` or `cargo run -- --window` and
+requires an interactive Portal selection; never replace it with a mock.
 
 ## Before every commit
 
