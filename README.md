@@ -1,8 +1,9 @@
 # Aercast
 
-> **Pre-alpha:** Aercast currently provides a loopback, single-viewer video
-> proof. There is no product UI, selective audio, share token, or multi-viewer
-> session yet. Only the host-specific results recorded below are verified.
+> **Pre-alpha:** Aercast currently provides a loopback, single-viewer A/V
+> schema proof with silent audio. There is no product UI, selective audio,
+> share token, or multi-viewer session yet. Only the host-specific results
+> recorded below are verified.
 
 Aercast is a Linux/Wayland-first, one-way screen-sharing app for a small number
 of viewers. A native host selects one screen or window, then serves live video
@@ -204,6 +205,23 @@ end-to-end latency claim. See [the verification record](docs/verification.md).
 4. Verify Game + Discord: the host hears both while the Viewer hears Game but
    not Discord.
 
+### Current safety blocker
+
+The verified host runs PipeWire 1.6.8. With its default daemon configuration,
+`node.passive=in` cannot make a link from an ordinary playback stream passive,
+and the link factory ignores a client's `link.passive=true`. Such a tap could
+therefore keep the target stream runnable after its normal output disappears.
+Aercast will not create that link or change the user's PipeWire daemon
+configuration. The current pipeline carries only a permanent silent AAC track.
+
+Selective-audio work resumes only when the passive behavior can be enforced and
+verified without changing the host mix. The relevant 1.6.8 behavior is defined
+by PipeWire's
+[`impl-node.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/1.6.8/src/pipewire/impl-node.c),
+[`impl-link.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/1.6.8/src/pipewire/impl-link.c),
+and
+[`module-link-factory.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/1.6.8/src/modules/module-link-factory.c).
+
 ## Later milestones
 
 1. **Product lifecycle:** add iced, secure link handling, Start/End, waiting and
@@ -231,8 +249,9 @@ Aercast does not plan to provide:
 
 ## Development
 
-The current source tree builds the loopback Phase 2 video proof. It opens the
-ScreenCast Portal picker, then prints a one-use local Viewer URL:
+The current source tree builds the loopback browser proof with Portal video and
+a silent AAC track. It opens the ScreenCast Portal picker, then prints a one-use
+local Viewer URL:
 
 ```sh
 cargo fmt --check
@@ -243,8 +262,9 @@ cargo run -- --monitor
 The optional `--monitor` or `--window` argument restricts the Portal source
 type. With no argument, the Portal may offer both. The current niri/AMD path
 requires the GStreamer `pipewiresrc`, `vapostproc`, `imagefreeze`, `x264enc`,
-`h264parse`, `mp4mux`, and `appsink` elements. Open the printed URL, select
-**Play**, and press Ctrl-C to stop the stream and close the Portal session.
+`h264parse`, `audiotestsrc`, `avenc_aac`, `aacparse`, `mp4mux`, and `appsink`
+elements. Open the printed URL, select **Play**, and press Ctrl-C to stop the
+stream and close the Portal session.
 Contributors and coding agents must follow [AGENTS.md](AGENTS.md), including its
 mandatory Ponytail review before every commit. Measured development evidence is
 kept in [docs/verification.md](docs/verification.md).

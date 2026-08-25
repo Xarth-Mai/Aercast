@@ -25,7 +25,9 @@ Capture feasibility:
   modifier for downstream consumers.
 - A 48 kHz stereo application stream stayed connected to local output while a
   second PipeWire link recorded five seconds of non-silent PCM. Removing the
-  temporary link did not change the local route.
+  temporary link did not change the local route during that observation. This
+  did not prove that the link was passive or could not keep the application
+  runnable after its normal output disappeared.
 
 Local browser video:
 
@@ -48,6 +50,24 @@ The browser checks above used the installed matching GeckoDriver and
 ChromeDriver against the real Portal/PipeWire pipeline. They do not establish
 official Google Chrome compatibility, audio support, LAN latency, GNOME/KDE
 compatibility, multi-viewer joining, or release readiness.
+
+Selective-audio safety analysis:
+
+- PipeWire 1.6.8 accepts only `out`, `in`, or boolean values for
+  `node.passive`; newer `follow` modes are not present in that release.
+- A passive Aercast input linked to `Stream/Output/Audio` is still inferred as
+  a non-passive link because an ordinary playback stream is not a suspendable
+  sink or source.
+- The default link factory removes a client-supplied `link.passive` property.
+  The PulseAudio per-stream monitor path also creates an ordinary autoconnected
+  input and does not provide a passive alternative.
+- The unsafe prototype was removed before commit. No regular-graph capture is
+  now started by Aercast; the browser proof muxes a generated silent AAC-LC
+  track instead. No further live audio smoke test is permitted until a safe
+  link contract exists and the host's audio has been confirmed healthy.
+- An offline synthetic mux check produced a 48 kHz stereo AAC-LC track lasting
+  3.051 seconds and a 1280x720 H.264 track lasting 3.000 seconds. It touched no
+  Portal, PipeWire graph, browser, or audio output and is not a live A/V result.
 
 ## Re-run gate
 

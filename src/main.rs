@@ -238,7 +238,9 @@ async fn serve_video(
 
     // ponytail: normalize this niri/AMD DMA-BUF at 720p30 for the software proof.
     let pipeline = gst::parse::launch(&format!(
-        "pipewiresrc fd={remote_fd} path={node_id} ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! mp4mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false"
+        "mp4mux name=mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false \\
+         audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0 \\
+         pipewiresrc fd={remote_fd} path={node_id} on-disconnect=error ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0"
     ))?
     .downcast::<gst::Pipeline>()
     .map_err(|_| io::Error::other("GStreamer did not create a pipeline"))?;
@@ -370,7 +372,7 @@ async fn serve_video(
 fn h264_mime(caps: &gst::CapsRef) -> Option<String> {
     let codec_data = caps.structure(0)?.get::<gst::Buffer>("codec_data").ok()?;
     let bytes = codec_data.map_readable().ok()?;
-    avc_codec(bytes.as_slice()).map(|codec| format!("video/mp4; codecs=\"{codec}\""))
+    avc_codec(bytes.as_slice()).map(|codec| format!("video/mp4; codecs=\"{codec}, mp4a.40.2\""))
 }
 
 fn avc_codec(config: &[u8]) -> Option<String> {
@@ -436,11 +438,20 @@ mod tests {
 
     #[test]
     fn avc_config_produces_the_codec_parameter() {
+        gst::init().unwrap();
         assert_eq!(
             avc_codec(&[1, 0x42, 0xc0, 0x1f]),
             Some("avc1.42c01f".to_owned())
         );
         assert_eq!(avc_codec(&[1, 0x42, 0xc0]), None);
         assert_eq!(avc_codec(&[0, 0x42, 0xc0, 0x1f]), None);
+
+        let caps = gst::Caps::builder("video/x-h264")
+            .field("codec_data", gst::Buffer::from_slice([1, 0x42, 0xc0, 0x1f]))
+            .build();
+        assert_eq!(
+            h264_mime(&caps),
+            Some("video/mp4; codecs=\"avc1.42c01f, mp4a.40.2\"".to_owned())
+        );
     }
 }
