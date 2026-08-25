@@ -11,7 +11,10 @@ Environment:
 - niri 26.04 and ScreenCast Portal v5
 - PipeWire 1.6.8 and GStreamer 1.28.6
 - AMD Radeon RX 6650 XT
-- Firefox 154.0 and Chromium 151.0.7922.173
+- Firefox 154.0 and Chromium 151.0.7922.173 at the time of the recorded tests
+
+For later tests on this host, Zen Browser 1.21.15b replaces the removed Firefox
+package; GeckoDriver can drive it at `/usr/bin/zen-browser`.
 
 Capture feasibility:
 
@@ -60,4 +63,4 @@ git diff --check
 Then run `cargo run -- --monitor` and `cargo run -- --window`. For each browser,
 open the printed loopback URL, select **Play**, and verify the exact MIME is
 supported, `video.error` is empty, buffered media exists, and `currentTime`
-advances for at least two seconds. Validate Firefox before Chromium.
+advances for at least two seconds. Validate Zen before Chromium.
