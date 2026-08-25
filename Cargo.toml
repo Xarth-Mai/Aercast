@@ -11,4 +11,5 @@ axum = "0.8"
 futures-util = "0.3"
 gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25" }
+pw = { package = "pipewire", version = "0.10" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }

@@ -33,6 +33,8 @@ use tokio::{
     sync::{Notify, broadcast, watch},
 };
 
+mod audio;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const VIEWER_HTML: &str = include_str!("viewer.html");
@@ -45,9 +47,17 @@ struct WebState {
     claimed: Arc<AtomicBool>,
 }
 
+struct Options {
+    source: Option<SourceType>,
+    exclusions: Vec<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let requested_source = requested_source(std::env::args().skip(1))?;
+    let Options {
+        source: requested_source,
+        exclusions,
+    } = options(std::env::args().skip(1))?;
     gst::init()?;
 
     let portal = Screencast::new().await?;
@@ -125,6 +135,7 @@ async fn main() -> Result<()> {
             serve_video(
                 node_id,
                 remote.as_raw_fd(),
+                exclusions,
                 async {
                     let _ = closed.next().await;
                 },
@@ -154,17 +165,26 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn requested_source(mut args: impl Iterator<Item = String>) -> io::Result<Option<SourceType>> {
-    let source = match args.next().as_deref() {
-        None => None,
-        Some("--monitor") => Some(SourceType::Monitor),
-        Some("--window") => Some(SourceType::Window),
-        Some(_) => return Err(io::Error::other("usage: aercast [--monitor|--window]")),
-    };
-    if args.next().is_some() {
-        return Err(io::Error::other("usage: aercast [--monitor|--window]"));
+fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
+    let mut source = None;
+    let mut exclusions = Vec::new();
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--monitor" if source.is_none() => source = Some(SourceType::Monitor),
+            "--window" if source.is_none() => source = Some(SourceType::Window),
+            "--exclude" => exclusions.push(
+                args.next()
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or_else(usage)?,
+            ),
+            _ => return Err(usage()),
+        }
     }
-    Ok(source)
+    Ok(Options { source, exclusions })
+}
+
+fn usage() -> io::Error {
+    io::Error::other("usage: aercast [--monitor|--window] [--exclude APPLICATION_ID_OR_NAME]...")
 }
 
 fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {
@@ -225,9 +245,13 @@ async fn media_stream(State(state): State<WebState>) -> Response {
 async fn serve_video(
     node_id: u32,
     remote_fd: i32,
+    exclusions: Vec<String>,
     session_closed: impl Future<Output = ()>,
     interrupt: impl Future<Output = io::Result<()>>,
 ) -> Result<bool> {
+    if exclusions.is_empty() {
+        eprintln!("Selective audio disabled: a Host-local Viewer must be passed as --exclude ID.");
+    }
     // ponytail: raw mux-buffer queue for one viewer; Phase 4 publishes cached GOPs.
     let (media, _) = broadcast::channel(512);
     let web_media = media.clone();
@@ -237,18 +261,19 @@ async fn serve_video(
     let media_started: Arc<OnceLock<Instant>> = Arc::new(OnceLock::new());
 
     // ponytail: normalize this niri/AMD DMA-BUF at 720p30 for the software proof.
-    let pipeline = gst::parse::launch(&format!(
-        "mp4mux name=mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false \\
-         audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0 \\
-         pipewiresrc fd={remote_fd} path={node_id} on-disconnect=error ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0"
-    ))?
-    .downcast::<gst::Pipeline>()
-    .map_err(|_| io::Error::other("GStreamer did not create a pipeline"))?;
+    let pipeline = gst::parse::launch(&pipeline_description(node_id, remote_fd))?
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| io::Error::other("GStreamer did not create a pipeline"))?;
     let parser_pad = pipeline
         .by_name("h264")
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no H.264 parser"))?
         .static_pad("src")
         .ok_or_else(|| io::Error::other("H.264 parser has no source pad"))?;
+    let system_audio = pipeline
+        .by_name("system-audio")
+        .ok_or_else(|| io::Error::other("GStreamer pipeline has no system-audio source"))?
+        .downcast::<gst_app::AppSrc>()
+        .map_err(|_| io::Error::other("GStreamer system-audio source is not appsrc"))?;
     parser_pad
         .add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
             if let Some(gst::PadProbeData::Event(event)) = &info.data
@@ -310,7 +335,7 @@ async fn serve_video(
             claimed,
         });
     let server = async move { axum::serve(listener, app).await };
-    println!("Open http://{address}/ and select Play; press Ctrl-C to stop.");
+    println!("Open http://{address}/ and select Play / Enable Audio; press Ctrl-C to stop.");
 
     tokio::pin!(session_closed);
     tokio::pin!(interrupt);
@@ -328,21 +353,39 @@ async fn serve_video(
             match pipeline.set_state(gst::State::Playing) {
                 Err(error) => Err(error.into()),
                 Ok(_) => {
-                    println!("Browser stream running.");
-                    tokio::select! {
-                        signal = &mut interrupt => match signal {
-                            Ok(()) => {
-                                println!("Ctrl-C received; stopping stream.");
-                                Ok(false)
+                    match audio::start(system_audio, exclusions) {
+                        Err(error) => Err(error.into()),
+                        Ok((audio, mut audio_errors)) => {
+                            println!("Browser stream running.");
+                            let running = tokio::select! {
+                                signal = &mut interrupt => match signal {
+                                    Ok(()) => {
+                                        println!("Ctrl-C received; stopping stream.");
+                                        Ok(false)
+                                    }
+                                    Err(error) => Err(error.into()),
+                                },
+                                _ = &mut session_closed => {
+                                    println!("Portal session closed; stopping stream.");
+                                    Ok(true)
+                                }
+                                result = &mut server => server_outcome(result),
+                                message = messages.next() => media_outcome(message),
+                                error = audio_errors.recv() => Err(io::Error::other(
+                                    error.unwrap_or_else(|| "selective-audio thread stopped unexpectedly".to_owned())
+                                ).into()),
+                            };
+                            let stopped = audio.stop().map_err(io::Error::other);
+                            if let Err(error) = &stopped {
+                                eprintln!("Failed to clean up selective audio: {error}");
                             }
-                            Err(error) => Err(error.into()),
-                        },
-                        _ = &mut session_closed => {
-                            println!("Portal session closed; stopping stream.");
-                            Ok(true)
+                            match running {
+                                Err(error) => Err(error),
+                                Ok(portal_closed) => stopped
+                                    .map(|()| portal_closed)
+                                    .map_err(|error| error.into()),
+                            }
                         }
-                        result = &mut server => server_outcome(result),
-                        message = messages.next() => media_outcome(message),
                     }
                 }
             }
@@ -364,9 +407,22 @@ async fn serve_video(
     };
 
     let stop_result = pipeline.set_state(gst::State::Null);
+    if let Err(error) = &stop_result {
+        eprintln!("Failed to stop GStreamer pipeline: {error}");
+    }
     let portal_closed = outcome?;
     stop_result?;
     Ok(portal_closed)
+}
+
+fn pipeline_description(node_id: u32, remote_fd: i32) -> String {
+    format!(
+        "mp4mux name=mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false
+         audiomixer name=audio-mixer ignore-inactive-pads=true ! audioconvert ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0
+         audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! queue ! audio-mixer.
+         appsrc name=system-audio is-live=true format=time do-timestamp=true block=false max-bytes=384000 leaky-type=downstream ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! queue ! audio-mixer.
+         pipewiresrc fd={remote_fd} path={node_id} on-disconnect=error ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0"
+    )
 }
 
 fn h264_mime(caps: &gst::CapsRef) -> Option<String> {
@@ -424,16 +480,33 @@ mod tests {
     }
 
     #[test]
-    fn source_argument_accepts_one_known_value() {
-        assert_eq!(requested_source(std::iter::empty()).unwrap(), None);
+    fn arguments_accept_one_source_and_repeated_exclusions() {
+        let empty = options(std::iter::empty()).unwrap();
+        assert_eq!(empty.source, None);
+        assert!(empty.exclusions.is_empty());
         assert_eq!(
-            requested_source(["--window".to_owned()].into_iter()).unwrap(),
+            options(["--window".to_owned()].into_iter()).unwrap().source,
             Some(SourceType::Window)
         );
-        assert!(requested_source(["--bad".to_owned()].into_iter()).is_err());
-        assert!(
-            requested_source(["--monitor".to_owned(), "extra".to_owned()].into_iter()).is_err()
+        assert_eq!(
+            options(
+                [
+                    "--exclude".to_owned(),
+                    "org.example.Chat".to_owned(),
+                    "--monitor".to_owned(),
+                    "--exclude".to_owned(),
+                    "game-bin".to_owned(),
+                ]
+                .into_iter()
+            )
+            .unwrap()
+            .exclusions,
+            ["org.example.Chat", "game-bin"]
         );
+        assert!(options(["--bad".to_owned()].into_iter()).is_err());
+        assert!(options(["--monitor".to_owned(), "--window".to_owned()].into_iter()).is_err());
+        assert!(options(["--exclude".to_owned()].into_iter()).is_err());
+        assert!(options(["--exclude".to_owned(), "--monitor".to_owned()].into_iter()).is_err());
     }
 
     #[test]
@@ -453,5 +526,16 @@ mod tests {
             h264_mime(&caps),
             Some("video/mp4; codecs=\"avc1.42c01f, mp4a.40.2\"".to_owned())
         );
+    }
+
+    #[test]
+    fn av_pipeline_description_has_no_syntax_error() {
+        gst::init().unwrap();
+        if let Err(error) = gst::parse::launch(&pipeline_description(1, 0)) {
+            assert_ne!(
+                error.kind::<gst::ParseError>(),
+                Some(gst::ParseError::Syntax)
+            );
+        }
     }
 }

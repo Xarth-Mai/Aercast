@@ -1,9 +1,9 @@
 # Aercast
 
 > **Pre-alpha:** Aercast currently provides a loopback, single-viewer A/V
-> schema proof with silent audio. There is no product UI, selective audio,
-> share token, or multi-viewer session yet. Only the host-specific results
-> recorded below are verified.
+> proof and a selective-audio prototype verified on one configured host. There
+> is no product UI, share token, or multi-viewer session yet. Only the
+> host-specific results recorded below are verified.
 
 Aercast is a Linux/Wayland-first, one-way screen-sharing app for a small number
 of viewers. A native host selects one screen or window, then serves live video
@@ -90,9 +90,9 @@ Applications are grouped by `application.id`, then by process binary or
 application name when needed; PID is diagnostic data, never persistent
 identity. New, removed, and restarted streams must be matched dynamically, and
 Aercast excludes itself by default. Direct ALSA, exclusive, or passthrough
-streams outside the normal PipeWire graph are not promised. Audio-off and
-no-source states retain a silent audio track so the browser's track layout does
-not change mid-session.
+streams outside the normal PipeWire graph are not promised. The planned
+audio-off state and a no-source state retain a silent audio track so the
+browser's track layout does not change mid-session.
 
 ## Technical direction
 
@@ -192,44 +192,73 @@ On the recorded niri host, both Firefox 154 and Chromium 151 played the real
 Portal stream without a media error and advanced for the full 2.5-second test
 window. A window stream's first encoded frame arrived in 54 ms and its first
 fMP4 fragment in 154 ms. These are local component observations, not a LAN or
-end-to-end latency claim. See [the verification record](docs/verification.md).
+end-to-end latency claim. After AAC integration, Zen Browser 1.21.15b and
+Chromium 151 also played live Portal output with the served
+`video/mp4; codecs="avc1.42c01f, mp4a.40.2"` MIME, whose AVC parameter came
+from negotiated caps and whose AAC-LC profile is fixed by the pipeline. See
+[the verification record](docs/verification.md).
 
-## Current milestone: selective audio and A/V
+## Completed milestone: selective audio and A/V development proof
 
 1. Dynamically track ordinary PipeWire playback nodes and rematch applications
    across start, exit, and restart.
 2. Tap allowed streams without moving their existing speaker links, exclude
-   Aercast itself, and preserve a silent track when audio is off or absent.
-3. Add AAC-LC to the existing video pipeline and produce one synchronized fMP4
-   stream whose track layout does not change mid-session.
-4. Verify Game + Discord: the host hears both while the Viewer hears Game but
-   not Discord.
+   Aercast itself, and preserve a silent track when no source is eligible.
+3. Add AAC-LC to the video pipeline and keep one fMP4 track layout throughout
+   a session.
+4. Use Game and Discord proxies to verify both remain routed to the local sink
+   while the Viewer receives only Game.
 
-### Current safety blocker
+On the recorded host, the two proxies retained active routes to the unchanged
+local sink while an integrated Portal-to-Zen spectrum separated allowed Game
+from excluded Discord by about 92.7 dB. Restart, route-loss, and unexpected-link
+checks exercised the failure and rematching paths. This proves the development
+routing proxy, not literal human audibility or measured A/V synchronization.
+The prototype accepts only exact FL/FR stereo playback streams and skips other
+channel layouts. See [the verification record](docs/verification.md).
 
-The verified host runs PipeWire 1.6.8. With its default daemon configuration,
-`node.passive=in` cannot make a link from an ordinary playback stream passive,
-and the link factory ignores a client's `link.passive=true`. Such a tap could
-therefore keep the target stream runnable after its normal output disappears.
-Aercast will not create that link or change the user's PipeWire daemon
-configuration. The current pipeline carries only a permanent silent AAC track.
+### PipeWire 1.6.8 prerequisite
 
-Selective-audio work resumes only when the passive behavior can be enforced and
-verified without changing the host mix. The relevant 1.6.8 behavior is defined
-by PipeWire's
+PipeWire 1.6.8 removes a client-supplied `link.passive=true` unless the daemon's
+link factory explicitly allows it. The recorded development host loaded this
+PipeWire configuration:
+
+```ini
+module.link-factory.args = {
+    allow.link.passive = true
+}
+```
+
+Aercast does not write this setting or restart PipeWire. The setting is
+daemon-wide and lets local clients request passive links, so it must be a
+deliberate host configuration decision. Without the opt-in, Aercast creates an
+inactive candidate link, rejects its missing passive readback, and tears it
+down before capture activation. The rejected candidate can therefore appear
+briefly as a non-passive graph link even though no audio is forwarded. With the
+opt-in, Aercast still requires each playback channel to have an independently
+active `Audio/Sink` route,
+reads back exact passive link properties, waits for active links and real data,
+and stops when PipeWire reports route loss or an unexpected capture input. A
+daemon topology change can briefly precede its delivery to the client. This
+requirement is a known packaging and compatibility risk, not a general
+PipeWire support claim.
+The relevant 1.6.8 behavior is defined by PipeWire's
 [`impl-node.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/1.6.8/src/pipewire/impl-node.c),
 [`impl-link.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/1.6.8/src/pipewire/impl-link.c),
 and
 [`module-link-factory.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/1.6.8/src/modules/module-link-factory.c).
 
-## Later milestones
+## Current milestone: product lifecycle and multi-viewer
 
-1. **Product lifecycle:** add iced, secure link handling, Start/End, waiting and
-   error states, viewer count, reconnect, and three-viewer fan-out from one
-   encoder.
-2. **Measured optimization:** validate 1080p60 and LAN latency, then add one
-   hardware path and only the copy reductions justified by profiling before
-   testing higher resolutions.
+Add iced, secure link handling, Start/End, waiting and error states, viewer
+count, reconnect, and three-viewer fan-out from one encoder. The current `/`
+and `/stream` loopback routes remain development-only and must be replaced by
+the token routes defined above.
+
+## Later milestone: measured optimization
+
+Validate 1080p60 and LAN latency, then add one hardware path and only the copy
+reductions justified by profiling before testing higher resolutions.
 
 If selective audio cannot work without altering the host mix on the target
 desktops, it is a product-direction failure, not a feature to silently remove.
@@ -250,21 +279,28 @@ Aercast does not plan to provide:
 ## Development
 
 The current source tree builds the loopback browser proof with Portal video and
-a silent AAC track. It opens the ScreenCast Portal picker, then prints a one-use
-local Viewer URL:
+selective PipeWire audio. It opens the ScreenCast Portal picker, then prints a
+one-use local Viewer URL:
 
 ```sh
 cargo fmt --check
 cargo test
-cargo run -- --monitor
+cargo run -- --monitor --exclude zen-bin
 ```
 
 The optional `--monitor` or `--window` argument restricts the Portal source
-type. With no argument, the Portal may offer both. The current niri/AMD path
+type. Repeat `--exclude` for application IDs, process binaries, or names. With
+no source argument, the Portal may offer both. The current niri/AMD path
 requires the GStreamer `pipewiresrc`, `vapostproc`, `imagefreeze`, `x264enc`,
-`h264parse`, `audiotestsrc`, `avenc_aac`, `aacparse`, `mp4mux`, and `appsink`
-elements. Open the printed URL, select **Play**, and press Ctrl-C to stop the
-stream and close the Portal session.
+`h264parse`, `appsrc`, `audiomixer`, `audiotestsrc`, `avenc_aac`, `aacparse`,
+`mp4mux`, and `appsink` elements. The current server is loopback-only. Open the
+printed URL, select **Play / Enable Audio**, and press Ctrl-C to stop the stream
+and close the Portal session. Selective audio stays disabled when no exclusion
+is supplied. To enable it, exclude the Host-local browser by its exact PipeWire
+identity (`zen-bin` or the observed `chromium` on this host), then add any other
+application exclusions. Muting or a null backend did not suppress Zen's
+playback node.
+
 Contributors and coding agents must follow [AGENTS.md](AGENTS.md), including its
 mandatory Ponytail review before every commit. Measured development evidence is
 kept in [docs/verification.md](docs/verification.md).

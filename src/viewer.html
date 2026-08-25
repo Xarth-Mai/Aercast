@@ -13,13 +13,19 @@
 </style>
 <main>
   <video muted playsinline></video>
-  <button id="play" type="button">Play</button>
+  <button id="play" type="button">Play / Enable Audio</button>
   <p id="status" role="status">Ready to connect.</p>
 </main>
 <script>
   const video = document.querySelector("video");
   const button = document.querySelector("#play");
   const status = document.querySelector("#status");
+
+  function showError(error) {
+    button.disabled = false;
+    status.textContent = error.message;
+    document.body.dataset.error = error.message;
+  }
 
   function mutate(buffer, action) {
     return new Promise((resolve, reject) => {
@@ -57,8 +63,22 @@
 
   button.addEventListener("click", async () => {
     button.disabled = true;
+    video.muted = false;
+    if (video.src) {
+      try {
+        await video.play();
+      } catch (error) {
+        showError(error);
+      }
+      return;
+    }
     status.textContent = "Connecting…";
     try {
+      const media = new MediaSource();
+      const opened = new Promise(resolve => media.addEventListener("sourceopen", resolve, { once: true }));
+      video.src = URL.createObjectURL(media);
+      void video.play().catch(showError);
+
       const response = await fetch("/stream", { cache: "no-store" });
       if (!response.ok) throw new Error(`Stream request failed: HTTP ${response.status}`);
       const mime = response.headers.get("content-type");
@@ -67,16 +87,9 @@
       }
 
       document.body.dataset.mime = mime;
-      const media = new MediaSource();
-      const opened = new Promise(resolve => media.addEventListener("sourceopen", resolve, { once: true }));
-      video.src = URL.createObjectURL(media);
       await opened;
       const buffer = media.addSourceBuffer(mime);
       const reader = response.body.getReader();
-      void video.play().catch(error => {
-        status.textContent = error.message;
-        document.body.dataset.error = error.message;
-      });
       status.textContent = mime;
 
       while (true) {
@@ -87,12 +100,19 @@
       if (media.readyState === "open" && !buffer.updating) media.endOfStream();
       status.textContent = "Stream ended.";
     } catch (error) {
-      status.textContent = error.message;
-      document.body.dataset.error = error.message;
+      const source = video.src;
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(source);
+      showError(error);
     }
   });
 
-  video.addEventListener("playing", () => { document.body.dataset.state = "playing"; });
+  video.addEventListener("playing", () => {
+    document.body.dataset.state = "playing";
+    delete document.body.dataset.error;
+    status.textContent = document.body.dataset.mime ?? "Playing.";
+  });
   video.addEventListener("error", () => {
     const message = video.error?.message ?? "Video playback failed";
     status.textContent = message;
