@@ -1,8 +1,8 @@
 # Aercast
 
-> **Pre-alpha:** Aercast currently provides only a capture-feasibility CLI
-> probe. There is no product application yet. Only the host-specific
-> feasibility results recorded below have been verified.
+> **Pre-alpha:** Aercast currently provides a loopback, single-viewer video
+> proof. There is no product UI, selective audio, share token, or multi-viewer
+> session yet. Only the host-specific results recorded below are verified.
 
 Aercast is a Linux/Wayland-first, one-way screen-sharing app for a small number
 of viewers. A native host selects one screen or window, then serves live video
@@ -31,17 +31,20 @@ stream. No cloud.**
 ## Product boundary
 
 The first host target is a native, unsandboxed Linux application. GNOME, KDE
-Plasma, and niri are the initial compositor targets, but none is verified yet.
-Flatpak support is deferred because selective audio needs access to the user's
-regular PipeWire graph in addition to the restricted ScreenCast Portal remote.
+Plasma, and niri are the initial compositor targets. The recorded niri host
+below is the only verified environment so far. Flatpak support is deferred
+because selective audio needs access to the user's regular PipeWire graph in
+addition to the restricted ScreenCast Portal remote.
 
-The first release-blocking viewer target is the current stable desktop release
-of Google Chrome. The page must still check the exact codec MIME at
-runtime. Firefox is experimental when the operating system provides H.264 and
-AAC decoding and the live stream passes a real smoke test. Distribution-built
-Chromium, Safari, and mobile browsers are not initial compatibility promises.
-Firefox's general H.264 support depends on platform codecs, while Chromium
-builds can omit proprietary codecs; see the
+The primary viewer target is the current stable desktop release of Mozilla
+Firefox. Current stable desktop Chromium is a secondary, first-class target:
+both must pass the same live MSE smoke tests, but implementation and
+compatibility choices are validated on Firefox first. The page checks the exact
+codec MIME at runtime. Firefox still requires the operating system to provide
+H.264 and AAC decoding; a missing codec is an actionable compatibility error,
+not an experimental support tier. Google Chrome, Safari, and mobile browsers
+are not initial compatibility promises. Chromium builds can omit proprietary
+codecs; see the
 [Mozilla codec documentation](https://support.mozilla.org/en-US/kb/audio-and-video-firefox)
 and [Chromium codec documentation](https://www.chromium.org/audio-video/).
 
@@ -141,9 +144,9 @@ These remain targets, not benchmark results:
 - 1440p60 and 4K60 only after the primary path works; 4K60 should use hardware
   encoding in normal operation
 
-## Current milestone: capture feasibility
+## Completed milestone: capture feasibility
 
-The current milestone contains no desktop UI, HTTP server, encoder, or product
+This milestone contained no desktop UI, HTTP server, encoder, or product
 scaffolding.
 
 1. Build one CLI probe for Portal -> PipeWire -> GStreamer local preview.
@@ -176,18 +179,37 @@ Portal v5, PipeWire 1.6.8, GStreamer 1.28.6, and an AMD Radeon RX 6650 XT.
 GNOME, KDE, other GPUs, and systems without the required GStreamer VA plugin
 remain unverified.
 
+## Completed milestone: localhost browser video
+
+The current proof serves an embedded plain-JavaScript MSE viewer on loopback.
+It uses one software H.264 encoder, a 100 ms `mp4mux` fragment target, an exact
+codec MIME derived from negotiated AVC data, and a bounded stream queue that
+cannot backpressure GStreamer. It deliberately supports only the first Viewer;
+tokens, GOP replay, reconnect, and fan-out belong to the lifecycle milestone.
+
+On the recorded niri host, both Firefox 154 and Chromium 151 played the real
+Portal stream without a media error and advanced for the full 2.5-second test
+window. A window stream's first encoded frame arrived in 54 ms and its first
+fMP4 fragment in 154 ms. These are local component observations, not a LAN or
+end-to-end latency claim. See [the verification record](docs/verification.md).
+
+## Current milestone: selective audio and A/V
+
+1. Dynamically track ordinary PipeWire playback nodes and rematch applications
+   across start, exit, and restart.
+2. Tap allowed streams without moving their existing speaker links, exclude
+   Aercast itself, and preserve a silent track when audio is off or absent.
+3. Add AAC-LC to the existing video pipeline and produce one synchronized fMP4
+   stream whose track layout does not change mid-session.
+4. Verify Game + Discord: the host hears both while the Viewer hears Game but
+   not Discord.
+
 ## Later milestones
 
-1. **Local browser video:** H.264 -> fMP4 -> Axum -> Chrome MSE; record first
-   frame, fragment behavior, and latency rather than claiming success in
-   advance.
-2. **Selective A/V:** dynamically track playback nodes, apply exclusions, mix
-   AAC-LC with video, and verify that excluded audio remains audible locally
-   but absent for the viewer.
-3. **Product lifecycle:** add iced, secure link handling, Start/End, waiting and
+1. **Product lifecycle:** add iced, secure link handling, Start/End, waiting and
    error states, viewer count, reconnect, and three-viewer fan-out from one
    encoder.
-4. **Measured optimization:** validate 1080p60 and LAN latency, then add one
+2. **Measured optimization:** validate 1080p60 and LAN latency, then add one
    hardware path and only the copy reductions justified by profiling before
    testing higher resolutions.
 
@@ -209,8 +231,8 @@ Aercast does not plan to provide:
 
 ## Development
 
-The current source tree builds only the Phase 1 CLI probe. It opens the system
-ScreenCast Portal picker and previews the selected monitor or window locally:
+The current source tree builds the loopback Phase 2 video proof. It opens the
+ScreenCast Portal picker, then prints a one-use local Viewer URL:
 
 ```sh
 cargo fmt --check
@@ -219,11 +241,13 @@ cargo run -- --monitor
 ```
 
 The optional `--monitor` or `--window` argument restricts the Portal source
-type. With no argument, the Portal may offer both. The current niri/AMD preview
-path requires the GStreamer `pipewiresrc`, `vapostproc`, and `waylandsink`
-elements. Press Ctrl-C to stop the preview and close the Portal session.
+type. With no argument, the Portal may offer both. The current niri/AMD path
+requires the GStreamer `pipewiresrc`, `vapostproc`, `imagefreeze`, `x264enc`,
+`h264parse`, `mp4mux`, and `appsink` elements. Open the printed URL, select
+**Play**, and press Ctrl-C to stop the stream and close the Portal session.
 Contributors and coding agents must follow [AGENTS.md](AGENTS.md), including its
-mandatory Ponytail review before every commit.
+mandatory Ponytail review before every commit. Measured development evidence is
+kept in [docs/verification.md](docs/verification.md).
 
 ## License
 

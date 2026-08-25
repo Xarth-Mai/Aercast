@@ -1,7 +1,12 @@
 use std::{
+    convert::Infallible,
     future::Future,
     io,
     os::fd::{AsRawFd, OwnedFd},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -12,10 +17,33 @@ use ashpd::{
         screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType},
     },
 };
-use futures_util::StreamExt;
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::State,
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
+    routing::get,
+};
+use futures_util::{StreamExt, stream};
 use gst::prelude::*;
+use gst_app::AppSinkCallbacks;
+use tokio::{
+    net::TcpListener,
+    sync::{Notify, broadcast, watch},
+};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+const VIEWER_HTML: &str = include_str!("viewer.html");
+
+#[derive(Clone)]
+struct WebState {
+    media: broadcast::Sender<Bytes>,
+    mime: watch::Receiver<Option<String>>,
+    start: Arc<Notify>,
+    claimed: Arc<AtomicBool>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -94,7 +122,7 @@ async fn main() -> Result<()> {
 
     let result = match capture {
         Ok(Some((node_id, remote))) => {
-            preview(
+            serve_video(
                 node_id,
                 remote.as_raw_fd(),
                 async {
@@ -145,102 +173,241 @@ fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {
         .or_else(|| hidden.then_some(CursorMode::Hidden))
 }
 
-async fn preview(
+async fn viewer_page() -> Response {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        Html(VIEWER_HTML),
+    )
+        .into_response()
+}
+
+async fn media_stream(State(state): State<WebState>) -> Response {
+    if state
+        .claimed
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return (StatusCode::CONFLICT, "Phase 2 supports one viewer").into_response();
+    }
+
+    let receiver = state.media.subscribe();
+    state.start.notify_one();
+    let mut mime = state.mime;
+    let content_type = loop {
+        if let Some(content_type) = mime.borrow().clone() {
+            break content_type;
+        }
+        if mime.changed().await.is_err() {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    };
+    let body = Body::from_stream(stream::unfold(receiver, |mut receiver| async move {
+        match receiver.recv().await {
+            Ok(chunk) => Some((Ok::<Bytes, Infallible>(chunk), receiver)),
+            Err(error) => {
+                eprintln!("Viewer stream closed: {error}");
+                None
+            }
+        }
+    }));
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(body)
+        .expect("generated media headers are valid")
+}
+
+async fn serve_video(
     node_id: u32,
     remote_fd: i32,
     session_closed: impl Future<Output = ()>,
     interrupt: impl Future<Output = io::Result<()>>,
 ) -> Result<bool> {
-    // ponytail: normalize this niri/AMD DMA-BUF with the installed VA postprocessor.
+    // ponytail: raw mux-buffer queue for one viewer; Phase 4 publishes cached GOPs.
+    let (media, _) = broadcast::channel(512);
+    let web_media = media.clone();
+    let (mime_sender, mime) = watch::channel(None);
+    let start = Arc::new(Notify::new());
+    let claimed = Arc::new(AtomicBool::new(false));
+    let media_started: Arc<OnceLock<Instant>> = Arc::new(OnceLock::new());
+
+    // ponytail: normalize this niri/AMD DMA-BUF at 720p30 for the software proof.
     let pipeline = gst::parse::launch(&format!(
-        "pipewiresrc name=capture fd={remote_fd} path={node_id} ! vapostproc disable-passthrough=true ! video/x-raw,format=BGRx ! waylandsink sync=false"
+        "pipewiresrc fd={remote_fd} path={node_id} ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! mp4mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false"
     ))?
     .downcast::<gst::Pipeline>()
     .map_err(|_| io::Error::other("GStreamer did not create a pipeline"))?;
-    let source = pipeline
-        .by_name("capture")
-        .ok_or_else(|| io::Error::other("GStreamer pipeline has no capture source"))?;
-    let source_pad = source
+    let parser_pad = pipeline
+        .by_name("h264")
+        .ok_or_else(|| io::Error::other("GStreamer pipeline has no H.264 parser"))?
         .static_pad("src")
-        .ok_or_else(|| io::Error::other("PipeWire source has no source pad"))?;
-    let started = Instant::now();
-    source_pad
-        .add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
-            let caps = pad
-                .current_caps()
-                .map(|caps| caps.to_string())
-                .unwrap_or_else(|| "unknown".to_owned());
-            let memory = info
-                .buffer()
-                .and_then(|buffer| buffer.memory(0))
-                .and_then(|memory| {
-                    memory
-                        .allocator()
-                        .map(|allocator| allocator.name().to_string())
-                })
-                .unwrap_or_else(|| "unknown".to_owned());
-            println!(
-                "First frame: {} ms, caps={caps}, memory={memory}",
-                started.elapsed().as_millis()
-            );
-            gst::PadProbeReturn::Remove
+        .ok_or_else(|| io::Error::other("H.264 parser has no source pad"))?;
+    parser_pad
+        .add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+            if let Some(gst::PadProbeData::Event(event)) = &info.data
+                && let gst::EventView::Caps(event) = event.view()
+                && let Some(mime) = h264_mime(event.caps())
+            {
+                mime_sender.send_replace(Some(mime));
+                return gst::PadProbeReturn::Remove;
+            }
+            gst::PadProbeReturn::Ok
         })
-        .ok_or_else(|| io::Error::other("failed to install first-frame probe"))?;
+        .ok_or_else(|| io::Error::other("failed to install codec probe"))?;
+
+    let app_sink = pipeline
+        .by_name("stream")
+        .ok_or_else(|| io::Error::other("GStreamer pipeline has no media sink"))?
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| io::Error::other("GStreamer media sink is not an appsink"))?;
+    app_sink.set_callbacks(
+        AppSinkCallbacks::builder()
+            .new_sample({
+                let media_started = Arc::clone(&media_started);
+                let mut first_fragment = true;
+                move |sink| {
+                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Error)?;
+                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                    let bytes = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                    if first_fragment && bytes.as_slice().get(4..8) == Some(b"moof".as_slice()) {
+                        if let Some(started) = media_started.get() {
+                            println!("First fMP4 fragment: {} ms", started.elapsed().as_millis());
+                        }
+                        first_fragment = false;
+                    }
+                    let _ = media.send(Bytes::copy_from_slice(bytes.as_slice()));
+                    Ok(gst::FlowSuccess::Ok)
+                }
+            })
+            .build(),
+    );
 
     let bus = pipeline
         .bus()
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no bus"))?;
     let message_types = [gst::MessageType::Eos, gst::MessageType::Error];
     let mut messages = bus.stream_filtered(&message_types);
-    if let Err(error) = pipeline.set_state(gst::State::Playing) {
-        let _ = pipeline.set_state(gst::State::Null);
-        return Err(error.into());
-    }
-    println!("Preview running; press Ctrl-C to stop.");
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = listener.local_addr()?;
+    let app = Router::new()
+        .route("/", get(viewer_page))
+        .route(
+            "/stream",
+            get(media_stream).head(|| async { StatusCode::METHOD_NOT_ALLOWED }),
+        )
+        .with_state(WebState {
+            media: web_media,
+            mime,
+            start: Arc::clone(&start),
+            claimed,
+        });
+    let server = async move { axum::serve(listener, app).await };
+    println!("Open http://{address}/ and select Play; press Ctrl-C to stop.");
 
     tokio::pin!(session_closed);
     tokio::pin!(interrupt);
+    tokio::pin!(server);
     let outcome: Result<bool> = tokio::select! {
+        _ = start.notified() => {
+            let started = Instant::now();
+            let _ = media_started.set(started);
+            parser_pad
+                .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                    println!("First encoded frame: {} ms", started.elapsed().as_millis());
+                    gst::PadProbeReturn::Remove
+                })
+                .ok_or_else(|| io::Error::other("failed to install first-frame probe"))?;
+            match pipeline.set_state(gst::State::Playing) {
+                Err(error) => Err(error.into()),
+                Ok(_) => {
+                    println!("Browser stream running.");
+                    tokio::select! {
+                        signal = &mut interrupt => match signal {
+                            Ok(()) => {
+                                println!("Ctrl-C received; stopping stream.");
+                                Ok(false)
+                            }
+                            Err(error) => Err(error.into()),
+                        },
+                        _ = &mut session_closed => {
+                            println!("Portal session closed; stopping stream.");
+                            Ok(true)
+                        }
+                        result = &mut server => server_outcome(result),
+                        message = messages.next() => media_outcome(message),
+                    }
+                }
+            }
+        }
         signal = &mut interrupt => {
             match signal {
                 Ok(()) => {
-                    println!("Ctrl-C received; stopping preview.");
+                    println!("Ctrl-C received; stopping server.");
                     Ok(false)
                 }
                 Err(error) => Err(error.into()),
             }
         }
         _ = &mut session_closed => {
-            println!("Portal session closed; stopping preview.");
+            println!("Portal session closed; stopping server.");
             Ok(true)
         }
-        message = messages.next() => match message {
-            Some(message) => match message.view() {
-                gst::MessageView::Eos(..) => {
-                    println!("Capture stream ended.");
-                    Ok(false)
-                }
-                gst::MessageView::Error(error) => {
-                    let source = message
-                        .src()
-                        .map(|source| source.path_string().to_string())
-                        .unwrap_or_else(|| "unknown".to_owned());
-                    Err(io::Error::other(format!(
-                        "GStreamer error from {source}: {} ({})",
-                        error.error(),
-                        error.debug().unwrap_or_default(),
-                    )).into())
-                }
-                _ => unreachable!(),
-            },
-            None => Err(io::Error::other("GStreamer bus closed").into()),
-        },
+        result = &mut server => server_outcome(result),
     };
 
     let stop_result = pipeline.set_state(gst::State::Null);
     let portal_closed = outcome?;
     stop_result?;
     Ok(portal_closed)
+}
+
+fn h264_mime(caps: &gst::CapsRef) -> Option<String> {
+    let codec_data = caps.structure(0)?.get::<gst::Buffer>("codec_data").ok()?;
+    let bytes = codec_data.map_readable().ok()?;
+    avc_codec(bytes.as_slice()).map(|codec| format!("video/mp4; codecs=\"{codec}\""))
+}
+
+fn avc_codec(config: &[u8]) -> Option<String> {
+    (config.len() >= 4 && config[0] == 1)
+        .then(|| format!("avc1.{:02x}{:02x}{:02x}", config[1], config[2], config[3]))
+}
+
+fn server_outcome(result: io::Result<()>) -> Result<bool> {
+    match result {
+        Ok(()) => Err(io::Error::other("HTTP server stopped").into()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn media_outcome(message: Option<gst::Message>) -> Result<bool> {
+    match message {
+        Some(message) => match message.view() {
+            gst::MessageView::Eos(..) => {
+                println!("Capture stream ended.");
+                Ok(false)
+            }
+            gst::MessageView::Error(error) => {
+                let source = message
+                    .src()
+                    .map(|source| source.path_string().to_string())
+                    .unwrap_or_else(|| "unknown".to_owned());
+                Err(io::Error::other(format!(
+                    "GStreamer error from {source}: {} ({})",
+                    error.error(),
+                    error.debug().unwrap_or_default(),
+                ))
+                .into())
+            }
+            _ => unreachable!(),
+        },
+        None => Err(io::Error::other("GStreamer bus closed").into()),
+    }
 }
 
 #[cfg(test)]
@@ -265,5 +432,15 @@ mod tests {
         assert!(
             requested_source(["--monitor".to_owned(), "extra".to_owned()].into_iter()).is_err()
         );
+    }
+
+    #[test]
+    fn avc_config_produces_the_codec_parameter() {
+        assert_eq!(
+            avc_codec(&[1, 0x42, 0xc0, 0x1f]),
+            Some("avc1.42c01f".to_owned())
+        );
+        assert_eq!(avc_codec(&[1, 0x42, 0xc0]), None);
+        assert_eq!(avc_codec(&[0, 0x42, 0xc0, 0x1f]), None);
     }
 }

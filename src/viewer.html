@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aercast</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101114; color: #f4f4f5; }
+  main { width: min(96vw, 1280px); text-align: center; }
+  video { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; }
+  button { margin-top: 16px; padding: 10px 20px; font: inherit; cursor: pointer; }
+  #status { color: #a1a1aa; }
+</style>
+<main>
+  <video muted playsinline></video>
+  <button id="play" type="button">Play</button>
+  <p id="status" role="status">Ready to connect.</p>
+</main>
+<script>
+  const video = document.querySelector("video");
+  const button = document.querySelector("#play");
+  const status = document.querySelector("#status");
+
+  function mutate(buffer, action) {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        buffer.removeEventListener("updateend", done);
+        buffer.removeEventListener("error", failed);
+      };
+      const done = () => { cleanup(); resolve(); };
+      const failed = () => { cleanup(); reject(new Error("SourceBuffer update failed")); };
+      buffer.addEventListener("updateend", done);
+      buffer.addEventListener("error", failed);
+      try { action(); } catch (error) { cleanup(); reject(error); }
+    });
+  }
+
+  async function trim(buffer, force) {
+    if (!buffer.buffered.length) return false;
+    const start = buffer.buffered.start(0);
+    const end = buffer.buffered.end(buffer.buffered.length - 1);
+    const cutoff = video.currentTime - 5;
+    if (cutoff <= start || (!force && end - start < 15)) return false;
+    await mutate(buffer, () => buffer.remove(start, cutoff));
+    return true;
+  }
+
+  async function append(buffer, chunk) {
+    try {
+      await mutate(buffer, () => buffer.appendBuffer(chunk));
+    } catch (error) {
+      if (error.name !== "QuotaExceededError" || !await trim(buffer, true)) throw error;
+      await mutate(buffer, () => buffer.appendBuffer(chunk));
+    }
+    await trim(buffer, false);
+  }
+
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    status.textContent = "Connecting…";
+    try {
+      const response = await fetch("/stream", { cache: "no-store" });
+      if (!response.ok) throw new Error(`Stream request failed: HTTP ${response.status}`);
+      const mime = response.headers.get("content-type");
+      if (!mime || !MediaSource.isTypeSupported(mime)) {
+        throw new Error(`Unsupported media type: ${mime ?? "missing"}`);
+      }
+
+      document.body.dataset.mime = mime;
+      const media = new MediaSource();
+      const opened = new Promise(resolve => media.addEventListener("sourceopen", resolve, { once: true }));
+      video.src = URL.createObjectURL(media);
+      await opened;
+      const buffer = media.addSourceBuffer(mime);
+      const reader = response.body.getReader();
+      void video.play().catch(error => {
+        status.textContent = error.message;
+        document.body.dataset.error = error.message;
+      });
+      status.textContent = mime;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await append(buffer, value);
+      }
+      if (media.readyState === "open" && !buffer.updating) media.endOfStream();
+      status.textContent = "Stream ended.";
+    } catch (error) {
+      status.textContent = error.message;
+      document.body.dataset.error = error.message;
+    }
+  });
+
+  video.addEventListener("playing", () => { document.body.dataset.state = "playing"; });
+  video.addEventListener("error", () => {
+    const message = video.error?.message ?? "Video playback failed";
+    status.textContent = message;
+    document.body.dataset.error = message;
+  });
+</script>
+</html>

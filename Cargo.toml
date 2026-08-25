@@ -7,6 +7,8 @@ publish = false
 
 [dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["screencast", "tokio"] }
+axum = "0.8"
 futures-util = "0.3"
 gst = { package = "gstreamer", version = "0.25" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+gst-app = { package = "gstreamer-app", version = "0.25" }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
