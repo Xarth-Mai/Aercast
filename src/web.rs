@@ -496,6 +496,25 @@ fn video_fragment_starts_with_keyframe(moof: &[u8], video_track: u32) -> io::Res
         if read_u32(tfhd, 4, "truncated tfhd track ID")? != video_track {
             continue;
         }
+        let tfhd_flags = read_u32(tfhd, 0, "truncated tfhd flags")? & 0x00ff_ffff;
+        let mut tfhd_offset = 8;
+        if tfhd_flags & 0x000001 != 0 {
+            tfhd_offset += 8;
+        }
+        for flag in [0x000002, 0x000008, 0x000010] {
+            if tfhd_flags & flag != 0 {
+                tfhd_offset += 4;
+            }
+        }
+        let default_sample_flags = if tfhd_flags & 0x000020 != 0 {
+            Some(read_u32(
+                tfhd,
+                tfhd_offset,
+                "truncated default sample flags",
+            )?)
+        } else {
+            None
+        };
         let trun = find_child(payload, b"trun")?
             .ok_or_else(|| invalid_media("video traf has no trun box"))?;
         let flags = read_u32(trun, 0, "truncated trun flags")? & 0x00ff_ffff;
@@ -515,10 +534,12 @@ fn video_fragment_starts_with_keyframe(moof: &[u8], video_track: u32) -> io::Res
             if flags & 0x000200 != 0 {
                 offset += 4;
             }
-            if flags & 0x000400 == 0 {
-                return Err(invalid_media("video trun has no explicit sample flags"));
+            if flags & 0x000400 != 0 {
+                read_u32(trun, offset, "truncated video sample flags")?
+            } else {
+                default_sample_flags
+                    .ok_or_else(|| invalid_media("video fragment has no sample flags"))?
             }
-            read_u32(trun, offset, "truncated video sample flags")?
         };
         return Ok(sample_flags & 0x0001_0000 == 0);
     }

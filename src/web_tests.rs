@@ -88,6 +88,38 @@ fn mux_frames_arbitrary_chunks_and_marks_only_video_keyframes() {
 }
 
 #[test]
+fn mux_uses_tfhd_default_sample_flags() {
+    let fragment = |sample_flags: u32| {
+        let mut tfhd = vec![0; 12];
+        tfhd[..4].copy_from_slice(&0x20_u32.to_be_bytes());
+        tfhd[4..8].copy_from_slice(&VIDEO_TRACK.to_be_bytes());
+        tfhd[8..12].copy_from_slice(&sample_flags.to_be_bytes());
+        let mut trun = vec![0; 20];
+        trun[..4].copy_from_slice(&0x301_u32.to_be_bytes());
+        trun[4..8].copy_from_slice(&1_u32.to_be_bytes());
+        trun[12..16].copy_from_slice(&100_u32.to_be_bytes());
+        trun[16..20].copy_from_slice(&1_u32.to_be_bytes());
+        let mut traf = mp4_box(b"tfhd", &tfhd);
+        traf.extend_from_slice(&mp4_box(b"trun", &trun));
+        let mut fragment = mp4_box(b"moof", &mp4_box(b"traf", &traf));
+        fragment.extend_from_slice(&mp4_box(b"mdat", b"x"));
+        fragment
+    };
+    let mut input = init();
+    input.extend_from_slice(&fragment(0x40));
+    input.extend_from_slice(&fragment(0x100c0));
+    let units = MuxStream::default().push(&input).unwrap();
+    assert!(matches!(units[1], MuxUnit::Fragment { keyframe: true, .. }));
+    assert!(matches!(
+        units[2],
+        MuxUnit::Fragment {
+            keyframe: false,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn installed_mp4mux_output_builds_a_decodable_replay_boundary() {
     gst::init().unwrap();
     let pipeline = gst::parse::launch(
