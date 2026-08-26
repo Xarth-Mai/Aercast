@@ -107,6 +107,8 @@ may use tabular figures when the active system font provides them.
   not wrap every row in another card.
 - **Status:** compact text and symbolic icon. Reserve accent for the small
   portion that benefits from emphasis.
+- The Viewer's initial Play action is centered over the video surface. After
+  activation, use the browser's native playback, volume, and fullscreen controls.
 
 Focus is always visible and uses a ring at least `2px` thick with sufficient
 contrast against both the control and its surrounding surface.

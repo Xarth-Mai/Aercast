@@ -312,6 +312,16 @@ async fn token_routes_wait_between_isolated_media_sessions() {
             .windows(token.len())
             .any(|window| window == token.as_bytes())
     );
+    for required in [
+        b"id=\"player\"".as_slice(),
+        b"#play { position: absolute;".as_slice(),
+        b"video.controls = true;".as_slice(),
+    ] {
+        assert!(
+            html.windows(required.len())
+                .any(|window| window == required)
+        );
+    }
     assert_eq!(
         media_stream(Path(token.clone()), State(host.clone()))
             .await
