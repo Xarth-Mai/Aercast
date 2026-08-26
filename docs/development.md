@@ -174,6 +174,31 @@ regular PipeWire graph -> allowed playback taps -> audio mixer ----+->
 - Audio-off and no-source states keep a silent track so the MSE track schema
   does not change during a share.
 
+### PipeWire 1.6.8 compatibility
+
+Selective system audio on PipeWire 1.6.8 requires the user to explicitly create
+`${XDG_CONFIG_HOME:-$HOME/.config}/pipewire/pipewire.conf.d/90-aercast-passive-links.conf`
+with:
+
+```ini
+module.link-factory.args = {
+    allow.link.passive = true
+}
+```
+
+Apply it by signing out and back in, then enable **System Audio** in Aercast.
+The setting permits every client with link-creation access to request passive
+links through the user's PipeWire daemon, not only Aercast. Aercast and its
+package never create or edit the file, or reload or restart PipeWire; without
+the opt-in, Aercast rejects non-passive capture links before activating audio.
+Remove the file and sign out and back in to revoke it.
+
+This is a temporary compatibility path, not a release requirement. A
+publishable AUR package must use a proven client-side selective capture design
+without first-use daemon configuration. Whole-sink monitor capture remains
+invalid because it cannot preserve per-application and Communication
+exclusions.
+
 ### Desktop implementation
 
 - The product has only a GUI. Existing source, bind, and exclusion command-line
