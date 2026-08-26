@@ -93,7 +93,7 @@ cleanup failure; real browser recovery remains unverified.
 | Encoder | Auto prefers detected hardware and falls back to software; allow a detected implementation to be selected; never expose codec choice |
 | System audio | One switch, enabled by default; no microphone |
 | Audio exclusions | Communication rule plus enabled defaults for Discord, Vesktop, and Steam Voice; ordinary rules can be toggled, deleted, or added from active PipeWire applications |
-| Network | Listen address, port, and optional `scheme://host:port` share base URL |
+| Network | Loopback and `8877/TCP` by default; configurable listen address, port, and optional `scheme://host:port` share base URL |
 | Notifications | One switch, enabled by default |
 
 Unsupported saved quality reports the error and blocks Start; it is not repaired

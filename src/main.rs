@@ -947,7 +947,7 @@ fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
         }
     }
     Ok(Options {
-        bind: bind.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0))),
+        bind: bind.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8877))),
         source,
         exclusions,
     })

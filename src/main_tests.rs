@@ -107,7 +107,7 @@ async fn quit_waits_for_a_full_control_queue() {
 #[test]
 fn arguments_accept_one_source_and_repeated_exclusions() {
     let empty = options(std::iter::empty()).unwrap();
-    assert_eq!(empty.bind, SocketAddr::from(([127, 0, 0, 1], 0)));
+    assert_eq!(empty.bind, SocketAddr::from(([127, 0, 0, 1], 8877)));
     assert_eq!(empty.source, None);
     assert!(empty.exclusions.is_empty());
     assert_eq!(
