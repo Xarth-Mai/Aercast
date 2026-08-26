@@ -470,10 +470,8 @@ async fn queue_quit(commands: mpsc::Sender<Command>) -> bool {
 }
 
 fn show_window(app: &mut App) -> Task<Message> {
-    let activate =
-        |id| window::request_user_attention(id, Some(window::UserAttention::Informational));
     if let Some(id) = app.window {
-        return activate(id);
+        return window::gain_focus(id);
     }
     let (id, open) = window::open(window::Settings {
         size: iced::Size::new(480.0, 640.0),
@@ -482,7 +480,7 @@ fn show_window(app: &mut App) -> Task<Message> {
         ..window::Settings::default()
     });
     app.window = Some(id);
-    open.then(activate)
+    open.then(window::gain_focus)
 }
 
 fn view(app: &App, _: window::Id) -> Element<'_, Message> {
