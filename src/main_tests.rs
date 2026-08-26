@@ -61,6 +61,25 @@ fn retry_policy_allows_exactly_three_media_recoveries() {
 }
 
 #[test]
+fn notifications_follow_user_visible_state_boundaries() {
+    use Phase::{Ending, NetworkError, Selecting, Sharing, Starting, Waiting};
+    use notification::Kind::{Error, Started, Stopped};
+
+    let error = NetworkError("occupied".to_owned());
+    assert_eq!(
+        [
+            notification_kind(&Selecting, &Sharing, false),
+            notification_kind(&Sharing, &Sharing, true),
+            notification_kind(&Ending, &Waiting, true),
+            notification_kind(&Ending, &Waiting, false),
+            notification_kind(&Waiting, &error, false),
+            notification_kind(&Starting, &error, false),
+        ],
+        [Some(Started), None, Some(Stopped), None, Some(Error), None]
+    );
+}
+
+#[test]
 fn media_eos_is_recoverable() {
     gst::init().unwrap();
     assert!(media_outcome(Some(gst::message::Eos::new())).is_err());
@@ -147,6 +166,7 @@ fn arguments_accept_repeated_exclusions() {
 #[test]
 fn ui_commands_follow_the_host_lifecycle() {
     let (commands, mut receiver) = mpsc::channel(2);
+    let (notifications, _notification_requests) = iced::futures::channel::mpsc::unbounded();
     let window = window::Id::unique();
     let mut app = App {
         phase: Phase::Starting,
@@ -165,6 +185,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         network_port: "8877".to_owned(),
         share_base_url: String::new(),
         applying_network: false,
+        notifications,
         tray_updates: None,
         tray_stopped: true,
         host_stopped: false,

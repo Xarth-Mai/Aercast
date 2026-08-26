@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) system_audio: bool,
+    pub(crate) notifications: bool,
     pub(crate) listen_address: IpAddr,
     pub(crate) listen_port: u16,
     pub(crate) share_base_url: Option<String>,
@@ -22,6 +23,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             system_audio: true,
+            notifications: true,
             listen_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
             listen_port: 8877,
             share_base_url: None,
@@ -198,9 +200,11 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let defaults = Settings::load_from(&path).unwrap();
         assert!(defaults.system_audio);
+        assert!(defaults.notifications);
         assert_eq!(defaults.bind().unwrap(), "127.0.0.1:8877".parse().unwrap());
         Settings {
             system_audio: false,
+            notifications: false,
             listen_address: "192.168.1.10".parse().unwrap(),
             listen_port: 9000,
             share_base_url: Some("https://share.example:443".to_owned()),
@@ -209,6 +213,7 @@ mod tests {
         .unwrap();
         let saved = Settings::load_from(&path).unwrap();
         assert!(!saved.system_audio);
+        assert!(!saved.notifications);
         assert_eq!(saved.bind().unwrap(), "192.168.1.10:9000".parse().unwrap());
         assert_eq!(
             saved.share_base_url.as_deref(),
@@ -222,6 +227,12 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), before_failed_save);
         assert!(!Settings::load_from(&path).unwrap().system_audio);
         fs::remove_dir(&temporary).unwrap();
+        fs::write(
+            &path,
+            br#"{"system_audio":false,"listen_address":"192.168.1.10","listen_port":9000,"share_base_url":null}"#,
+        )
+        .unwrap();
+        assert!(Settings::load_from(&path).unwrap().notifications);
         fs::write(&path, b"{").unwrap();
         assert_eq!(
             Settings::load_from(&path).unwrap_err().kind(),

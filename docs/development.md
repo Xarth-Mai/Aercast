@@ -107,8 +107,10 @@ Unsupported saved quality reports the error and blocks Start; it is not repaired
 or silently downgraded. Audio-setting edits during sharing take effect only
 through **Apply to Current Share**, which performs one coordinated media restart.
 Network rebinding is allowed only while stopped and warns that old waiting pages
-may not recover. Portal pointer behavior has no setting. Autostart is not
-provided.
+may not recover. While the Host window is hidden, enabled desktop notifications
+report the first transition into sharing, the return to waiting after an active
+share, and Host or network failure. They never include the share link or token.
+Portal pointer behavior has no setting. Autostart is not provided.
 
 Settings are internal application state at
 `$XDG_CONFIG_HOME/aercast/settings.json`; the file is not a public hand-edited

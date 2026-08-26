@@ -33,6 +33,7 @@ use tokio::{
 };
 
 mod audio;
+mod notification;
 mod settings;
 mod tray;
 mod web;
@@ -100,6 +101,8 @@ enum Message {
     ApplySystemAudio,
     Settings(bool),
     SystemAudio(bool),
+    Notifications(bool),
+    Notified(Option<String>),
     NetworkAddress(String),
     NetworkPort(String),
     ShareBaseUrl(String),
@@ -170,6 +173,7 @@ struct App {
     network_port: String,
     share_base_url: String,
     applying_network: bool,
+    notifications: UnboundedSender<notification::Kind>,
     tray_updates: Option<watch::Sender<Phase>>,
     tray_stopped: bool,
     host_stopped: bool,
@@ -230,6 +234,7 @@ fn boot(
     instance: zbus::Connection,
 ) -> (App, Task<Message>) {
     let (events, incoming) = iced::futures::channel::mpsc::unbounded();
+    let (notifications, notification_requests) = iced::futures::channel::mpsc::unbounded();
     let (tray_messages, tray_events) = iced::futures::channel::mpsc::unbounded();
     let (commands, command_receiver) = mpsc::channel(8);
     let host_settings = settings.clone();
@@ -254,6 +259,7 @@ fn boot(
         network_port,
         share_base_url,
         applying_network: false,
+        notifications,
         tray_updates: Some(tray_updates),
         tray_stopped: false,
         host_stopped: false,
@@ -264,6 +270,10 @@ fn boot(
         Task::batch([
             Task::done(Message::Show),
             Task::run(activations, |message| message),
+            Task::run(
+                notification::worker(instance.clone(), notification_requests),
+                |result| Message::Notified(result.err().map(|error| error.to_string())),
+            ),
             Task::run(tray_events, |message| message),
             Task::perform(async move { instance.closed().await }, |_| {
                 Message::BusClosed
@@ -285,6 +295,8 @@ fn boot(
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
+    let previous_phase = app.phase.clone();
+    let was_sharing = app.active_system_audio.is_some();
     let task = update_app(app, message);
     if let Some(updates) = &app.tray_updates {
         updates.send_if_modified(|current| {
@@ -296,7 +308,32 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         });
     }
+    if app.window.is_none()
+        && app.settings.notifications
+        && !app.quitting
+        && let Some(kind) = notification_kind(&previous_phase, &app.phase, was_sharing)
+        && app.notifications.unbounded_send(kind).is_err()
+    {
+        eprintln!("Notification worker unavailable");
+    }
     task
+}
+
+fn notification_kind(
+    previous: &Phase,
+    current: &Phase,
+    was_sharing: bool,
+) -> Option<notification::Kind> {
+    match (previous, current) {
+        (Phase::Selecting, Phase::Sharing) => Some(notification::Kind::Started),
+        (_, Phase::Waiting) if was_sharing => Some(notification::Kind::Stopped),
+        (_, Phase::NetworkError(_) | Phase::Error(_))
+            if *previous != Phase::Starting && previous != current =>
+        {
+            Some(notification::Kind::Error)
+        }
+        _ => None,
+    }
 }
 
 fn update_app(app: &mut App, message: Message) -> Task<Message> {
@@ -386,16 +423,16 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             app.settings_open = open;
             app.settings_error = None;
         }
-        Message::SystemAudio(_) if app.applying_network => {}
+        Message::SystemAudio(_) | Message::Notifications(_) if app.applying_network => {}
         Message::SystemAudio(system_audio) => {
-            let mut settings = app.settings.clone();
-            settings.system_audio = system_audio;
-            match settings.save() {
-                Ok(()) => {
-                    app.settings = settings;
-                    app.settings_error = None;
-                }
-                Err(error) => app.settings_error = Some(error.to_string()),
+            save_settings(app, |settings| settings.system_audio = system_audio);
+        }
+        Message::Notifications(notifications) => {
+            save_settings(app, |settings| settings.notifications = notifications);
+        }
+        Message::Notified(error) => {
+            if let Some(error) = error {
+                eprintln!("Notification unavailable: {error}");
             }
         }
         Message::NetworkAddress(address) => {
@@ -532,6 +569,18 @@ fn send_command(app: &mut App, command: Command) -> bool {
         app.confirm_quit = false;
         app.phase = Phase::Error("Host control is unavailable".to_owned());
         false
+    }
+}
+
+fn save_settings(app: &mut App, edit: impl FnOnce(&mut settings::Settings)) {
+    let mut settings = app.settings.clone();
+    edit(&mut settings);
+    match settings.save() {
+        Ok(()) => {
+            app.settings = settings;
+            app.settings_error = None;
+        }
+        Err(error) => app.settings_error = Some(error.to_string()),
     }
 }
 
@@ -767,6 +816,9 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                 .on_toggle_maybe((!app.applying_network).then_some(Message::SystemAudio)),
             text(hint).size(12),
             apply,
+            checkbox(app.settings.notifications)
+                .label("Desktop notifications")
+                .on_toggle_maybe((!app.applying_network).then_some(Message::Notifications)),
             text("Network").size(15),
             row![
                 column![
