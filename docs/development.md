@@ -85,7 +85,7 @@ cleanup failure; real browser recovery remains unverified.
 ### Settings contract
 
 | Area | Required behavior |
-|---|---|
+| --- | --- |
 | Presets | `720p60 / 6 Mbps`, `1080p60 / 12 Mbps`, `1440p60 / 24 Mbps` |
 | Custom quality | Any width and height within the selected encoder's reported capability; preserve aspect ratio and center with black padding when needed |
 | Frame rate | `30 / 60 / 120 FPS` |
@@ -234,7 +234,7 @@ Git history retains the detailed old checklists.
 
 ## Phase 4 — single-Viewer core stability
 
-### Goal
+### Phase 4 goal
 
 Finish the stable media and link lifecycle before adding desktop-shell and
 settings surface area:
@@ -294,7 +294,7 @@ settings surface area:
 
 ## Phase 5 — desktop productization
 
-### Goal
+### Phase 5 goal
 
 Turn the stable core into the fixed-size niri desktop product described in
 [Product behavior](#product-behavior): daemon window and tray lifecycle, single-instance

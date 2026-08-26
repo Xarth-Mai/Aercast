@@ -6,12 +6,11 @@ business, development progress, or backend behavior.
 
 ## Visual language
 
-**Compact GNOME / Dark / System Accent / Native Linux**
-
-Aercast does not attempt to reproduce Libadwaita. It uses the same restrained
-visual language: neutral dark surfaces, rounded controls, symbolic icons,
-clear type hierarchy, boxed lists, and accent color only where it communicates
-focus, selection, status, or the primary action.
+Aercast follows the **Compact GNOME / Dark / System Accent / Native Linux**
+visual language. It does not attempt to reproduce Libadwaita. It uses the same
+restrained visual language: neutral dark surfaces, rounded controls, symbolic
+icons, clear type hierarchy, boxed lists, and accent color only where it
+communicates focus, selection, status, or the primary action.
 
 Use the compositor's ordinary system title bar. Do not draw a custom header
 bar. Do not use gradients, glow, large fields of brand color, glass effects, or
@@ -37,7 +36,7 @@ contrast, and reduced-motion preferences independently.
 Base neutral tokens:
 
 | Token | Value | Use |
-|---|---:|---|
+| --- | ---: | --- |
 | `window-bg` | `#242424` | window background |
 | `surface` | `#2c2c2c` | grouped content and inputs |
 | `surface-raised` | `#343434` | hover and selected neutral surface |
@@ -86,7 +85,7 @@ Use the first available system font from `Adwaita Sans`, `Cantarell`,
 `Noto Sans`, then the toolkit sans-serif fallback. Do not bundle a font.
 
 | Role | Size | Treatment |
-|---|---:|---|
+| --- | ---: | --- |
 | Body and controls | about `13px` | regular |
 | Supporting text | `11–12px` | muted, not low-contrast |
 | Group title | about `15px` | medium weight |

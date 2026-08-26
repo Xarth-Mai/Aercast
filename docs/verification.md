@@ -10,7 +10,7 @@ Unless a record says otherwise, the evidence below was collected in this
 environment:
 
 | Field | Value |
-|---|---|
+| --- | --- |
 | Revision | `ffc70b5` (`feat: complete multi-viewer host lifecycle`) |
 | Date | 2026-08-26 |
 | Distribution | CachyOS rolling, Linux `7.2.0-1-cachyos` |
@@ -85,7 +85,7 @@ received Portal node 64; Chromium's repeat received node 84. The component
 observations were:
 
 | Browser run | First encoded frame | First complete fMP4 fragment |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Zen | 288 ms | 414 ms |
 | Chromium | 246 ms | 375 ms |
 
@@ -104,7 +104,7 @@ audio to avoid feedback.
 reported no media error.
 
 | Browser | Scenario | Playback advancement | Final readyState |
-|---|---|---:|---:|
+| --- | --- | ---: | ---: |
 | Zen `1.21.15b` | one Viewer | 2.202 s | 3 |
 | Zen `1.21.15b` | three concurrent Viewers | 2.288–2.306 s each | at least 3 |
 | Chromium `151.0.7922.173` | one Viewer | 2.245 s | 4 |
