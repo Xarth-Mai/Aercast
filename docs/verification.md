@@ -27,6 +27,41 @@ This baseline proves only the recorded scenarios. It does not qualify current
 HEAD or establish support on another compositor, GPU, encoder, distribution, or
 browser build.
 
+## Current idle smoke
+
+**Revision:** `478f129`.
+
+**Scenario:** the GUI was launched on the recorded niri host and left in its
+initial waiting state without pressing **Start Sharing**.
+
+**Host terminal:**
+
+```sh
+cargo run
+```
+
+**Inspection terminal:**
+
+```sh
+AERCAST_PID=3084642
+AERCAST_PORT=38677
+niri msg windows
+pw-dump | jq --arg pid "$AERCAST_PID" \
+  '[.[] | select(.info.props["application.process.id"] == $pid)] | length'
+ss -ltnp | rg aercast
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:$AERCAST_PORT/s/invalid
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:$AERCAST_PORT/s/invalid/stream
+```
+
+**Result:** Aercast mapped one waiting window and listened only on
+`127.0.0.1`; no Portal chooser appeared, and the PipeWire query returned zero
+objects exposing the Aercast process ID. Both invalid-token routes returned
+`404`.
+
+This is evidence only for idle startup, loopback binding, and invalid-token
+handling on this revision. It does not prove capture, selective audio, browser
+playback, or recovery.
+
 ## Portal capture
 
 **Scenario:** real niri ScreenCast Portal monitor and window selection into the
