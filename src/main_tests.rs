@@ -7,6 +7,9 @@ fn test_viewers(count: usize, online: bool) -> Vec<web::Viewer> {
             ip: format!("192.0.2.{}", key + 1).parse().unwrap(),
             online_since: online.then(Instant::now),
             duration: Duration::from_secs(65),
+            rtt: None,
+            playback_lag: None,
+            telemetry_at: None,
         })
         .collect()
 }

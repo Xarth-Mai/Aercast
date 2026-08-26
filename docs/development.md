@@ -74,6 +74,9 @@ cleanup failure; real browser recovery remains unverified.
 
 - Each row shows IP address, connection duration, RTT, playback lag, and one
   disconnect action. Online Viewers sort before offline history.
+- The Viewer reports the previous successful telemetry request's round-trip time
+  and buffered media end minus playback position every two seconds. Offline
+  telemetry, or telemetry at least six seconds old, displays as unavailable.
 - Each token retains at most 100 in-memory Viewer records. Refresh Link and
   process exit clear them. IP addresses and telemetry are never persisted or
   written to ordinary logs.

@@ -52,6 +52,17 @@ async fn retry_request(host: &Host, token: &str, headers: HeaderMap) -> Response
     viewer_retry(Path(token.to_owned()), State(host.clone()), headers).await
 }
 
+async fn telemetry_request(
+    host: &Host,
+    token: &str,
+    headers: HeaderMap,
+    body: impl Into<Body>,
+) -> Response {
+    let mut request = Request::new(body.into());
+    *request.headers_mut() = headers;
+    viewer_telemetry(Path(token.to_owned()), State(host.clone()), request).await
+}
+
 fn online(host: &Host) -> usize {
     host.viewers()
         .unwrap()
@@ -545,7 +556,11 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"response.status === 409".as_slice(),
         b"blockedByHost = true".as_slice(),
         b"fetch(`${location.pathname}/retry`".as_slice(),
+        b"fetch(`${location.pathname}/telemetry`".as_slice(),
         b"method: \"POST\"".as_slice(),
+        b"await withAbort(delay(2000), signal)".as_slice(),
+        b"buffer.buffered.end(buffer.buffered.length - 1) - video.currentTime".as_slice(),
+        b"performance.now() - started".as_slice(),
         b"button.textContent = \"Retry\"".as_slice(),
     ] {
         assert!(
@@ -801,4 +816,90 @@ async fn host_disconnect_stays_blocked_until_retry_and_old_keys_do_not_cross_ref
     assert!(host.viewers().unwrap()[0].online());
     host.stop(&next).unwrap();
     assert!(new_body.next().await.is_none());
+}
+
+#[tokio::test]
+async fn telemetry_is_bounded_and_expires_with_the_current_stream() {
+    let host = Host::new().unwrap();
+    let token = host.path().unwrap().trim_start_matches("/s/").to_owned();
+    assert_eq!(
+        telemetry_request(&host, "invalid", HeaderMap::new(), vec![b'x'; 1_000],)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        telemetry_request(&host, &token, HeaderMap::new(), "not JSON")
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        telemetry_request(
+            &host,
+            &token,
+            viewer_headers(9),
+            r#"{"rtt_ms":null,"playback_lag_ms":0}"#,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(host.viewers().unwrap().is_empty());
+
+    let session = host.start().unwrap();
+    session.set_mime("video/mp4".to_owned()).unwrap();
+    session.publish(&init()).unwrap();
+    session
+        .publish(&fragment(VIDEO_TRACK, 0x40, b"key"))
+        .unwrap();
+    let stream_response = stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await;
+    assert_eq!(stream_response.status(), StatusCode::OK);
+
+    for invalid in [
+        r#"{"rtt_ms":60001,"playback_lag_ms":0}"#,
+        r#"{"rtt_ms":null,"playback_lag_ms":60001}"#,
+        r#"{"rtt_ms":1,"playback_lag_ms":2,"extra":3}"#,
+    ] {
+        assert_eq!(
+            telemetry_request(&host, &token, viewer_headers(1), invalid)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let response = telemetry_request(
+        &host,
+        &token,
+        viewer_headers(1),
+        r#"{"rtt_ms":42,"playback_lag_ms":1500}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let measured_at = Instant::now();
+    let viewer = host.viewers().unwrap().remove(0);
+    assert_eq!(
+        viewer.telemetry(measured_at),
+        (
+            Some(Duration::from_millis(42)),
+            Some(Duration::from_millis(1_500)),
+        )
+    );
+    assert_eq!(
+        viewer.telemetry(measured_at + TELEMETRY_STALE_AFTER),
+        (None, None)
+    );
+
+    drop(stream_response);
+    let viewer = host.viewers().unwrap().remove(0);
+    assert!(!viewer.online());
+    assert_eq!(viewer.telemetry(Instant::now()), (None, None));
+    let reconnected = stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await;
+    assert_eq!(reconnected.status(), StatusCode::OK);
+    assert_eq!(
+        host.viewers().unwrap().remove(0).telemetry(Instant::now()),
+        (None, None)
+    );
+    drop(reconnected);
 }

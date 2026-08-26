@@ -524,11 +524,13 @@ fn share_view(app: &App) -> Element<'_, Message> {
         column![]
     };
     let online = app.viewers.iter().filter(|viewer| viewer.online()).count();
+    let now = Instant::now();
     let viewer_rows = app
         .viewers
         .iter()
         .enumerate()
         .fold(column![], |rows, (index, viewer)| {
+            let (rtt, playback_lag) = viewer.telemetry(now);
             let rows = if index == 0 {
                 rows
             } else {
@@ -545,11 +547,14 @@ fn share_view(app: &App) -> Element<'_, Message> {
                             ),
                         ]
                         .spacing(8),
-                        row![
-                            text(if viewer.online() { "Online" } else { "Offline" }).size(12),
-                            space().width(Length::Fill),
-                            text(format_duration(viewer.duration())).size(12),
-                        ],
+                        text(format!(
+                            "{} · {}   RTT {}   Lag {}",
+                            if viewer.online() { "Online" } else { "Offline" },
+                            format_duration(viewer.duration()),
+                            format_milliseconds(rtt),
+                            format_milliseconds(playback_lag),
+                        ))
+                        .size(12),
                     ]
                     .spacing(4),
                 )
@@ -600,6 +605,13 @@ fn share_view(app: &App) -> Element<'_, Message> {
 fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
     format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn format_milliseconds(duration: Option<Duration>) -> String {
+    duration.map_or_else(
+        || "—".to_owned(),
+        |duration| format!("{} ms", duration.as_millis()),
+    )
 }
 
 fn settings_view(app: &App) -> Element<'_, Message> {

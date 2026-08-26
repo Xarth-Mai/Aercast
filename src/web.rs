@@ -10,12 +10,13 @@ use std::{
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use futures_util::stream;
+use serde::Deserialize;
 use tokio::{
     net::TcpListener,
     sync::{broadcast, oneshot, watch},
@@ -26,6 +27,8 @@ const MAX_BOX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED_GOP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VIEWERS: usize = 8;
 const MAX_VIEWER_RECORDS: usize = 100;
+const MAX_TELEMETRY_MS: u32 = 60_000;
+const TELEMETRY_STALE_AFTER: Duration = Duration::from_secs(6);
 const VIEWER_ID_HEADER: &str = "aercast-viewer-id";
 
 #[derive(Clone)]
@@ -100,6 +103,16 @@ pub(crate) struct Viewer {
     pub(crate) ip: IpAddr,
     pub(crate) online_since: Option<Instant>,
     pub(crate) duration: Duration,
+    pub(crate) rtt: Option<Duration>,
+    pub(crate) playback_lag: Option<Duration>,
+    pub(crate) telemetry_at: Option<Instant>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Telemetry {
+    rtt_ms: Option<u32>,
+    playback_lag_ms: u32,
 }
 
 enum Access {
@@ -390,6 +403,9 @@ impl ViewerGeneration {
             }
             record.viewer.ip = ip;
             record.viewer.online_since = Some(now);
+            record.viewer.rtt = None;
+            record.viewer.playback_lag = None;
+            record.viewer.telemetry_at = None;
             record.last_seen = now;
             record.epoch = epoch;
             record.close = close;
@@ -403,6 +419,9 @@ impl ViewerGeneration {
                     ip,
                     online_since: Some(now),
                     duration: Duration::ZERO,
+                    rtt: None,
+                    playback_lag: None,
+                    telemetry_at: None,
                 },
                 last_seen: now,
                 epoch,
@@ -477,6 +496,28 @@ impl ViewerGeneration {
         Ok(())
     }
 
+    fn update_telemetry(&self, id: [u8; 16], telemetry: Telemetry, now: Instant) -> io::Result<()> {
+        let mut state = lock(&self.inner)?;
+        if *self.revoked.borrow() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
+        }
+        let Some(record) = state
+            .records
+            .iter_mut()
+            .find(|record| record.id == id && record.viewer.online())
+        else {
+            return Ok(());
+        };
+        record.viewer.rtt = telemetry
+            .rtt_ms
+            .map(|milliseconds| Duration::from_millis(milliseconds.into()));
+        record.viewer.playback_lag = Some(Duration::from_millis(telemetry.playback_lag_ms.into()));
+        record.viewer.telemetry_at = Some(now);
+        drop(state);
+        self.changed.send_replace(());
+        Ok(())
+    }
+
     fn disconnect_all(&self) -> io::Result<()> {
         let now = Instant::now();
         let mut state = lock(&self.inner)?;
@@ -516,6 +557,18 @@ impl Viewer {
             + self
                 .online_since
                 .map_or(Duration::ZERO, |since| since.elapsed())
+    }
+
+    pub(crate) fn telemetry(&self, now: Instant) -> (Option<Duration>, Option<Duration>) {
+        if self.online()
+            && self.telemetry_at.is_some_and(|updated| {
+                now.saturating_duration_since(updated) < TELEMETRY_STALE_AFTER
+            })
+        {
+            (self.rtt, self.playback_lag)
+        } else {
+            (None, None)
+        }
     }
 }
 
@@ -580,6 +633,7 @@ pub(crate) async fn serve(
             .route("/s/{token}", get(viewer_page))
             .route("/s/{token}/stream", get(media_stream).head(media_head))
             .route("/s/{token}/retry", post(viewer_retry))
+            .route("/s/{token}/telemetry", post(viewer_telemetry))
             .with_state(host)
             .into_make_service_with_connect_info::<SocketAddr>(),
     )
@@ -613,16 +667,9 @@ async fn media_stream(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    let access = match host.access(&token) {
+    let (access, id) = match identified_access(&host, &token, &headers) {
         Ok(access) => access,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    if matches!(access, Access::Invalid) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let id = match viewer_id(&headers) {
-        Ok(id) => id,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(status) => return status.into_response(),
     };
     let (media, viewers) = match access {
         Access::Sharing(media, viewers) => (Some(media), viewers),
@@ -701,30 +748,62 @@ async fn viewer_retry(
     State(host): State<Host>,
     headers: HeaderMap,
 ) -> Response {
-    let access = match host.access(&token) {
-        Ok(Access::Invalid) => return StatusCode::NOT_FOUND.into_response(),
+    let (access, id) = match identified_access(&host, &token, &headers) {
         Ok(access) => access,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let id = match viewer_id(&headers) {
-        Ok(id) => id,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(status) => return status.into_response(),
     };
     let viewers = match access {
         Access::Waiting(viewers) | Access::Sharing(_, viewers) => viewers,
         Access::Invalid => unreachable!("invalid access returned above"),
     };
     match viewers.unblock(id) {
-        Ok(()) => Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::empty())
-            .expect("static retry response is valid"),
+        Ok(()) => no_content(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             StatusCode::NOT_FOUND.into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+async fn viewer_telemetry(
+    Path(token): Path<String>,
+    State(host): State<Host>,
+    request: Request,
+) -> Response {
+    let (access, id) = match identified_access(&host, &token, request.headers()) {
+        Ok(access) => access,
+        Err(status) => return status.into_response(),
+    };
+    let viewers = match access {
+        Access::Waiting(viewers) | Access::Sharing(_, viewers) => viewers,
+        Access::Invalid => unreachable!("invalid access returned above"),
+    };
+    let telemetry = match axum::body::to_bytes(request.into_body(), 128)
+        .await
+        .ok()
+        .and_then(|body| serde_json::from_slice::<Telemetry>(&body).ok())
+        .filter(|telemetry| {
+            telemetry.rtt_ms.is_none_or(|rtt| rtt <= MAX_TELEMETRY_MS)
+                && telemetry.playback_lag_ms <= MAX_TELEMETRY_MS
+        }) {
+        Some(telemetry) => telemetry,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    match viewers.update_telemetry(id, telemetry, Instant::now()) {
+        Ok(()) => no_content(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn no_content() -> Response {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::empty())
+        .expect("static no-content response is valid")
 }
 
 fn blocked() -> Response {
@@ -741,6 +820,20 @@ fn waiting() -> Response {
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from("Share has not started"))
         .expect("static waiting response is valid")
+}
+
+fn identified_access(
+    host: &Host,
+    token: &str,
+    headers: &HeaderMap,
+) -> Result<(Access, [u8; 16]), StatusCode> {
+    match host.access(token) {
+        Ok(Access::Invalid) => Err(StatusCode::NOT_FOUND),
+        Ok(access) => viewer_id(headers)
+            .map(|id| (access, id))
+            .map_err(|_| StatusCode::BAD_REQUEST),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 fn viewer_id(headers: &HeaderMap) -> io::Result<[u8; 16]> {
