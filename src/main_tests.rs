@@ -193,6 +193,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         video_height: "720".to_owned(),
         video_fps: 60,
         video_bitrate: "6".to_owned(),
+        video_encoder: settings::VideoEncoder::Auto,
         appearance: appearance::Appearance::default(),
         approved_source: None,
         active_audio: None,
@@ -315,22 +316,32 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.video_bitrate, "9");
     drop(update(&mut app, Message::VideoFps(30)));
     assert_eq!(app.video_fps, 30);
+    drop(update(
+        &mut app,
+        Message::VideoEncoder(settings::VideoEncoder::X264),
+    ));
+    drop(update(&mut app, Message::VideoPreset(Quality::P1080)));
+    assert_eq!(app.video_encoder, settings::VideoEncoder::X264);
     set_video_draft(&mut app, settings::VideoSettings::default());
 
     app.settings.system_audio = false;
-    app.video_error = Some("unsupported".to_owned());
+    app.settings.video.width = 0;
     drop(update(&mut app, Message::Start));
     assert!(receiver.try_recv().is_err());
     assert_eq!(app.phase, Phase::Waiting);
+    assert!(app.video_error.is_some());
+    app.settings.video = settings::VideoSettings::default();
     app.video_error = None;
-    drop(update(&mut app, Message::Start));
-    assert_eq!(
-        receiver.try_recv().unwrap(),
-        Command::Start(ShareSettings {
-            audio: test_audio(false),
-            video: settings::VideoSettings::default(),
-        })
-    );
+    let share = ShareSettings {
+        audio: test_audio(false),
+        video: VideoPlan {
+            settings: app.settings.video,
+            encoder: Encoder::X264,
+        },
+    };
+    assert!(send_command(&mut app, Command::Start(share.clone())));
+    app.phase = Phase::Selecting;
+    assert_eq!(receiver.try_recv().unwrap(), Command::Start(share));
     assert_eq!(app.phase, Phase::Selecting);
     drop(update(&mut app, Message::Host(HostEvent::Source("Window"))));
     assert_eq!(app.approved_source, Some("Window"));
@@ -649,17 +660,29 @@ fn avc_config_produces_the_codec_parameter() {
 fn av_pipeline_description_has_no_syntax_error() {
     gst::init().unwrap();
     let video = settings::VideoSettings::default();
-    let description = pipeline_description(1, 0, video);
+    let description = pipeline_description(
+        1,
+        0,
+        VideoPlan {
+            settings: video,
+            encoder: Encoder::X264,
+        },
+    );
     assert!(description.contains("width=1280,height=720"));
     assert!(description.contains("framerate=60/1"));
     assert!(description.contains("bitrate=6000 key-int-max=60"));
+    assert!(description.contains("videoconvertscale add-borders=true"));
+    assert!(!description.contains("vapostproc"));
     let encoder_default = pipeline_description(
         1,
         0,
-        settings::VideoSettings {
-            fps: 30,
-            bitrate_mbps: None,
-            ..video
+        VideoPlan {
+            settings: settings::VideoSettings {
+                fps: 30,
+                bitrate_mbps: None,
+                ..video
+            },
+            encoder: Encoder::X264,
         },
     );
     assert!(
@@ -667,29 +690,62 @@ fn av_pipeline_description_has_no_syntax_error() {
             "x264enc name=encoder tune=zerolatency speed-preset=ultrafast key-int-max=30"
         )
     );
-    if let Err(error) = gst::parse::launch(&description) {
-        assert_ne!(
-            error.kind::<gst::ParseError>(),
-            Some(gst::ParseError::Syntax)
-        );
+    let va_api = pipeline_description(
+        1,
+        0,
+        VideoPlan {
+            settings: video,
+            encoder: Encoder::VaApi,
+        },
+    );
+    assert!(va_api.contains("video/x-raw(memory:VAMemory),format=NV12"));
+    assert!(va_api.contains("vah264enc name=encoder rate-control=cbr target-usage=7"));
+    assert!(va_api.contains("profile=constrained-baseline,stream-format=byte-stream"));
+    for description in [description, va_api] {
+        if let Err(error) = gst::parse::launch(&description) {
+            assert_ne!(
+                error.kind::<gst::ParseError>(),
+                Some(gst::ParseError::Syntax)
+            );
+        }
     }
 }
 
 #[test]
 #[ignore = "requires the supported host video stack"]
-fn default_video_plan_is_available() {
+fn host_video_encoders_are_available() {
     gst::init().unwrap();
     let video = settings::VideoSettings::default();
-    video_plan(&video).unwrap();
-    assert!(
+    let automatic = video_plan(&video).unwrap();
+    assert_eq!(automatic.encoder, Encoder::VaApi);
+    let beyond_va = settings::VideoSettings {
+        width: 5_000,
+        height: 3_000,
+        encoder: settings::VideoEncoder::VaApi,
+        ..video
+    };
+    assert!(video_plan(&beyond_va).is_err());
+    assert_eq!(
         video_plan(&settings::VideoSettings {
-            width: 20_000,
-            height: 20_000,
-            ..video
+            encoder: settings::VideoEncoder::Auto,
+            ..beyond_va
         })
-        .is_err()
+        .unwrap()
+        .encoder,
+        Encoder::X264
     );
-    let pipeline = build_pipeline(&pipeline_description(1, 0, video)).unwrap();
+    let software = video_plan(&settings::VideoSettings {
+        encoder: settings::VideoEncoder::X264,
+        ..video
+    })
+    .unwrap();
+    assert_eq!(software.encoder, Encoder::X264);
+    let pipeline = build_pipeline(&pipeline_description(1, 0, automatic)).unwrap();
+    let encoder = pipeline.by_name("encoder").unwrap();
+    assert_eq!(encoder.property::<u32>("bitrate"), 6_000);
+    assert_eq!(encoder.property::<u32>("key-int-max"), 60);
+    assert_eq!(encoder.property::<u32>("target-usage"), 7);
+    let pipeline = build_pipeline(&pipeline_description(1, 0, software)).unwrap();
     let encoder = pipeline.by_name("encoder").unwrap();
     assert_eq!(encoder.property::<u32>("bitrate"), 6_000);
     assert_eq!(encoder.property::<u32>("key-int-max"), 60);

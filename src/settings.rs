@@ -65,6 +65,16 @@ pub(crate) struct VideoSettings {
     pub(crate) height: u32,
     pub(crate) fps: u32,
     pub(crate) bitrate_mbps: Option<u16>,
+    pub(crate) encoder: VideoEncoder,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum VideoEncoder {
+    #[default]
+    Auto,
+    VaApi,
+    X264,
 }
 
 impl Default for VideoSettings {
@@ -74,6 +84,7 @@ impl Default for VideoSettings {
             height: 720,
             fps: 60,
             bitrate_mbps: Some(6),
+            encoder: VideoEncoder::Auto,
         }
     }
 }
@@ -151,6 +162,7 @@ impl Settings {
         height: &str,
         fps: u32,
         bitrate_mbps: &str,
+        encoder: VideoEncoder,
     ) -> io::Result<Self> {
         let video = VideoSettings {
             width: width
@@ -170,6 +182,7 @@ impl Settings {
                         .map_err(|_| invalid("Bitrate must be between 1 and 500 Mbps"))?,
                 ),
             },
+            encoder,
         };
         video.validate()?;
         let mut settings = self.clone();
@@ -332,6 +345,7 @@ mod tests {
                 height: 1080,
                 fps: 30,
                 bitrate_mbps: None,
+                encoder: VideoEncoder::VaApi,
             },
             listen_address: "192.168.1.10".parse().unwrap(),
             listen_port: 9000,
@@ -346,6 +360,7 @@ mod tests {
         assert!(!saved.notifications);
         assert_eq!(saved.video.width, 1920);
         assert_eq!(saved.video.bitrate_mbps, None);
+        assert_eq!(saved.video.encoder, VideoEncoder::VaApi);
         assert_eq!(saved.bind().unwrap(), "192.168.1.10:9000".parse().unwrap());
         assert_eq!(
             saved.share_base_url.as_deref(),
@@ -385,6 +400,7 @@ mod tests {
         .unwrap();
         let unsupported = Settings::load_from(&path).unwrap();
         assert_eq!(unsupported.video.width, 0);
+        assert_eq!(unsupported.video.encoder, VideoEncoder::Auto);
         assert!(unsupported.video.validate().is_err());
         fs::write(&path, b"{").unwrap();
         assert_eq!(
@@ -456,10 +472,11 @@ mod tests {
         }
 
         let custom = Settings::default()
-            .with_video(" 1920 ", "1080", 30, "")
+            .with_video(" 1920 ", "1080", 30, "", VideoEncoder::X264)
             .unwrap();
         assert_eq!(custom.video.width, 1920);
         assert_eq!(custom.video.bitrate_mbps, None);
+        assert_eq!(custom.video.encoder, VideoEncoder::X264);
         for (width, height, fps, bitrate) in [
             ("", "720", 60, "6"),
             ("1280", "0", 60, "6"),
@@ -468,7 +485,7 @@ mod tests {
         ] {
             assert!(
                 Settings::default()
-                    .with_video(width, height, fps, bitrate)
+                    .with_video(width, height, fps, bitrate, VideoEncoder::Auto)
                     .is_err()
             );
         }

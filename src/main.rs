@@ -68,7 +68,19 @@ struct AudioSettings {
 #[derive(Clone, Debug, PartialEq)]
 struct ShareSettings {
     audio: AudioSettings,
-    video: settings::VideoSettings,
+    video: VideoPlan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VideoPlan {
+    settings: settings::VideoSettings,
+    encoder: Encoder,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Encoder {
+    VaApi,
+    X264,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,11 +103,11 @@ impl Quality {
     fn from_video(video: settings::VideoSettings) -> Self {
         QUALITY_OPTIONS
             .into_iter()
-            .find(|preset| preset.video() == Some(video))
+            .find(|preset| preset.video(video.encoder) == Some(video))
             .unwrap_or(Self::Custom)
     }
 
-    fn video(self) -> Option<settings::VideoSettings> {
+    fn video(self, encoder: settings::VideoEncoder) -> Option<settings::VideoSettings> {
         let (width, height, bitrate_mbps) = match self {
             Self::P720 => (1280, 720, 6),
             Self::P1080 => (1920, 1080, 12),
@@ -107,6 +119,7 @@ impl Quality {
             height,
             fps: 60,
             bitrate_mbps: Some(bitrate_mbps),
+            encoder,
         })
     }
 }
@@ -181,6 +194,7 @@ enum Message {
     VideoHeight(String),
     VideoFps(u32),
     VideoBitrate(String),
+    VideoEncoder(settings::VideoEncoder),
     SaveVideo,
     Focus(bool),
     RevealFocus(f32),
@@ -254,6 +268,7 @@ struct App {
     video_height: String,
     video_fps: u32,
     video_bitrate: String,
+    video_encoder: settings::VideoEncoder,
     appearance: appearance::Appearance,
     approved_source: Option<&'static str>,
     active_audio: Option<AudioSettings>,
@@ -370,6 +385,7 @@ fn boot(
         video_bitrate: video
             .bitrate_mbps
             .map_or_else(String::new, |bitrate| bitrate.to_string()),
+        video_encoder: video.encoder,
         appearance: appearance::Appearance::default(),
         approved_source: None,
         active_audio: None,
@@ -490,15 +506,21 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 iced::widget::operation::AbsoluteOffset { x: 0.0, y: delta },
             );
         }
-        Message::Start
-            if app.phase != Phase::Waiting || app.applying_network || app.video_error.is_some() => {
-        }
+        Message::Start if app.phase != Phase::Waiting || app.applying_network => {}
         Message::Start => {
+            let video = match video_plan(&app.settings.video) {
+                Ok(video) => video,
+                Err(error) => {
+                    app.video_error = Some(format!("Video quality unavailable: {error}"));
+                    return Task::none();
+                }
+            };
             let share = ShareSettings {
                 audio: audio_settings(&app.settings),
-                video: app.settings.video,
+                video,
             };
             if send_command(app, Command::Start(share)) {
+                app.video_error = None;
                 app.phase = Phase::Selecting;
             }
         }
@@ -669,7 +691,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::VideoPreset(preset) => {
-            if let Some(video) = preset.video() {
+            if let Some(video) = preset.video(app.video_encoder) {
                 set_video_draft(app, video);
             } else if app.video_preset != Quality::Custom {
                 app.video_bitrate.clear();
@@ -697,6 +719,10 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             app.video_bitrate = bitrate;
             app.video_edit_error = None;
         }
+        Message::VideoEncoder(encoder) => {
+            app.video_encoder = encoder;
+            app.video_edit_error = None;
+        }
         Message::SaveVideo if app.applying_network => {}
         Message::SaveVideo => {
             let result = app
@@ -706,6 +732,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                     &app.video_height,
                     app.video_fps,
                     &app.video_bitrate,
+                    app.video_encoder,
                 )
                 .map_err(Error::from)
                 .and_then(|settings| {
@@ -879,6 +906,7 @@ fn set_video_draft(app: &mut App, video: settings::VideoSettings) {
     app.video_bitrate = video
         .bitrate_mbps
         .map_or_else(String::new, |bitrate| bitrate.to_string());
+    app.video_encoder = video.encoder;
 }
 
 fn begin_quit(app: &mut App) -> Task<Message> {
@@ -1164,6 +1192,22 @@ fn settings_option<'a>(
     )
 }
 
+fn video_encoder_label(encoder: settings::VideoEncoder) -> &'static str {
+    match encoder {
+        settings::VideoEncoder::Auto => "Auto",
+        settings::VideoEncoder::VaApi => "VA-API hardware",
+        settings::VideoEncoder::X264 => "Software (x264)",
+    }
+}
+
+fn video_encoder_available(encoder: settings::VideoEncoder) -> bool {
+    match encoder {
+        settings::VideoEncoder::Auto => true,
+        settings::VideoEncoder::VaApi => gst::ElementFactory::find("vah264enc").is_some(),
+        settings::VideoEncoder::X264 => gst::ElementFactory::find("x264enc").is_some(),
+    }
+}
+
 fn settings_view(app: &App) -> Element<'_, Message> {
     let focus_ring = app.appearance.focus_ring();
     let sharing = app.phase == Phase::Sharing;
@@ -1181,6 +1225,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         &app.video_height,
         app.video_fps,
         &app.video_bitrate,
+        app.video_encoder,
     ) {
         Ok(settings) => settings.video != app.settings.video,
         Err(_) => true,
@@ -1284,7 +1329,24 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     } else {
         quality
     };
+    let encoder_options = [
+        settings::VideoEncoder::Auto,
+        settings::VideoEncoder::VaApi,
+        settings::VideoEncoder::X264,
+    ]
+    .into_iter()
+    .filter(|encoder| *encoder == app.video_encoder || video_encoder_available(*encoder))
+    .fold(row![], |options, encoder| {
+        options.push(settings_option(
+            app,
+            video_encoder_label(encoder).to_owned(),
+            app.video_encoder == encoder,
+            Message::VideoEncoder(encoder),
+        ))
+    });
     let quality = quality
+        .push(text("Encoder").size(13))
+        .push(encoder_options.spacing(8))
         .push(
             accessibility::button(
                 button("Save quality")
@@ -2284,18 +2346,48 @@ async fn serve_video(
     }
 }
 
-fn video_plan(video: &settings::VideoSettings) -> Result<()> {
+fn video_plan(video: &settings::VideoSettings) -> Result<VideoPlan> {
     video.validate()?;
+    match video.encoder {
+        settings::VideoEncoder::Auto => {
+            plan_encoder(*video, Encoder::VaApi).or_else(|_| plan_encoder(*video, Encoder::X264))
+        }
+        settings::VideoEncoder::VaApi => plan_encoder(*video, Encoder::VaApi),
+        settings::VideoEncoder::X264 => plan_encoder(*video, Encoder::X264),
+    }
+}
+
+fn plan_encoder(video: settings::VideoSettings, encoder: Encoder) -> Result<VideoPlan> {
+    let (factory_name, format) = match encoder {
+        Encoder::VaApi => ("vah264enc", "NV12"),
+        Encoder::X264 => ("x264enc", "I420"),
+    };
     let caps = gst::Caps::builder("video/x-raw")
-        .field("format", "I420")
+        .field("format", format)
         .field("width", video.width as i32)
         .field("height", video.height as i32)
         .field("framerate", gst::Fraction::new(video.fps as i32, 1))
         .build();
-    require_caps("vapostproc", gst::PadDirection::Src, &caps)?;
-    require_caps("x264enc", gst::PadDirection::Sink, &caps)?;
-    build_pipeline(&pipeline_description(1, 0, *video))?;
-    Ok(())
+    require_caps(factory_name, gst::PadDirection::Sink, &caps)?;
+    let plan = VideoPlan {
+        settings: video,
+        encoder,
+    };
+    let pipeline = build_pipeline(&pipeline_description(1, 0, plan))?;
+    let encoder = pipeline
+        .by_name("encoder")
+        .ok_or_else(|| io::Error::other("GStreamer pipeline has no video encoder"))?;
+    let ready = encoder
+        .set_state(gst::State::Ready)
+        .and_then(|_| encoder.state(gst::ClockTime::from_seconds(3)).0);
+    let reached_ready = encoder.current_state() == gst::State::Ready;
+    let stopped = encoder.set_state(gst::State::Null);
+    ready?;
+    stopped?;
+    if !reached_ready {
+        return Err(io::Error::other(format!("{factory_name} did not become ready")).into());
+    }
+    Ok(plan)
 }
 
 fn require_caps(factory_name: &str, direction: gst::PadDirection, caps: &gst::Caps) -> Result<()> {
@@ -2318,20 +2410,32 @@ fn build_pipeline(description: &str) -> Result<gst::Pipeline> {
         .map_err(|_| io::Error::other("GStreamer did not create a pipeline").into())
 }
 
-fn pipeline_description(node_id: u32, remote_fd: i32, video: settings::VideoSettings) -> String {
+fn pipeline_description(node_id: u32, remote_fd: i32, plan: VideoPlan) -> String {
+    let video = plan.settings;
     let bitrate = video
         .bitrate_mbps
         .map(|bitrate| format!(" bitrate={}", u32::from(bitrate) * 1_000))
         .unwrap_or_default();
+    let video_pipeline = match plan.encoder {
+        Encoder::VaApi => format!(
+            "vapostproc disable-passthrough=true add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=7{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
+            width = video.width,
+            height = video.height,
+            fps = video.fps,
+        ),
+        Encoder::X264 => format!(
+            "videoconvertscale add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps}",
+            width = video.width,
+            height = video.height,
+            fps = video.fps,
+        ),
+    };
     format!(
         "mp4mux name=mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false
          audiomixer name=audio-mixer ignore-inactive-pads=true ! audioconvert ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0
          audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! queue ! audio-mixer.
          appsrc name=system-audio is-live=true format=time do-timestamp=true block=false max-bytes=384000 leaky-type=downstream ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! queue ! audio-mixer.
-         pipewiresrc name=portal-video fd={remote_fd} path={node_id} on-disconnect=error ! capsfilter name=portal-format ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps} ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0",
-        width = video.width,
-        height = video.height,
-        fps = video.fps,
+         pipewiresrc name=portal-video fd={remote_fd} path={node_id} on-disconnect=error ! capsfilter name=portal-format ! {video_pipeline} ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0",
     )
 }
 
