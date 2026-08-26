@@ -1,64 +1,82 @@
 # AGENTS.md
 
-These instructions apply to the entire repository. Read [README.md](README.md)
-for the product contract and [docs/development.md](docs/development.md) for the
-engineering decisions, current milestone, acceptance criteria, and non-goals
-before changing code.
+These instructions apply to the entire repository. Read [README.md](README.md),
+[docs/development.md](docs/development.md),
+[docs/verification.md](docs/verification.md), and
+[docs/ui-design.md](docs/ui-design.md) before changing their respective areas.
 
-## Product invariants
+## Change routing
 
-- Build for Linux and Wayland first. Screen and window capture must use the
-  `xdg-desktop-portal` security model.
-- The host serves media directly over HTTP. Do not add WebRTC, signaling, ICE,
-  STUN, TURN, an SFU, a cloud relay, or NAT traversal.
-- Capture, encode, and mux once, then fan out the same media to every viewer.
-- Do not capture before the host explicitly starts sharing and approves a
-  portal source. Share tokens must come from a cryptographically secure RNG and
-  provide at least about 128 bits of entropy.
-- Put video and audio in one synchronized stream. Application-audio exclusions
-  must survive stream restarts and must not change what the host hears locally;
-  do not identify applications by PID alone.
-- Use PipeWire and GStreamer rather than rebuilding mature media behavior in
-  Rust. Public reachability and TLS termination remain external concerns.
+Aercast maintains exactly four formal project documents. Do not add an
+architecture, roadmap, configuration, or documentation-index file.
+
+| Change | Authoritative document |
+|---|---|
+| Project homepage: what Aercast is, why it exists, current usability, short data flow, support summary, and document links | `README.md` |
+| Product commitment, exact Host/Viewer behavior, settings, security boundary, engineering decision, active Phase, acceptance, risk, non-goal, or next-Phase entry condition | `docs/development.md` |
+| Compatibility, performance, or completion evidence from a real check | `docs/verification.md` |
+| Visual token, component appearance, typography, spacing, color, motion, icon, or accessibility rule | `docs/ui-design.md` |
+
+One fact has one authoritative home; other documents link to it instead of
+copying it. Update the owning document in the same commit whenever code changes
+product behavior, an engineering decision, a verification conclusion, or a UI
+token. Keep README product-facing and free of governance text, requirement
+classification, exact values, acceptance language, Phase checklists, development
+commands, implementation research, and test logs. Its job is only to explain
+what Aercast is, why someone would use it, whether it is usable today, roughly
+how it works, and where details live.
+
+When a Phase completes, compress it in `docs/development.md` to one dated line
+with a conclusion and verification anchor; Git history keeps the old checklist.
+Keep only the latest valid evidence and current blocker for each claim in
+`docs/verification.md`, never an append-only run diary or raw long output.
 
 ## How to work
 
-- Implement only the current milestone in
-  [docs/development.md](docs/development.md) and its smallest runnable vertical
-  slice. Do not add adjacent features "while here."
-- Understand the real flow before editing. For a bug, find every caller and fix
-  the shared root cause once.
-- Prefer the standard library, native platform features, and existing
+- Implement only the active Phase in `docs/development.md` and its smallest
+  runnable vertical slice. Do not add adjacent features while here.
+- Trace the real flow and every caller before editing. Fix a shared root cause
+  once instead of patching each symptom.
+- Prefer the standard library, Linux/Wayland platform capabilities, and current
   dependencies. Add a dependency only when they cannot meet a current need.
-- Do not create traits, factories, plugin systems, configuration, module trees,
-  or cross-platform layers for a second implementation that does not exist.
-  Conceptual boundaries do not require directories until the code needs them.
+- Do not create speculative traits, factories, plugin systems, configuration,
+  cross-platform layers, module trees, or unused directories.
 - Leave one smallest runnable check for non-trivial branches, loops, parsers,
-  and security-sensitive paths. Each milestone must pass a real build/test or
-  smoke check; a mock alone is not completion.
-- Back performance and compatibility claims with recorded measurements on the
-  relevant compositor, browser, and hardware. Optimize only a measured
+  and security-sensitive paths. A mock never replaces a required real Portal,
+  PipeWire, compositor, browser, or hardware check.
+- Base performance and compatibility claims on recorded measurements from the
+  relevant compositor, browser, GPU, and encoder. Optimize only a measured
   bottleneck.
-- Keep README product-facing and honest: distinguish commitments, targets, and
-  verified support. Put implementation status, commands, host-specific
-  measurements, research, and risk logs under `docs/`.
+- Preserve required validation, cleanup, accessibility, security controls, and
+  error handling that prevents data loss.
 
-The canonical checks are `cargo fmt --check` and `cargo test`. A real capture
-smoke check uses `cargo run -- --monitor` or `cargo run -- --window` and
-requires an interactive Portal selection; never replace it with a mock.
+The canonical static checks are:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+git diff --check
+```
+
+A real capture smoke starts the GUI with `cargo run`, selects **Start Sharing**,
+and requires an interactive Portal source choice. Never simulate Portal consent.
+Use Zen as the local Firefox-family vehicle first, then Chromium. Record only
+the reproducible command, environment, scenario, result, measurement, and
+current failure reason in `docs/verification.md`.
 
 ## Before every commit
 
 1. Stage only the intended changes.
 2. Run `ponytail-review` against `git diff --cached`.
 3. Resolve every valid `delete`, `stdlib`, `native`, `yagni`, and `shrink`
-   finding, then restage and repeat until the result is `Lean already. Ship.`
+   finding, then restage and repeat until the exact result is
+   `Lean already. Ship.`
 4. Run `git diff --cached --check` and the smallest relevant build, test, or
    real smoke check.
-5. Any tracked-file change after review invalidates the review; repeat it
-   before committing.
+5. Any tracked-file change after review invalidates the result; repeat the
+   review before committing.
 
-Ponytail review is a complexity pass, not a replacement for correctness,
-security, performance, or test review. It must never remove required input
-validation, error handling that prevents data loss, security controls,
-accessibility, or explicitly requested behavior.
+Ponytail is a complexity gate, not a substitute for correctness, security,
+performance, test, or accessibility review. It must not remove explicitly
+required behavior.
