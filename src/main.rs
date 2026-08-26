@@ -47,12 +47,14 @@ struct Options {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Command {
     Start(bool),
+    Apply(bool),
     End,
     Refresh(bool),
     Quit,
 }
 
 enum ShareStop {
+    Apply(bool),
     End,
     Quit,
     PortalClosed,
@@ -64,7 +66,7 @@ enum HostEvent {
     Waiting(String),
     Link(String),
     ConfirmRefresh,
-    Sharing,
+    Sharing(bool),
     Ending,
     Viewers(usize),
     Stopped(std::result::Result<(), String>),
@@ -79,6 +81,7 @@ enum Message {
     Refresh,
     ConfirmRefresh,
     CancelRefresh,
+    ApplySystemAudio,
     Settings(bool),
     SystemAudio(bool),
     Close(window::Id),
@@ -105,6 +108,8 @@ struct App {
     settings: settings::Settings,
     settings_open: bool,
     settings_error: Option<String>,
+    active_system_audio: Option<bool>,
+    applying_system_audio: Option<bool>,
 }
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
@@ -146,6 +151,8 @@ fn boot(options: Options, settings: settings::Settings) -> (App, Task<Message>) 
             settings,
             settings_open: false,
             settings_error: None,
+            active_system_audio: None,
+            applying_system_audio: None,
         },
         Task::batch([
             Task::run(incoming, Message::Host),
@@ -168,6 +175,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::End => {
             app.confirm_refresh = false;
+            app.applying_system_audio = None;
             if send_command(app, Command::End) {
                 app.phase = Phase::Ending;
             }
@@ -181,6 +189,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let _ = send_command(app, Command::Refresh(true));
         }
         Message::CancelRefresh => app.confirm_refresh = false,
+        Message::ApplySystemAudio => {
+            let system_audio = app.settings.system_audio;
+            if app.phase == Phase::Sharing
+                && app
+                    .active_system_audio
+                    .is_some_and(|active| active != system_audio)
+                && app.applying_system_audio.is_none()
+                && send_command(app, Command::Apply(system_audio))
+            {
+                app.applying_system_audio = Some(system_audio);
+            }
+        }
         Message::Settings(open) => {
             app.settings_open = open;
             app.settings_error = None;
@@ -210,6 +230,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.link = link;
                 app.viewers = 0;
                 app.confirm_refresh = false;
+                app.active_system_audio = None;
+                app.applying_system_audio = None;
                 if app.closing.is_none() {
                     app.phase = Phase::Waiting;
                 }
@@ -222,9 +244,19 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             HostEvent::ConfirmRefresh if app.phase == Phase::Sharing && app.closing.is_none() => {
                 app.confirm_refresh = true;
             }
-            HostEvent::Sharing if app.closing.is_none() => app.phase = Phase::Sharing,
+            HostEvent::Sharing(system_audio)
+                if app.closing.is_none()
+                    && matches!(app.phase, Phase::Selecting | Phase::Sharing) =>
+            {
+                app.active_system_audio = Some(system_audio);
+                if app.applying_system_audio == Some(system_audio) {
+                    app.applying_system_audio = None;
+                }
+                app.phase = Phase::Sharing;
+            }
             HostEvent::Ending if app.closing.is_none() => {
                 app.confirm_refresh = false;
+                app.applying_system_audio = None;
                 app.phase = Phase::Ending;
             }
             HostEvent::Viewers(viewers) => app.viewers = viewers,
@@ -232,6 +264,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.commands = None;
                 app.viewers = 0;
                 app.confirm_refresh = false;
+                app.active_system_audio = None;
+                app.applying_system_audio = None;
                 if let Some(id) = app.closing.take() {
                     return window::close(id);
                 }
@@ -240,7 +274,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     Err(error) => app.phase = Phase::Error(error),
                 }
             }
-            HostEvent::Sharing | HostEvent::Ending | HostEvent::ConfirmRefresh => {}
+            HostEvent::Sharing(_) | HostEvent::Ending | HostEvent::ConfirmRefresh => {}
         },
     }
     Task::none()
@@ -272,6 +306,7 @@ fn share_view(app: &App) -> Element<'_, Message> {
         Phase::Starting => "Starting Aercast…",
         Phase::Waiting => "Ready. Capture has not started.",
         Phase::Selecting => "Choose one screen or window in the system picker.",
+        Phase::Sharing if app.applying_system_audio.is_some() => "Restarting media…",
         Phase::Sharing => "Sharing.",
         Phase::Ending => "Ending share…",
         Phase::Closing => "Cleaning up…",
@@ -336,6 +371,35 @@ fn share_view(app: &App) -> Element<'_, Message> {
 }
 
 fn settings_view(app: &App) -> Element<'_, Message> {
+    let sharing = app.phase == Phase::Sharing;
+    let dirty = app
+        .active_system_audio
+        .is_some_and(|active| active != app.settings.system_audio);
+    let applying = app.applying_system_audio.is_some();
+    let hint = match &app.phase {
+        Phase::Starting => "Starting Aercast…",
+        Phase::Waiting => "Used when the next share starts.",
+        Phase::Sharing if applying => "Restarting media with the requested setting…",
+        Phase::Sharing if dirty => "Saved. Apply it to the current share when ready.",
+        Phase::Sharing => "The current share uses this setting.",
+        Phase::Selecting => "This share uses the value selected before the Portal opened.",
+        Phase::Ending => "Ending share… The saved setting will be used next time.",
+        Phase::Closing => "Cleaning up…",
+        Phase::Error(error) => error,
+    };
+    let apply = if sharing && (dirty || applying) {
+        column![
+            button(if applying {
+                "Applying…"
+            } else {
+                "Apply to Current Share"
+            })
+            .on_press_maybe((dirty && !applying).then_some(Message::ApplySystemAudio))
+        ]
+    } else {
+        column![]
+    };
+
     container(
         column![
             button(
@@ -350,7 +414,8 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             checkbox(app.settings.system_audio)
                 .label("System audio")
                 .on_toggle(Message::SystemAudio),
-            text("Used when the next share starts.").size(12),
+            text(hint).size(12),
+            apply,
             text(app.settings_error.as_deref().unwrap_or_default()).size(12),
         ]
         .spacing(16)
@@ -407,11 +472,12 @@ async fn run_host(
                     )
                     .await?
                     {
-                        ShareStop::End | ShareStop::PortalClosed => {}
+                        ShareStop::Apply(_) | ShareStop::End | ShareStop::PortalClosed => {}
                         ShareStop::Quit => break,
                         ShareStop::Failed(error) => return Err(error),
                     }
                 }
+                Command::Apply(_) => {}
                 Command::End => {}
                 Command::Refresh(_) => {}
                 Command::Quit => break,
@@ -445,7 +511,7 @@ async fn share_once(
     options: &Options,
     host: &web::Host,
     address: SocketAddr,
-    system_audio: bool,
+    mut system_audio: bool,
     commands: &mut mpsc::Receiver<Command>,
     server: &mut Server,
     events: &Events,
@@ -520,6 +586,7 @@ async fn share_once(
             result = &mut *server => break Selection::Server(result),
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
                 Command::Start(_) => println!("Source selection is already open."),
+                Command::Apply(_) => println!("Source selection is still open."),
                 Command::End => break Selection::Stop(false),
                 Command::Refresh(_) => println!("Source selection is still open."),
                 Command::Quit => break Selection::Stop(true),
@@ -565,30 +632,43 @@ async fn share_once(
         }
     };
 
-    let control = share_control(
-        commands,
-        async {
-            let _ = closed.next().await;
-        },
-        server,
-        host,
-        address,
-        events,
-    );
-    tokio::pin!(control);
     let mut capture_caps = None;
     let mut recoveries = 0;
     let result = loop {
+        let control = share_control(
+            commands,
+            async {
+                let _ = closed.next().await;
+            },
+            server,
+            host,
+            address,
+            events,
+        );
+        tokio::pin!(control);
         let remote = tokio::select! {
             biased;
-            stop = control.as_mut() => {
-                break Ok(stop);
-            }
+            stop = control.as_mut() => match stop {
+                ShareStop::Apply(audio) => {
+                    system_audio = audio;
+                    continue;
+                }
+                stop => break Ok(stop),
+            },
             remote = portal.open_pipe_wire_remote(&session, Default::default()) => match remote {
                 Ok(remote) => remote,
                 Err(error) => break Ok(ShareStop::Failed(error.into())),
             },
         };
+        if let Some(stop) = control.as_mut().now_or_never() {
+            match stop {
+                ShareStop::Apply(audio) => {
+                    system_audio = audio;
+                    continue;
+                }
+                stop => break Ok(stop),
+            }
+        }
         let media = match host.start() {
             Ok(media) => media,
             Err(error) => break Ok(ShareStop::Failed(error.into())),
@@ -612,10 +692,18 @@ async fn share_once(
                 Ok(ShareStop::Failed(error.into()))
             }
         };
+        if let Ok(ShareStop::Apply(audio)) = &attempt {
+            system_audio = *audio;
+            continue;
+        }
+        let mut apply = None;
         if attempt.is_err()
             && let Some(stop) = control.as_mut().now_or_never()
         {
-            break Ok(stop);
+            match stop {
+                ShareStop::Apply(audio) => apply = Some(audio),
+                stop => break Ok(stop),
+            }
         }
         if !should_retry(&attempt, recoveries) {
             break attempt;
@@ -626,11 +714,19 @@ async fn share_once(
                 "Media attempt failed; recovery {recoveries}/{MAX_MEDIA_RECOVERIES}: {error}"
             );
         }
+        if let Some(audio) = apply {
+            system_audio = audio;
+            continue;
+        }
         tokio::select! {
             biased;
-            stop = control.as_mut() => {
-                break Ok(stop);
-            }
+            stop = control.as_mut() => match stop {
+                ShareStop::Apply(audio) => {
+                    system_audio = audio;
+                    continue;
+                }
+                stop => break Ok(stop),
+            },
             _ = tokio::time::sleep(MEDIA_RECOVERY_DELAY) => {}
         }
     };
@@ -676,6 +772,7 @@ async fn share_control(
             },
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
                 Command::Start(_) => println!("A share is already active."),
+                Command::Apply(system_audio) => return ShareStop::Apply(system_audio),
                 Command::End => {
                     println!("Ending share.");
                     return ShareStop::End;
@@ -781,6 +878,7 @@ async fn serve_video(
     mut control: Pin<&mut impl Future<Output = ShareStop>>,
     events: &Events,
 ) -> Result<ShareStop> {
+    let system_audio = audio_exclusions.is_some();
     if audio_exclusions.as_ref().is_some_and(Vec::is_empty) {
         eprintln!(
             "No audio exclusions configured; a Host-local Viewer may feed shared audio back into Aercast."
@@ -868,6 +966,9 @@ async fn serve_video(
             gst::PadProbeReturn::Remove
         })
         .ok_or_else(|| io::Error::other("failed to install first-frame probe"))?;
+    if let Some(stop) = control.as_mut().now_or_never() {
+        return Ok(stop);
+    }
     let outcome: Result<ShareStop> = match pipeline.set_state(gst::State::Playing) {
         Err(error) => Err(error.into()),
         Ok(_) => match audio_exclusions
@@ -877,7 +978,7 @@ async fn serve_video(
             Err(error) => Err(error.into()),
             Ok(mut audio) => {
                 println!("Browser stream running.");
-                let _ = events.unbounded_send(HostEvent::Sharing);
+                let _ = events.unbounded_send(HostEvent::Sharing(system_audio));
                 let mut audio_failure_reported = false;
                 let running = tokio::select! {
                     biased;
@@ -895,7 +996,7 @@ async fn serve_video(
                         )).into())
                     },
                 };
-                if running.is_ok() {
+                if !matches!(&running, Err(_) | Ok(ShareStop::Apply(_))) {
                     let _ = events.unbounded_send(HostEvent::Ending);
                 }
                 let stopped: Result<()> = audio

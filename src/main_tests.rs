@@ -16,6 +16,7 @@ fn retry_policy_allows_exactly_three_media_recoveries() {
     assert!(!should_retry(&media_failure, MAX_MEDIA_RECOVERIES));
 
     for terminal in [
+        ShareStop::Apply(false),
         ShareStop::End,
         ShareStop::Quit,
         ShareStop::PortalClosed,
@@ -49,6 +50,28 @@ async fn server_failure_is_terminal_control() {
         .await,
         ShareStop::Failed(_)
     ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn apply_requests_a_media_restart_without_reclassifying_control() {
+    let (commands, mut receiver) = mpsc::channel(1);
+    commands.send(Command::Apply(false)).await.unwrap();
+    let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
+    let host = web::Host::new().unwrap();
+    let (events, _) = iced::futures::channel::mpsc::unbounded();
+    assert!(matches!(
+        share_control(
+            &mut receiver,
+            std::future::pending(),
+            &mut server,
+            &host,
+            "127.0.0.1:1".parse().unwrap(),
+            &events,
+        )
+        .await,
+        ShareStop::Apply(false)
+    ));
+    server.abort();
 }
 
 #[test]
@@ -102,6 +125,8 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings: settings::Settings::default(),
         settings_open: false,
         settings_error: None,
+        active_system_audio: None,
+        applying_system_audio: None,
     };
 
     drop(update(
@@ -117,8 +142,22 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::Start));
     assert_eq!(receiver.try_recv().unwrap(), Command::Start(false));
     assert_eq!(app.phase, Phase::Selecting);
+    app.settings.system_audio = true;
+    drop(update(&mut app, Message::ApplySystemAudio));
+    assert!(receiver.try_recv().is_err());
 
-    drop(update(&mut app, Message::Host(HostEvent::Sharing)));
+    drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
+    assert_eq!(app.active_system_audio, Some(false));
+    drop(update(&mut app, Message::ApplySystemAudio));
+    assert_eq!(receiver.try_recv().unwrap(), Command::Apply(true));
+    assert_eq!(app.applying_system_audio, Some(true));
+    drop(update(&mut app, Message::ApplySystemAudio));
+    assert!(receiver.try_recv().is_err());
+    drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
+    assert_eq!(app.applying_system_audio, Some(true));
+    drop(update(&mut app, Message::Host(HostEvent::Sharing(true))));
+    assert_eq!(app.active_system_audio, Some(true));
+    assert_eq!(app.applying_system_audio, None);
     app.viewers = 2;
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
@@ -143,17 +182,26 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::End));
     assert_eq!(receiver.try_recv().unwrap(), Command::End);
     assert_eq!(app.phase, Phase::Ending);
+    app.settings.system_audio = false;
+    drop(update(&mut app, Message::ApplySystemAudio));
+    assert!(receiver.try_recv().is_err());
+    drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
+    assert_eq!(app.phase, Phase::Ending);
+    assert_eq!(app.active_system_audio, Some(true));
     drop(update(
         &mut app,
         Message::Host(HostEvent::Waiting("http://127.0.0.1/s/token".to_owned())),
     ));
     assert_eq!(app.phase, Phase::Waiting);
     assert_eq!(app.link, "http://127.0.0.1/s/token");
+    assert_eq!(app.active_system_audio, None);
 
     let id = window::Id::unique();
+    app.settings_open = true;
     assert_eq!(update(&mut app, Message::Close(id)).units(), 0);
     assert_eq!(receiver.try_recv().unwrap(), Command::Quit);
     assert_eq!(app.phase, Phase::Closing);
+    assert!(app.settings_open);
     assert_eq!(
         update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
         1
@@ -174,6 +222,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     app.commands = Some(commands);
     app.phase = Phase::Sharing;
     app.viewers = 3;
+    app.settings_open = true;
     assert_eq!(
         update(
             &mut app,
