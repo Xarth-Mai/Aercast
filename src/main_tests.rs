@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+#[ignore = "requires an isolated session bus"]
+fn a_later_instance_activates_the_primary() {
+    let name = format!("org.aercast.Aercast.Test{}", std::process::id());
+    let (primary_activation, mut primary_messages) = iced::futures::channel::mpsc::channel(0);
+    let _primary = claim_instance(primary_activation, &name).unwrap().unwrap();
+    for _ in 0..2 {
+        let (activation, _) = iced::futures::channel::mpsc::channel(0);
+        assert!(claim_instance(activation, &name).unwrap().is_none());
+    }
+    assert!(matches!(
+        primary_messages.next().now_or_never(),
+        Some(Some(Message::Show))
+    ));
+    assert!(primary_messages.next().now_or_never().is_none());
+    drop(primary_messages);
+    let (activation, _) = iced::futures::channel::mpsc::channel(0);
+    assert!(claim_instance(activation, &name).is_err());
+}
+
+#[test]
 fn embedded_cursor_is_preferred_with_hidden_fallback() {
     assert_eq!(cursor_mode(true, true), Some(CursorMode::Embedded));
     assert_eq!(cursor_mode(false, true), Some(CursorMode::Hidden));
@@ -74,6 +94,16 @@ async fn apply_requests_a_media_restart_without_reclassifying_control() {
     server.abort();
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn quit_waits_for_a_full_control_queue() {
+    let (commands, mut receiver) = mpsc::channel(1);
+    commands.try_send(Command::End).unwrap();
+    let quit = tokio::spawn(queue_quit(commands));
+    assert_eq!(receiver.recv().await, Some(Command::End));
+    assert!(quit.await.unwrap());
+    assert_eq!(receiver.recv().await, Some(Command::Quit));
+}
+
 #[test]
 fn arguments_accept_one_source_and_repeated_exclusions() {
     let empty = options(std::iter::empty()).unwrap();
@@ -128,6 +158,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings_error: None,
         active_system_audio: None,
         applying_system_audio: None,
+        quitting: false,
     };
 
     drop(update(
@@ -247,6 +278,32 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.phase, Phase::Error("stopped".to_owned()));
     assert_eq!(update(&mut app, Message::Close(reopened)).units(), 1);
     assert_eq!(app.window, None);
+
+    let (commands, _) = mpsc::channel(1);
+    app.commands = Some(commands);
+    let closing = window::Id::unique();
+    app.window = Some(closing);
+    assert_eq!(update(&mut app, Message::Quit).units(), 1);
+    assert!(app.commands.is_none());
+    assert_eq!(app.phase, Phase::Ending);
+    assert!(app.quitting);
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Waiting("http://127.0.0.1/s/stale".to_owned())),
+    ));
+    drop(update(&mut app, Message::Show));
+    assert_eq!(app.phase, Phase::Ending);
+    assert_eq!(app.window, Some(closing));
+    assert_eq!(update(&mut app, Message::Close(closing)).units(), 1);
+    assert!(app.window.is_none());
+    assert_eq!(
+        update(
+            &mut app,
+            Message::Host(HostEvent::Stopped(Err("cleanup failed".to_owned())))
+        )
+        .units(),
+        1
+    );
 }
 
 #[test]

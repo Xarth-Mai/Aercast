@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     future::Future,
     io,
     net::SocketAddr,
@@ -19,7 +20,7 @@ use gst::prelude::*;
 use gst_app::AppSinkCallbacks;
 use iced::{
     Element, Length, Task, Theme, clipboard,
-    futures::channel::mpsc::UnboundedSender,
+    futures::channel::mpsc::{Receiver, Sender, UnboundedSender},
     widget::{button, checkbox, column, container, row, space, svg, text, text_input},
     window,
 };
@@ -36,6 +37,8 @@ mod web;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
 type Events = UnboundedSender<HostEvent>;
+const INSTANCE_NAME: &str = "org.aercast.Aercast";
+const INSTANCE_PATH: &str = "/org/aercast/Aercast";
 
 #[derive(Clone)]
 struct Options {
@@ -82,11 +85,46 @@ enum Message {
     ConfirmRefresh,
     CancelRefresh,
     Show,
+    Quit,
+    QuitQueued(bool),
     ApplySystemAudio,
     Settings(bool),
     SystemAudio(bool),
     Close(window::Id),
     Closed(window::Id),
+}
+
+struct Activation(Sender<Message>);
+
+#[zbus::interface(name = "org.aercast.Aercast")]
+impl Activation {
+    fn show(&mut self) -> zbus::fdo::Result<()> {
+        match self.0.try_send(Message::Show) {
+            Err(error) if !error.is_full() => {
+                Err(zbus::fdo::Error::Failed("Aercast is exiting".to_owned()))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn claim_instance(
+    activation: Sender<Message>,
+    name: &str,
+) -> Result<Option<zbus::blocking::Connection>> {
+    let connection = zbus::blocking::connection::Builder::session()?
+        .serve_at(INSTANCE_PATH, Activation(activation))?
+        .build()?;
+    match connection.request_name_with_flags(name, zbus::fdo::RequestNameFlags::DoNotQueue.into()) {
+        Ok(_) => Ok(Some(connection)),
+        Err(zbus::Error::NameTaken) => {
+            let proxy =
+                zbus::blocking::Proxy::new(&connection, name, INSTANCE_PATH, INSTANCE_NAME)?;
+            let _: () = proxy.call("Show", &())?;
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -111,6 +149,7 @@ struct App {
     settings_error: Option<String>,
     active_system_audio: Option<bool>,
     applying_system_audio: Option<bool>,
+    quitting: bool,
 }
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
@@ -119,12 +158,20 @@ const MEDIA_RECOVERY_DELAY: Duration = Duration::from_millis(500);
 const MAX_MEDIA_RECOVERIES: u8 = 3;
 
 fn main() -> Result<()> {
+    let (activation, activations) = iced::futures::channel::mpsc::channel(0);
+    let Some(instance) = claim_instance(activation, INSTANCE_NAME)? else {
+        return Ok(());
+    };
     let options = options(std::env::args().skip(1))?;
     let settings = settings::Settings::load()?;
     gst::init()?;
+    let instance = Cell::new(Some((activations, instance.into_inner())));
 
     iced::daemon(
-        move || boot(options.clone(), settings.clone()),
+        move || {
+            let (activations, instance) = instance.take().expect("Aercast daemon booted twice");
+            boot(options.clone(), settings.clone(), activations, instance)
+        },
         update,
         view,
     )
@@ -140,7 +187,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn boot(options: Options, settings: settings::Settings) -> (App, Task<Message>) {
+fn boot(
+    options: Options,
+    settings: settings::Settings,
+    activations: Receiver<Message>,
+    instance: zbus::Connection,
+) -> (App, Task<Message>) {
     let (events, incoming) = iced::futures::channel::mpsc::unbounded();
     let (commands, command_receiver) = mpsc::channel(8);
     let app = App {
@@ -155,11 +207,14 @@ fn boot(options: Options, settings: settings::Settings) -> (App, Task<Message>) 
         settings_error: None,
         active_system_audio: None,
         applying_system_audio: None,
+        quitting: false,
     };
     (
         app,
         Task::batch([
             Task::done(Message::Show),
+            Task::run(activations, |message| message),
+            Task::perform(async move { instance.closed().await }, |_| Message::Quit),
             Task::run(incoming, Message::Host),
             Task::perform(run_host(options, events, command_receiver), |result| {
                 Message::Host(HostEvent::Stopped(
@@ -171,6 +226,17 @@ fn boot(options: Options, settings: settings::Settings) -> (App, Task<Message>) 
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
+    if app.quitting
+        && !matches!(
+            &message,
+            Message::QuitQueued(_)
+                | Message::Close(_)
+                | Message::Closed(_)
+                | Message::Host(HostEvent::Stopped(_))
+        )
+    {
+        return Task::none();
+    }
     match message {
         Message::Start => {
             let system_audio = app.settings.system_audio;
@@ -195,6 +261,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::CancelRefresh => app.confirm_refresh = false,
         Message::Show => return show_window(app),
+        Message::Quit => {
+            app.quitting = true;
+            app.phase = Phase::Ending;
+            return app.commands.take().map_or_else(iced::exit, |commands| {
+                Task::perform(queue_quit(commands), Message::QuitQueued)
+            });
+        }
+        Message::QuitQueued(true) => {}
+        Message::QuitQueued(false) => return iced::exit(),
         Message::ApplySystemAudio => {
             let system_audio = app.settings.system_audio;
             if app.phase == Phase::Sharing
@@ -266,6 +341,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.confirm_refresh = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
+                if app.quitting {
+                    if let Err(error) = result {
+                        eprintln!("Failed to stop Aercast: {error}");
+                    }
+                    return iced::exit();
+                }
                 match result {
                     Ok(()) => return iced::exit(),
                     Err(error) => app.phase = Phase::Error(error),
@@ -289,6 +370,10 @@ fn send_command(app: &mut App, command: Command) -> bool {
         app.phase = Phase::Error("Host control is unavailable".to_owned());
         false
     }
+}
+
+async fn queue_quit(commands: mpsc::Sender<Command>) -> bool {
+    commands.send(Command::Quit).await.is_ok()
 }
 
 fn show_window(app: &mut App) -> Task<Message> {
