@@ -105,21 +105,15 @@ async fn quit_waits_for_a_full_control_queue() {
 }
 
 #[test]
-fn arguments_accept_one_source_and_repeated_exclusions() {
+fn arguments_accept_bind_and_repeated_exclusions() {
     let empty = options(std::iter::empty()).unwrap();
     assert_eq!(empty.bind, SocketAddr::from(([127, 0, 0, 1], 8877)));
-    assert_eq!(empty.source, None);
     assert!(empty.exclusions.is_empty());
-    assert_eq!(
-        options(["--window".to_owned()].into_iter()).unwrap().source,
-        Some(SourceType::Window)
-    );
     assert_eq!(
         options(
             [
                 "--exclude".to_owned(),
                 "org.example.Chat".to_owned(),
-                "--monitor".to_owned(),
                 "--exclude".to_owned(),
                 "game-bin".to_owned(),
             ]
@@ -130,7 +124,8 @@ fn arguments_accept_one_source_and_repeated_exclusions() {
         ["org.example.Chat", "game-bin"]
     );
     assert!(options(["--bad".to_owned()].into_iter()).is_err());
-    assert!(options(["--monitor".to_owned(), "--window".to_owned()].into_iter()).is_err());
+    assert!(options(["--monitor".to_owned()].into_iter()).is_err());
+    assert!(options(["--window".to_owned()].into_iter()).is_err());
     assert!(options(["--exclude".to_owned()].into_iter()).is_err());
     assert!(options(["--exclude".to_owned(), "--monitor".to_owned()].into_iter()).is_err());
     assert_eq!(

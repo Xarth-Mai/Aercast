@@ -43,7 +43,6 @@ const INSTANCE_PATH: &str = "/org/aercast/Aercast";
 #[derive(Clone)]
 struct Options {
     bind: SocketAddr,
-    source: Option<SourceType>,
     exclusions: Vec<String>,
 }
 
@@ -619,11 +618,7 @@ async fn share_once(
     println!("Available source types: {available_sources:?}");
     println!("Available cursor modes: {available_cursors:?}");
 
-    let requested_sources = match options.source {
-        Some(source) => source.into(),
-        None => SourceType::Monitor | SourceType::Window,
-    };
-    let sources = available_sources & requested_sources;
+    let sources = available_sources & (SourceType::Monitor | SourceType::Window);
     if sources.is_empty() {
         return Err(io::Error::other("portal offers neither monitor nor window capture").into());
     }
@@ -920,7 +915,6 @@ fn should_retry<T, E>(outcome: &std::result::Result<T, E>, recoveries: u8) -> bo
 
 fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
     let mut bind = None;
-    let mut source = None;
     let mut exclusions = Vec::new();
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -936,8 +930,6 @@ fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
                 }
                 bind = Some(address);
             }
-            "--monitor" if source.is_none() => source = Some(SourceType::Monitor),
-            "--window" if source.is_none() => source = Some(SourceType::Window),
             "--exclude" => exclusions.push(
                 args.next()
                     .filter(|value| !value.is_empty() && !value.starts_with("--"))
@@ -948,15 +940,12 @@ fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
     }
     Ok(Options {
         bind: bind.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8877))),
-        source,
         exclusions,
     })
 }
 
 fn usage() -> io::Error {
-    io::Error::other(
-        "usage: aercast [--bind IP:PORT] [--monitor|--window] [--exclude APPLICATION_ID_OR_NAME]...",
-    )
+    io::Error::other("usage: aercast [--bind IP:PORT] [--exclude APPLICATION_ID_OR_NAME]...")
 }
 
 fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {
