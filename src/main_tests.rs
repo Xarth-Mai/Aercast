@@ -42,6 +42,13 @@ fn embedded_cursor_is_preferred_with_hidden_fallback() {
 }
 
 #[test]
+fn approved_source_uses_only_portal_display_metadata() {
+    assert_eq!(approved_source(Some(SourceType::Monitor)), "Screen");
+    assert_eq!(approved_source(Some(SourceType::Window)), "Window");
+    assert_eq!(approved_source(None), "Selected source");
+}
+
+#[test]
 fn retry_policy_allows_exactly_three_media_recoveries() {
     let media_failure = Err::<(), ()>(());
     for recoveries in 0..MAX_MEDIA_RECOVERIES {
@@ -180,6 +187,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings_open: false,
         settings_error: None,
         appearance: appearance::Appearance::default(),
+        approved_source: None,
         active_system_audio: None,
         applying_system_audio: None,
         network_address: "127.0.0.1".to_owned(),
@@ -286,12 +294,15 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::Start));
     assert_eq!(receiver.try_recv().unwrap(), Command::Start(false));
     assert_eq!(app.phase, Phase::Selecting);
+    drop(update(&mut app, Message::Host(HostEvent::Source("Window"))));
+    assert_eq!(app.approved_source, Some("Window"));
     app.settings.system_audio = true;
     drop(update(&mut app, Message::ApplySystemAudio));
     assert!(receiver.try_recv().is_err());
 
     drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
     assert_eq!(app.active_system_audio, Some(false));
+    assert_eq!(app.approved_source, Some("Window"));
     drop(update(&mut app, Message::ApplySystemAudio));
     assert_eq!(receiver.try_recv().unwrap(), Command::Apply(true));
     assert_eq!(app.applying_system_audio, Some(true));
@@ -340,6 +351,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         Message::Host(HostEvent::Link("http://127.0.0.1/s/replacement".to_owned())),
     ));
     assert_eq!(app.link, "http://127.0.0.1/s/replacement");
+    assert_eq!(app.approved_source, Some("Window"));
     assert!(app.viewers.is_empty());
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
@@ -347,6 +359,11 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::End));
     assert_eq!(receiver.try_recv().unwrap(), Command::End);
     assert_eq!(app.phase, Phase::Ending);
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Source("Late source")),
+    ));
+    assert_eq!(app.approved_source, Some("Window"));
     app.settings.system_audio = false;
     drop(update(&mut app, Message::ApplySystemAudio));
     assert!(receiver.try_recv().is_err());
@@ -364,6 +381,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     ));
     assert_eq!(app.phase, Phase::Waiting);
     assert_eq!(app.link, "http://127.0.0.1/s/token");
+    assert!(app.approved_source.is_none());
     assert_eq!(app.active_system_audio, None);
     assert_eq!(app.viewers, offline);
     assert_eq!(format_duration(app.viewers[0].duration()), "1:05");
@@ -390,6 +408,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     let (commands, _) = mpsc::channel(1);
     app.commands = Some(commands);
     app.phase = Phase::Sharing;
+    app.approved_source = Some("Screen");
     app.viewers = test_viewers(3, true);
     app.settings_open = true;
     assert_eq!(
@@ -401,6 +420,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         0
     );
     assert_eq!(app.phase, Phase::Error("stopped".to_owned()));
+    assert!(app.approved_source.is_none());
     assert!(app.viewers.is_empty());
     assert_ne!(update(&mut app, Message::Show).units(), 0);
     let reopened = app.window.unwrap();

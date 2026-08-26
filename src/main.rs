@@ -73,6 +73,7 @@ enum ShareStop {
 enum HostEvent {
     Waiting(String),
     NetworkUnavailable(String),
+    Source(&'static str),
     Link(String),
     ConfirmRefresh,
     Sharing(bool),
@@ -170,6 +171,7 @@ struct App {
     settings_open: bool,
     settings_error: Option<String>,
     appearance: appearance::Appearance,
+    approved_source: Option<&'static str>,
     active_system_audio: Option<bool>,
     applying_system_audio: Option<bool>,
     network_address: String,
@@ -261,6 +263,7 @@ fn boot(
         settings_open: false,
         settings_error: None,
         appearance: appearance::Appearance::default(),
+        approved_source: None,
         active_system_audio: None,
         applying_system_audio: None,
         network_address,
@@ -490,6 +493,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
         Message::Host(event) => match event {
             HostEvent::NetworkUnavailable(error) => {
                 app.link.clear();
+                app.approved_source = None;
                 app.applying_network = false;
                 app.confirm_quit = false;
                 app.settings_error = Some(error.clone());
@@ -499,9 +503,13 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 app.link = link;
                 app.confirm_refresh = false;
                 app.confirm_quit = false;
+                app.approved_source = None;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
                 app.phase = Phase::Waiting;
+            }
+            HostEvent::Source(source) if app.phase == Phase::Selecting => {
+                app.approved_source = Some(source);
             }
             HostEvent::Link(link) => {
                 app.link = link;
@@ -546,6 +554,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 app.viewers.clear();
                 app.confirm_refresh = false;
                 app.confirm_quit = false;
+                app.approved_source = None;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
                 app.applying_network = false;
@@ -565,7 +574,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                     Err(error) => app.phase = Phase::Error(error),
                 }
             }
-            HostEvent::Sharing(_) | HostEvent::ConfirmRefresh => {}
+            HostEvent::Source(_) | HostEvent::Sharing(_) | HostEvent::ConfirmRefresh => {}
         },
     }
     Task::none()
@@ -650,6 +659,7 @@ fn share_view(app: &App) -> Element<'_, Message> {
         Phase::Starting => "Starting Aercast…",
         Phase::NetworkError(error) => error,
         Phase::Waiting => "Ready. Capture has not started.",
+        Phase::Selecting if app.approved_source.is_some() => "Starting media…",
         Phase::Selecting => "Choose one screen or window in the system picker.",
         Phase::Sharing if app.applying_system_audio.is_some() => "Restarting media…",
         Phase::Sharing => "Sharing.",
@@ -661,7 +671,7 @@ fn share_view(app: &App) -> Element<'_, Message> {
     let end_label = if app.phase == Phase::Selecting {
         "Cancel"
     } else {
-        "End Sharing"
+        "Stop"
     };
     let refresh_confirmation = if app.confirm_refresh && app.phase == Phase::Sharing {
         column![
@@ -699,6 +709,17 @@ fn share_view(app: &App) -> Element<'_, Message> {
     };
     let online = app.viewers.iter().filter(|viewer| viewer.online()).count();
     let now = Instant::now();
+    let status = column![text(status)];
+    let status = if let Some(source) = app.approved_source {
+        status.push(
+            text(format!("Source: {source}"))
+                .size(12)
+                .color(app.appearance.muted_text()),
+        )
+    } else {
+        status
+    }
+    .spacing(4);
     let viewer_rows = app
         .viewers
         .iter()
@@ -757,7 +778,7 @@ fn share_view(app: &App) -> Element<'_, Message> {
                 .on_press(Message::Settings(true))
                 .style(|_, status| app.appearance.neutral_button(status)),
             ],
-            text(status),
+            status,
             text_input("Share link will appear here", &app.link)
                 .style(|_, status| app.appearance.text_input(status)),
             row![
@@ -1160,21 +1181,17 @@ async fn share_once(
             .streams()
             .first()
             .ok_or_else(|| io::Error::other("portal returned no selected stream"))?;
+        let source = approved_source(stream.source_type());
         println!(
-            "Selected stream: node={}, source={:?}, size={:?}, position={:?}, id={:?}, mapping_id={:?}",
+            "Selected source: {source}; PipeWire node {}",
             stream.pipe_wire_node_id(),
-            stream.source_type(),
-            stream.size(),
-            stream.position(),
-            stream.id(),
-            stream.mapping_id(),
         );
-        Ok(stream.pipe_wire_node_id())
+        Ok((stream.pipe_wire_node_id(), source))
     };
     tokio::pin!(capture);
 
     enum Selection {
-        Capture(ashpd::Result<u32>),
+        Capture(ashpd::Result<(u32, &'static str)>),
         Stop(bool),
         Signal(io::Result<()>),
         Server(std::result::Result<io::Result<()>, tokio::task::JoinError>),
@@ -1199,7 +1216,7 @@ async fn share_once(
             },
         }
     };
-    let node_id = match selection {
+    let (node_id, source) = match selection {
         Selection::Capture(Ok(capture)) => capture,
         Selection::Capture(
             Err(ashpd::Error::Response(ResponseError::Cancelled))
@@ -1237,6 +1254,7 @@ async fn share_once(
             return server_outcome(result);
         }
     };
+    let _ = events.unbounded_send(HostEvent::Source(source));
 
     let mut capture_caps = None;
     let mut recoveries = 0;
@@ -1472,6 +1490,14 @@ fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {
     embedded
         .then_some(CursorMode::Embedded)
         .or_else(|| hidden.then_some(CursorMode::Hidden))
+}
+
+fn approved_source(source_type: Option<SourceType>) -> &'static str {
+    match source_type {
+        Some(SourceType::Monitor) => "Screen",
+        Some(SourceType::Window) => "Window",
+        _ => "Selected source",
+    }
 }
 
 async fn serve_video(
