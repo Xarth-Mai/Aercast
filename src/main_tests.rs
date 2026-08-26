@@ -115,12 +115,13 @@ fn arguments_accept_one_source_and_repeated_exclusions() {
 #[test]
 fn ui_commands_follow_the_host_lifecycle() {
     let (commands, mut receiver) = mpsc::channel(2);
+    let window = window::Id::unique();
     let mut app = App {
         phase: Phase::Starting,
         link: String::new(),
         viewers: 0,
         commands: Some(commands),
-        closing: None,
+        window: Some(window),
         confirm_refresh: false,
         settings: settings::Settings::default(),
         settings_open: false,
@@ -158,6 +159,21 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::Host(HostEvent::Sharing(true))));
     assert_eq!(app.active_system_audio, Some(true));
     assert_eq!(app.applying_system_audio, None);
+
+    assert_eq!(update(&mut app, Message::Close(window)).units(), 1);
+    assert_eq!(app.window, None);
+    assert_eq!(app.phase, Phase::Sharing);
+    assert!(receiver.try_recv().is_err());
+    assert_ne!(update(&mut app, Message::Show).units(), 0);
+    let reopened = app.window.unwrap();
+    assert_ne!(reopened, window);
+    drop(update(&mut app, Message::Show));
+    assert_eq!(app.window, Some(reopened));
+    drop(update(&mut app, Message::Closed(window)));
+    assert_eq!(app.window, Some(reopened));
+    drop(update(&mut app, Message::Closed(reopened)));
+    assert_eq!(app.window, None);
+
     app.viewers = 2;
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
@@ -196,17 +212,10 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.link, "http://127.0.0.1/s/token");
     assert_eq!(app.active_system_audio, None);
 
-    let id = window::Id::unique();
-    app.settings_open = true;
-    assert_eq!(update(&mut app, Message::Close(id)).units(), 0);
-    assert_eq!(receiver.try_recv().unwrap(), Command::Quit);
-    assert_eq!(app.phase, Phase::Closing);
-    assert!(app.settings_open);
     assert_eq!(
         update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
         1
     );
-    assert_eq!(app.closing, None);
 
     let (commands, _) = mpsc::channel(1);
     app.commands = Some(commands);
@@ -233,11 +242,11 @@ fn ui_commands_follow_the_host_lifecycle() {
     );
     assert_eq!(app.phase, Phase::Error("stopped".to_owned()));
     assert_eq!(app.viewers, 0);
-    assert_eq!(
-        update(&mut app, Message::Close(window::Id::unique())).units(),
-        1
-    );
-    assert_eq!(app.closing, None);
+    assert_ne!(update(&mut app, Message::Show).units(), 0);
+    let reopened = app.window.unwrap();
+    assert_eq!(app.phase, Phase::Error("stopped".to_owned()));
+    assert_eq!(update(&mut app, Message::Close(reopened)).units(), 1);
+    assert_eq!(app.window, None);
 }
 
 #[test]

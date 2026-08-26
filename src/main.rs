@@ -81,10 +81,12 @@ enum Message {
     Refresh,
     ConfirmRefresh,
     CancelRefresh,
+    Show,
     ApplySystemAudio,
     Settings(bool),
     SystemAudio(bool),
     Close(window::Id),
+    Closed(window::Id),
 }
 
 #[derive(Debug, PartialEq)]
@@ -94,7 +96,6 @@ enum Phase {
     Selecting,
     Sharing,
     Ending,
-    Closing,
     Error(String),
 }
 
@@ -103,7 +104,7 @@ struct App {
     link: String,
     viewers: usize,
     commands: Option<mpsc::Sender<Command>>,
-    closing: Option<window::Id>,
+    window: Option<window::Id>,
     confirm_refresh: bool,
     settings: settings::Settings,
     settings_open: bool,
@@ -122,17 +123,19 @@ fn main() -> Result<()> {
     let settings = settings::Settings::load()?;
     gst::init()?;
 
-    iced::application(
+    iced::daemon(
         move || boot(options.clone(), settings.clone()),
         update,
         view,
     )
     .title("Aercast")
     .theme(Theme::Dark)
-    .window_size((480.0, 640.0))
-    .resizable(false)
-    .exit_on_close_request(false)
-    .subscription(|_| window::close_requests().map(Message::Close))
+    .subscription(|_| {
+        iced::Subscription::batch([
+            window::close_requests().map(Message::Close),
+            window::close_events().map(Message::Closed),
+        ])
+    })
     .run()?;
     Ok(())
 }
@@ -140,21 +143,23 @@ fn main() -> Result<()> {
 fn boot(options: Options, settings: settings::Settings) -> (App, Task<Message>) {
     let (events, incoming) = iced::futures::channel::mpsc::unbounded();
     let (commands, command_receiver) = mpsc::channel(8);
+    let app = App {
+        phase: Phase::Starting,
+        link: String::new(),
+        viewers: 0,
+        commands: Some(commands),
+        window: None,
+        confirm_refresh: false,
+        settings,
+        settings_open: false,
+        settings_error: None,
+        active_system_audio: None,
+        applying_system_audio: None,
+    };
     (
-        App {
-            phase: Phase::Starting,
-            link: String::new(),
-            viewers: 0,
-            commands: Some(commands),
-            closing: None,
-            confirm_refresh: false,
-            settings,
-            settings_open: false,
-            settings_error: None,
-            active_system_audio: None,
-            applying_system_audio: None,
-        },
+        app,
         Task::batch([
+            Task::done(Message::Show),
             Task::run(incoming, Message::Host),
             Task::perform(run_host(options, events, command_receiver), |result| {
                 Message::Host(HostEvent::Stopped(
@@ -189,6 +194,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let _ = send_command(app, Command::Refresh(true));
         }
         Message::CancelRefresh => app.confirm_refresh = false,
+        Message::Show => return show_window(app),
         Message::ApplySystemAudio => {
             let system_audio = app.settings.system_audio;
             if app.phase == Phase::Sharing
@@ -217,14 +223,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::Close(id) => {
-            if app.commands.is_none() {
+            if app.window.take_if(|window| *window == id).is_some() {
                 return window::close(id);
             }
-            app.confirm_refresh = false;
-            app.closing = Some(id);
-            let _ = send_command(app, Command::Quit);
-            app.phase = Phase::Closing;
         }
+        Message::Closed(id) => app.window = app.window.filter(|window| *window != id),
         Message::Host(event) => match event {
             HostEvent::Waiting(link) => {
                 app.link = link;
@@ -232,21 +235,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.confirm_refresh = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
-                if app.closing.is_none() {
-                    app.phase = Phase::Waiting;
-                }
+                app.phase = Phase::Waiting;
             }
             HostEvent::Link(link) => {
                 app.link = link;
                 app.viewers = 0;
                 app.confirm_refresh = false;
             }
-            HostEvent::ConfirmRefresh if app.phase == Phase::Sharing && app.closing.is_none() => {
+            HostEvent::ConfirmRefresh if app.phase == Phase::Sharing => {
                 app.confirm_refresh = true;
             }
             HostEvent::Sharing(system_audio)
-                if app.closing.is_none()
-                    && matches!(app.phase, Phase::Selecting | Phase::Sharing) =>
+                if matches!(app.phase, Phase::Selecting | Phase::Sharing) =>
             {
                 app.active_system_audio = Some(system_audio);
                 if app.applying_system_audio == Some(system_audio) {
@@ -254,7 +254,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 app.phase = Phase::Sharing;
             }
-            HostEvent::Ending if app.closing.is_none() => {
+            HostEvent::Ending => {
                 app.confirm_refresh = false;
                 app.applying_system_audio = None;
                 app.phase = Phase::Ending;
@@ -266,15 +266,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.confirm_refresh = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
-                if let Some(id) = app.closing.take() {
-                    return window::close(id);
-                }
                 match result {
                     Ok(()) => return iced::exit(),
                     Err(error) => app.phase = Phase::Error(error),
                 }
             }
-            HostEvent::Sharing(_) | HostEvent::Ending | HostEvent::ConfirmRefresh => {}
+            HostEvent::Sharing(_) | HostEvent::ConfirmRefresh => {}
         },
     }
     Task::none()
@@ -294,7 +291,23 @@ fn send_command(app: &mut App, command: Command) -> bool {
     }
 }
 
-fn view(app: &App) -> Element<'_, Message> {
+fn show_window(app: &mut App) -> Task<Message> {
+    let activate =
+        |id| window::request_user_attention(id, Some(window::UserAttention::Informational));
+    if let Some(id) = app.window {
+        return activate(id);
+    }
+    let (id, open) = window::open(window::Settings {
+        size: iced::Size::new(480.0, 640.0),
+        resizable: false,
+        exit_on_close_request: false,
+        ..window::Settings::default()
+    });
+    app.window = Some(id);
+    open.then(activate)
+}
+
+fn view(app: &App, _: window::Id) -> Element<'_, Message> {
     if app.settings_open {
         return settings_view(app);
     }
@@ -309,7 +322,6 @@ fn share_view(app: &App) -> Element<'_, Message> {
         Phase::Sharing if app.applying_system_audio.is_some() => "Restarting media…",
         Phase::Sharing => "Sharing.",
         Phase::Ending => "Ending share…",
-        Phase::Closing => "Cleaning up…",
         Phase::Error(error) => error,
     };
     let can_start = app.phase == Phase::Waiting;
@@ -384,7 +396,6 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         Phase::Sharing => "The current share uses this setting.",
         Phase::Selecting => "This share uses the value selected before the Portal opened.",
         Phase::Ending => "Ending share… The saved setting will be used next time.",
-        Phase::Closing => "Cleaning up…",
         Phase::Error(error) => error,
     };
     let apply = if sharing && (dirty || applying) {
