@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct Settings {
     pub(crate) system_audio: bool,
     pub(crate) notifications: bool,
+    pub(crate) video: VideoSettings,
     pub(crate) listen_address: IpAddr,
     pub(crate) listen_port: u16,
     pub(crate) share_base_url: Option<String>,
@@ -24,10 +25,53 @@ impl Default for Settings {
         Self {
             system_audio: true,
             notifications: true,
+            video: VideoSettings::default(),
             listen_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
             listen_port: 8877,
             share_base_url: None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub(crate) struct VideoSettings {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) fps: u32,
+    pub(crate) bitrate_mbps: Option<u16>,
+}
+
+impl Default for VideoSettings {
+    fn default() -> Self {
+        Self {
+            width: 1280,
+            height: 720,
+            fps: 60,
+            bitrate_mbps: Some(6),
+        }
+    }
+}
+
+impl VideoSettings {
+    pub(crate) fn validate(self) -> io::Result<()> {
+        if self.width == 0
+            || self.height == 0
+            || self.width > i32::MAX as u32
+            || self.height > i32::MAX as u32
+        {
+            return Err(invalid("Video width and height must be positive values"));
+        }
+        if !matches!(self.fps, 30 | 60 | 120) {
+            return Err(invalid("Frame rate must be 30, 60, or 120 FPS"));
+        }
+        if self
+            .bitrate_mbps
+            .is_some_and(|bitrate| !(1..=500).contains(&bitrate))
+        {
+            return Err(invalid("Bitrate must be between 1 and 500 Mbps"));
+        }
+        Ok(())
     }
 }
 
@@ -201,10 +245,17 @@ mod tests {
         let defaults = Settings::load_from(&path).unwrap();
         assert!(defaults.system_audio);
         assert!(defaults.notifications);
+        assert_eq!(defaults.video, VideoSettings::default());
         assert_eq!(defaults.bind().unwrap(), "127.0.0.1:8877".parse().unwrap());
         Settings {
             system_audio: false,
             notifications: false,
+            video: VideoSettings {
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                bitrate_mbps: None,
+            },
             listen_address: "192.168.1.10".parse().unwrap(),
             listen_port: 9000,
             share_base_url: Some("https://share.example:443".to_owned()),
@@ -214,6 +265,8 @@ mod tests {
         let saved = Settings::load_from(&path).unwrap();
         assert!(!saved.system_audio);
         assert!(!saved.notifications);
+        assert_eq!(saved.video.width, 1920);
+        assert_eq!(saved.video.bitrate_mbps, None);
         assert_eq!(saved.bind().unwrap(), "192.168.1.10:9000".parse().unwrap());
         assert_eq!(
             saved.share_base_url.as_deref(),
@@ -233,6 +286,18 @@ mod tests {
         )
         .unwrap();
         assert!(Settings::load_from(&path).unwrap().notifications);
+        assert_eq!(
+            Settings::load_from(&path).unwrap().video,
+            VideoSettings::default()
+        );
+        fs::write(
+            &path,
+            br#"{"video":{"width":0,"height":720,"fps":60,"bitrate_mbps":6}}"#,
+        )
+        .unwrap();
+        let unsupported = Settings::load_from(&path).unwrap();
+        assert_eq!(unsupported.video.width, 0);
+        assert!(unsupported.video.validate().is_err());
         fs::write(&path, b"{").unwrap();
         assert_eq!(
             Settings::load_from(&path).unwrap_err().kind(),
@@ -271,6 +336,31 @@ mod tests {
                     .with_network(address, port, base_url)
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn video_inputs_are_validated() {
+        assert!(VideoSettings::default().validate().is_ok());
+        for video in [
+            VideoSettings {
+                width: 0,
+                ..VideoSettings::default()
+            },
+            VideoSettings {
+                fps: 24,
+                ..VideoSettings::default()
+            },
+            VideoSettings {
+                bitrate_mbps: Some(0),
+                ..VideoSettings::default()
+            },
+            VideoSettings {
+                bitrate_mbps: Some(501),
+                ..VideoSettings::default()
+            },
+        ] {
+            assert!(video.validate().is_err());
         }
     }
 }

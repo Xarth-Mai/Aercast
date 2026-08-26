@@ -52,13 +52,19 @@ struct Options {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Command {
-    Start(bool),
+    Start(ShareSettings),
     Apply(bool),
     Network(settings::Settings),
     End,
     Refresh(bool),
     Disconnect(u64),
     Quit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShareSettings {
+    system_audio: bool,
+    video: settings::VideoSettings,
 }
 
 enum ShareStop {
@@ -170,6 +176,7 @@ struct App {
     settings: settings::Settings,
     settings_open: bool,
     settings_error: Option<String>,
+    video_error: Option<String>,
     appearance: appearance::Appearance,
     approved_source: Option<&'static str>,
     active_system_audio: Option<bool>,
@@ -250,6 +257,9 @@ fn boot(
     let network_address = settings.listen_address.to_string();
     let network_port = settings.listen_port.to_string();
     let share_base_url = settings.share_base_url.clone().unwrap_or_default();
+    let video_error = video_plan(&settings.video)
+        .err()
+        .map(|error| format!("Video quality unavailable: {error}"));
     let (tray_updates, tray_state) = watch::channel(Phase::Starting);
     let app = App {
         phase: Phase::Starting,
@@ -262,6 +272,7 @@ fn boot(
         settings,
         settings_open: false,
         settings_error: None,
+        video_error,
         appearance: appearance::Appearance::default(),
         approved_source: None,
         active_system_audio: None,
@@ -362,10 +373,15 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
         return Task::none();
     }
     match message {
-        Message::Start if app.phase != Phase::Waiting || app.applying_network => {}
+        Message::Start
+            if app.phase != Phase::Waiting || app.applying_network || app.video_error.is_some() => {
+        }
         Message::Start => {
-            let system_audio = app.settings.system_audio;
-            if send_command(app, Command::Start(system_audio)) {
+            let share = ShareSettings {
+                system_audio: app.settings.system_audio,
+                video: app.settings.video,
+            };
+            if send_command(app, Command::Start(share)) {
                 app.phase = Phase::Selecting;
             }
         }
@@ -658,7 +674,10 @@ fn share_view(app: &App) -> Element<'_, Message> {
     let status = match &app.phase {
         Phase::Starting => "Starting Aercast…",
         Phase::NetworkError(error) => error,
-        Phase::Waiting => "Ready. Capture has not started.",
+        Phase::Waiting => app
+            .video_error
+            .as_deref()
+            .unwrap_or("Ready. Capture has not started."),
         Phase::Selecting if app.approved_source.is_some() => "Starting media…",
         Phase::Selecting => "Choose one screen or window in the system picker.",
         Phase::Sharing if app.applying_system_audio.is_some() => "Restarting media…",
@@ -666,7 +685,8 @@ fn share_view(app: &App) -> Element<'_, Message> {
         Phase::Ending => "Ending share…",
         Phase::Error(error) => error,
     };
-    let can_start = app.phase == Phase::Waiting && !app.applying_network;
+    let can_start =
+        app.phase == Phase::Waiting && !app.applying_network && app.video_error.is_none();
     let can_end = matches!(app.phase, Phase::Selecting | Phase::Sharing);
     let end_label = if app.phase == Phase::Selecting {
         "Cancel"
@@ -930,6 +950,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                 .size(12)
                 .color(app.appearance.muted_text()),
             text(app.settings_error.as_deref().unwrap_or_default()).size(12),
+            text(app.video_error.as_deref().unwrap_or_default()).size(12),
         ]
         .spacing(16)
         .max_width(432),
@@ -995,7 +1016,7 @@ async fn run_host(
                 }
             };
             match command {
-                Command::Start(system_audio) => {
+                Command::Start(share) => {
                     let Some(server) = server.as_mut() else {
                         continue;
                     };
@@ -1004,7 +1025,7 @@ async fn run_host(
                         &options,
                         &host,
                         &link_base,
-                        system_audio,
+                        share,
                         &mut command_receiver,
                         &mut server.task,
                         &events,
@@ -1136,11 +1157,15 @@ async fn share_once(
     options: &Options,
     host: &web::Host,
     link_base: &str,
-    mut system_audio: bool,
+    share: ShareSettings,
     commands: &mut mpsc::Receiver<Command>,
     server: &mut Server,
     events: &Events,
 ) -> Result<ShareStop> {
+    let ShareSettings {
+        mut system_audio,
+        video,
+    } = share;
     let portal = Screencast::new().await?;
     let available_sources = portal.available_source_types().await?;
     let available_cursors = portal.available_cursor_modes().await?;
@@ -1202,7 +1227,7 @@ async fn share_once(
             signal = tokio::signal::ctrl_c() => break Selection::Signal(signal),
             result = &mut *server => break Selection::Server(result),
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
-                Command::Start(_) => println!("Source selection is already open."),
+                Command::Start(..) => println!("Source selection is already open."),
                 Command::Apply(_) => println!("Source selection is still open."),
                 Command::Network(_) => {
                     let _ = events.unbounded_send(HostEvent::NetworkApplied(Err(
@@ -1297,9 +1322,9 @@ async fn share_once(
             Ok(media) => media,
             Err(error) => break Ok(ShareStop::Failed(error.into())),
         };
+        let description = pipeline_description(node_id, remote.as_raw_fd(), video);
         let attempt = serve_video(
-            node_id,
-            remote.as_raw_fd(),
+            &description,
             &mut capture_caps,
             system_audio.then(|| options.exclusions.clone()),
             media.clone(),
@@ -1403,7 +1428,7 @@ async fn share_control(
                 Err(error) => ShareStop::Failed(error.into()),
             },
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
-                Command::Start(_) => println!("A share is already active."),
+                Command::Start(..) => println!("A share is already active."),
                 Command::Apply(system_audio) => return ShareStop::Apply(system_audio),
                 Command::Network(_) => {
                     let _ = events.unbounded_send(HostEvent::NetworkApplied(Err(
@@ -1501,8 +1526,7 @@ fn approved_source(source_type: Option<SourceType>) -> &'static str {
 }
 
 async fn serve_video(
-    node_id: u32,
-    remote_fd: i32,
+    description: &str,
     capture_caps: &mut Option<gst::Caps>,
     audio_exclusions: Option<Vec<String>>,
     media: web::MediaSession,
@@ -1517,10 +1541,7 @@ async fn serve_video(
     }
     let started = Instant::now();
 
-    // ponytail: normalize this niri/AMD DMA-BUF at 720p30 for the software proof.
-    let pipeline = gst::parse::launch(&pipeline_description(node_id, remote_fd))?
-        .downcast::<gst::Pipeline>()
-        .map_err(|_| io::Error::other("GStreamer did not create a pipeline"))?;
+    let pipeline = build_pipeline(description)?;
     let portal_video = pipeline
         .by_name("portal-video")
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no Portal video source"))?;
@@ -1660,13 +1681,54 @@ async fn serve_video(
     }
 }
 
-fn pipeline_description(node_id: u32, remote_fd: i32) -> String {
+fn video_plan(video: &settings::VideoSettings) -> Result<()> {
+    video.validate()?;
+    let caps = gst::Caps::builder("video/x-raw")
+        .field("format", "I420")
+        .field("width", video.width as i32)
+        .field("height", video.height as i32)
+        .field("framerate", gst::Fraction::new(video.fps as i32, 1))
+        .build();
+    require_caps("vapostproc", gst::PadDirection::Src, &caps)?;
+    require_caps("x264enc", gst::PadDirection::Sink, &caps)?;
+    build_pipeline(&pipeline_description(1, 0, *video))?;
+    Ok(())
+}
+
+fn require_caps(factory_name: &str, direction: gst::PadDirection, caps: &gst::Caps) -> Result<()> {
+    let factory = gst::ElementFactory::find(factory_name)
+        .ok_or_else(|| io::Error::other(format!("missing GStreamer element {factory_name}")))?;
+    if factory
+        .static_pad_templates()
+        .iter()
+        .any(|template| template.direction() == direction && template.caps().can_intersect(caps))
+    {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("{factory_name} does not support {caps}")).into())
+    }
+}
+
+fn build_pipeline(description: &str) -> Result<gst::Pipeline> {
+    gst::parse::launch(description)?
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| io::Error::other("GStreamer did not create a pipeline").into())
+}
+
+fn pipeline_description(node_id: u32, remote_fd: i32, video: settings::VideoSettings) -> String {
+    let bitrate = video
+        .bitrate_mbps
+        .map(|bitrate| format!(" bitrate={}", u32::from(bitrate) * 1_000))
+        .unwrap_or_default();
     format!(
         "mp4mux name=mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false
          audiomixer name=audio-mixer ignore-inactive-pads=true ! audioconvert ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0
          audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! queue ! audio-mixer.
          appsrc name=system-audio is-live=true format=time do-timestamp=true block=false max-bytes=384000 leaky-type=downstream ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! queue ! audio-mixer.
-         pipewiresrc name=portal-video fd={remote_fd} path={node_id} on-disconnect=error ! capsfilter name=portal-format ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0"
+         pipewiresrc name=portal-video fd={remote_fd} path={node_id} on-disconnect=error ! capsfilter name=portal-format ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps} ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0",
+        width = video.width,
+        height = video.height,
+        fps = video.fps,
     )
 }
 

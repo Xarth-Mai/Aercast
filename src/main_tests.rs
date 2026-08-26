@@ -186,6 +186,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings: settings::Settings::default(),
         settings_open: false,
         settings_error: None,
+        video_error: None,
         appearance: appearance::Appearance::default(),
         approved_source: None,
         active_system_audio: None,
@@ -291,8 +292,19 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.share_base_url, "https://share.example:443");
 
     app.settings.system_audio = false;
+    app.video_error = Some("unsupported".to_owned());
     drop(update(&mut app, Message::Start));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Start(false));
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(app.phase, Phase::Waiting);
+    app.video_error = None;
+    drop(update(&mut app, Message::Start));
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        Command::Start(ShareSettings {
+            system_audio: false,
+            video: settings::VideoSettings::default(),
+        })
+    );
     assert_eq!(app.phase, Phase::Selecting);
     drop(update(&mut app, Message::Host(HostEvent::Source("Window"))));
     assert_eq!(app.approved_source, Some("Window"));
@@ -568,10 +580,49 @@ fn avc_config_produces_the_codec_parameter() {
 #[test]
 fn av_pipeline_description_has_no_syntax_error() {
     gst::init().unwrap();
-    if let Err(error) = gst::parse::launch(&pipeline_description(1, 0)) {
+    let video = settings::VideoSettings::default();
+    let description = pipeline_description(1, 0, video);
+    assert!(description.contains("width=1280,height=720"));
+    assert!(description.contains("framerate=60/1"));
+    assert!(description.contains("bitrate=6000 key-int-max=60"));
+    let encoder_default = pipeline_description(
+        1,
+        0,
+        settings::VideoSettings {
+            fps: 30,
+            bitrate_mbps: None,
+            ..video
+        },
+    );
+    assert!(
+        encoder_default.contains(
+            "x264enc name=encoder tune=zerolatency speed-preset=ultrafast key-int-max=30"
+        )
+    );
+    if let Err(error) = gst::parse::launch(&description) {
         assert_ne!(
             error.kind::<gst::ParseError>(),
             Some(gst::ParseError::Syntax)
         );
     }
+}
+
+#[test]
+#[ignore = "requires the supported host video stack"]
+fn default_video_plan_is_available() {
+    gst::init().unwrap();
+    let video = settings::VideoSettings::default();
+    video_plan(&video).unwrap();
+    assert!(
+        video_plan(&settings::VideoSettings {
+            width: 20_000,
+            height: 20_000,
+            ..video
+        })
+        .is_err()
+    );
+    let pipeline = build_pipeline(&pipeline_description(1, 0, video)).unwrap();
+    let encoder = pipeline.by_name("encoder").unwrap();
+    assert_eq!(encoder.property::<u32>("bitrate"), 6_000);
+    assert_eq!(encoder.property::<u32>("key-int-max"), 60);
 }

@@ -96,7 +96,7 @@ cleanup failure; real browser recovery remains unverified.
 | Presets | `720p60 / 6 Mbps`, `1080p60 / 12 Mbps`, `1440p60 / 24 Mbps` |
 | Custom quality | Any width and height within the selected encoder's reported capability; preserve aspect ratio and center with black padding when needed |
 | Frame rate | `30 / 60 / 120 FPS` |
-| Bitrate | Use the encoder's default until manually set; manual range `1–500 Mbps` |
+| Bitrate | Presets use their listed bitrate; Custom uses the encoder default until manually set; manual range `1–500 Mbps` |
 | Encoder | Auto prefers detected hardware and falls back to software; allow a detected implementation to be selected; never expose codec choice |
 | System audio | One switch, enabled by default; no microphone |
 | Audio exclusions | Communication rule plus enabled defaults for Discord, Vesktop, and Steam Voice; ordinary rules can be toggled, deleted, or added from active PipeWire applications |
