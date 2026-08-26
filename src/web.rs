@@ -13,7 +13,7 @@ use axum::{
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use futures_util::stream;
 use tokio::{
@@ -91,6 +91,7 @@ struct ViewerRecord {
     last_seen: Instant,
     epoch: u64,
     close: watch::Sender<bool>,
+    blocked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,7 +104,7 @@ pub(crate) struct Viewer {
 
 enum Access {
     Invalid,
-    Waiting,
+    Waiting(Arc<ViewerGeneration>),
     Sharing(Arc<MediaHub>, Arc<ViewerGeneration>),
 }
 
@@ -141,11 +142,11 @@ impl Host {
     pub(crate) fn refresh(&self, confirmed: bool) -> io::Result<Option<String>> {
         let mut state = lock(&self.inner)?;
         let token = share_token()?;
-        if !state.viewers.revoke(confirmed)? {
+        let Some(next_key) = state.viewers.revoke(confirmed)? else {
             return Ok(None);
-        }
+        };
         state.token = token;
-        state.viewers = Arc::new(ViewerGeneration::new());
+        state.viewers = Arc::new(ViewerGeneration::with_next_key(next_key));
         Ok(Some(format!("/s/{}", state.token)))
     }
 
@@ -155,6 +156,10 @@ impl Host {
 
     pub(crate) fn viewer_updates(&self) -> io::Result<watch::Receiver<()>> {
         Ok(lock(&self.inner)?.viewers.changed.subscribe())
+    }
+
+    pub(crate) fn disconnect_viewer(&self, key: u64) -> io::Result<()> {
+        lock(&self.inner)?.viewers.block(key, Instant::now())
     }
 
     pub(crate) fn start(&self) -> io::Result<MediaSession> {
@@ -190,7 +195,7 @@ impl Host {
         }
         Ok(match &state.media {
             Some(media) => Access::Sharing(Arc::clone(media), Arc::clone(&state.viewers)),
-            None => Access::Waiting,
+            None => Access::Waiting(Arc::clone(&state.viewers)),
         })
     }
 }
@@ -303,12 +308,16 @@ impl Drop for ViewerGuard {
 
 impl ViewerGeneration {
     fn new() -> Self {
+        Self::with_next_key(0)
+    }
+
+    fn with_next_key(next_key: u64) -> Self {
         let (changed, _) = watch::channel(());
         let (revoked, _) = watch::channel(false);
         Self {
             inner: Mutex::new(ViewerState {
                 records: Vec::new(),
-                next_key: 0,
+                next_key,
                 next_epoch: 0,
             }),
             changed,
@@ -337,6 +346,12 @@ impl ViewerGeneration {
             return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
         }
         let position = state.records.iter().position(|record| record.id == id);
+        if position.is_some_and(|position| state.records[position].blocked) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Viewer blocked",
+            ));
+        }
         let already_online =
             position.is_some_and(|position| state.records[position].viewer.online_since.is_some());
         if !already_online
@@ -392,6 +407,7 @@ impl ViewerGeneration {
                 last_seen: now,
                 epoch,
                 close,
+                blocked: false,
             });
         }
         drop(state);
@@ -419,6 +435,48 @@ impl ViewerGeneration {
         Ok(())
     }
 
+    fn is_blocked(&self, id: [u8; 16]) -> io::Result<bool> {
+        let state = lock(&self.inner)?;
+        if *self.revoked.borrow() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
+        }
+        Ok(state
+            .records
+            .iter()
+            .any(|record| record.id == id && record.blocked))
+    }
+
+    fn block(&self, key: u64, now: Instant) -> io::Result<()> {
+        let mut state = lock(&self.inner)?;
+        let Some(record) = state
+            .records
+            .iter_mut()
+            .find(|record| record.viewer.key == key)
+        else {
+            return Ok(());
+        };
+        record.blocked = true;
+        if let Some(online_since) = record.viewer.online_since.take() {
+            record.viewer.duration += now.saturating_duration_since(online_since);
+            record.last_seen = now;
+            record.close.send_replace(true);
+        }
+        drop(state);
+        self.changed.send_replace(());
+        Ok(())
+    }
+
+    fn unblock(&self, id: [u8; 16]) -> io::Result<()> {
+        let mut state = lock(&self.inner)?;
+        if *self.revoked.borrow() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
+        }
+        if let Some(record) = state.records.iter_mut().find(|record| record.id == id) {
+            record.blocked = false;
+        }
+        Ok(())
+    }
+
     fn disconnect_all(&self) -> io::Result<()> {
         let now = Instant::now();
         let mut state = lock(&self.inner)?;
@@ -438,13 +496,13 @@ impl ViewerGeneration {
         Ok(())
     }
 
-    fn revoke(&self, confirmed: bool) -> io::Result<bool> {
+    fn revoke(&self, confirmed: bool) -> io::Result<Option<u64>> {
         let state = lock(&self.inner)?;
         if !confirmed && state.records.iter().any(|record| record.viewer.online()) {
-            return Ok(false);
+            return Ok(None);
         }
         self.revoked.send_replace(true);
-        Ok(true)
+        Ok(Some(state.next_key))
     }
 }
 
@@ -521,6 +579,7 @@ pub(crate) async fn serve(
         Router::new()
             .route("/s/{token}", get(viewer_page))
             .route("/s/{token}/stream", get(media_stream).head(media_head))
+            .route("/s/{token}/retry", post(viewer_retry))
             .with_state(host)
             .into_make_service_with_connect_info::<SocketAddr>(),
     )
@@ -534,7 +593,7 @@ async fn viewer_page(Path(token): Path<String>, State(host): State<Host>) -> Res
     match host.access(&token) {
         Ok(Access::Invalid) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        Ok(Access::Waiting | Access::Sharing(..)) => Response::builder()
+        Ok(Access::Waiting(_) | Access::Sharing(..)) => Response::builder()
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
             .header(header::CACHE_CONTROL, "no-store")
             .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
@@ -566,9 +625,20 @@ async fn media_stream(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
     let (media, viewers) = match access {
-        Access::Sharing(media, viewers) => (media, viewers),
-        Access::Waiting => return waiting(),
+        Access::Sharing(media, viewers) => (Some(media), viewers),
+        Access::Waiting(viewers) => (None, viewers),
         Access::Invalid => unreachable!("invalid access returned above"),
+    };
+    match viewers.is_blocked(id) {
+        Ok(true) => return blocked(),
+        Ok(false) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+    let Some(media) = media else {
+        return waiting();
     };
     let subscription = match media.subscribe(viewers, id, peer.ip()) {
         Ok(Some(subscription)) => subscription,
@@ -579,6 +649,7 @@ async fn media_stream(
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             return StatusCode::TOO_MANY_REQUESTS.into_response();
         }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return blocked(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let mime = subscription.mime.clone();
@@ -621,8 +692,47 @@ async fn media_head(Path(token): Path<String>, State(host): State<Host>) -> Stat
     match host.access(&token) {
         Ok(Access::Invalid) => StatusCode::NOT_FOUND,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        Ok(Access::Waiting | Access::Sharing(..)) => StatusCode::METHOD_NOT_ALLOWED,
+        Ok(Access::Waiting(_) | Access::Sharing(..)) => StatusCode::METHOD_NOT_ALLOWED,
     }
+}
+
+async fn viewer_retry(
+    Path(token): Path<String>,
+    State(host): State<Host>,
+    headers: HeaderMap,
+) -> Response {
+    let access = match host.access(&token) {
+        Ok(Access::Invalid) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(access) => access,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let id = match viewer_id(&headers) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let viewers = match access {
+        Access::Waiting(viewers) | Access::Sharing(_, viewers) => viewers,
+        Access::Invalid => unreachable!("invalid access returned above"),
+    };
+    match viewers.unblock(id) {
+        Ok(()) => Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::empty())
+            .expect("static retry response is valid"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn blocked() -> Response {
+    Response::builder()
+        .status(StatusCode::CONFLICT)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::empty())
+        .expect("static blocked response is valid")
 }
 
 fn waiting() -> Response {

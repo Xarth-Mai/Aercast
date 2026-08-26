@@ -54,6 +54,7 @@ enum Command {
     Network(settings::Settings),
     End,
     Refresh(bool),
+    Disconnect(u64),
     Quit,
 }
 
@@ -85,6 +86,7 @@ enum Message {
     End,
     Copy,
     Refresh,
+    Disconnect(u64),
     ConfirmRefresh,
     CancelRefresh,
     Show,
@@ -290,6 +292,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Copy => return clipboard::write(app.link.clone()),
         Message::Refresh => {
             let _ = send_command(app, Command::Refresh(false));
+        }
+        Message::Disconnect(key) => {
+            let _ = send_command(app, Command::Disconnect(key));
         }
         Message::ConfirmRefresh => {
             app.confirm_refresh = false;
@@ -531,13 +536,22 @@ fn share_view(app: &App) -> Element<'_, Message> {
             };
             rows.push(
                 container(
-                    row![
-                        text(viewer.ip.to_string()).size(12),
-                        space().width(Length::Fill),
-                        text(if viewer.online() { "Online" } else { "Offline" }).size(12),
-                        text(format_duration(viewer.duration())).size(12),
+                    column![
+                        row![
+                            text(viewer.ip.to_string()).size(12),
+                            space().width(Length::Fill),
+                            button("Disconnect").on_press_maybe(
+                                viewer.online().then_some(Message::Disconnect(viewer.key)),
+                            ),
+                        ]
+                        .spacing(8),
+                        row![
+                            text(if viewer.online() { "Online" } else { "Offline" }).size(12),
+                            space().width(Length::Fill),
+                            text(format_duration(viewer.duration())).size(12),
+                        ],
                     ]
-                    .spacing(8),
+                    .spacing(4),
                 )
                 .padding([6, 8]),
             )
@@ -799,6 +813,7 @@ async fn run_host(
                 }
                 Command::End => {}
                 Command::Refresh(_) => {}
+                Command::Disconnect(key) => host.disconnect_viewer(key)?,
                 Command::Quit => break,
             }
         }
@@ -956,6 +971,7 @@ async fn share_once(
                 }
                 Command::End => break Selection::Stop(false),
                 Command::Refresh(_) => println!("Source selection is still open."),
+                Command::Disconnect(key) => host.disconnect_viewer(key)?,
                 Command::Quit => break Selection::Stop(true),
             },
         }
@@ -1171,6 +1187,11 @@ async fn share_control(
                     }
                     Err(error) => return ShareStop::Failed(error.into()),
                 },
+                Command::Disconnect(key) => {
+                    if let Err(error) = host.disconnect_viewer(key) {
+                        return ShareStop::Failed(error.into());
+                    }
+                }
                 Command::Quit => {
                     println!("Stopping Aercast.");
                     return ShareStop::Quit;

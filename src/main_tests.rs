@@ -287,6 +287,12 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.window, None);
 
     app.viewers = test_viewers(2, true);
+    let viewer_key = app.viewers[0].key;
+    drop(update(&mut app, Message::Disconnect(viewer_key)));
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        Command::Disconnect(viewer_key)
+    );
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
     assert!(!app.confirm_refresh);

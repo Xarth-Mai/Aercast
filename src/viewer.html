@@ -26,6 +26,7 @@
   const button = document.querySelector("#play");
   const status = document.querySelector("#status");
   let running = false;
+  let blockedByHost = false;
   let currentAttempt = null;
   const createViewerId = () => Array.from(
     crypto.getRandomValues(new Uint8Array(16)),
@@ -201,6 +202,17 @@
           document.body.dataset.state = "ended";
           return;
         }
+        if (response.status === 409) {
+          if (response.body) await response.body.cancel();
+          attempt.response = null;
+          running = false;
+          blockedByHost = true;
+          button.textContent = "Retry";
+          button.disabled = false;
+          status.textContent = "Disconnected by the Host.";
+          document.body.dataset.state = "blocked";
+          return;
+        }
         if (!response.ok || !response.body) {
           throw new Error(`Stream request failed: HTTP ${response.status}`);
         }
@@ -237,6 +249,27 @@
     button.disabled = true;
     video.controls = true;
     video.muted = false;
+    if (blockedByHost) {
+      try {
+        const response = await fetch(`${location.pathname}/retry`, {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Aercast-Viewer-ID": viewerId }
+        });
+        if (response.status === 404) {
+          blockedByHost = false;
+          status.textContent = "This share has ended or the link is invalid.";
+          document.body.dataset.state = "ended";
+          return;
+        }
+        if (!response.ok) throw new Error(`Retry failed: HTTP ${response.status}`);
+        blockedByHost = false;
+        button.textContent = "Play / Enable Audio";
+      } catch (error) {
+        showError(error);
+        return;
+      }
+    }
     if (running) {
       try { await video.play(); } catch (error) { showError(error); }
       return;
