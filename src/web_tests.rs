@@ -253,6 +253,12 @@ async fn token_routes_wait_between_isolated_media_sessions() {
             .status(),
         StatusCode::NOT_FOUND
     );
+    assert_eq!(
+        media_stream(Path("invalid".to_owned()), State(host.clone()))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
     let page = viewer_page(Path(token.clone()), State(host.clone())).await;
     assert_eq!(page.status(), StatusCode::OK);
     assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
@@ -308,15 +314,16 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     let next = host.start().unwrap();
     next.set_mime("video/mp4; codecs=\"test\"".to_owned())
         .unwrap();
-    next.publish(&init()).unwrap();
-    next.publish(&fragment(VIDEO_TRACK, 0x40, b"new-session"))
-        .unwrap();
+    let next_init = init();
+    let next_fragment = fragment(VIDEO_TRACK, 0x40, b"new-session");
+    next.publish(&next_init).unwrap();
+    next.publish(&next_fragment).unwrap();
     assert!(body.next().await.is_none());
-    assert_eq!(
-        media_stream(Path(token), State(host.clone()))
-            .await
-            .status(),
-        StatusCode::OK
-    );
+    let response = media_stream(Path(token), State(host.clone())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut next_body = response.into_body().into_data_stream();
+    assert_eq!(next_body.next().await.unwrap().unwrap(), next_init);
+    assert_eq!(next_body.next().await.unwrap().unwrap(), next_fragment);
     host.stop(&next).unwrap();
+    assert!(next_body.next().await.is_none());
 }

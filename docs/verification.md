@@ -4,13 +4,14 @@ This document owns the latest real evidence and current blocker behind Aercast
 compatibility, performance, and completion claims; it does not own product
 plans, future targets, visual rules, or append-only raw logs.
 
-## Current niri host
+## Recorded niri baseline
 
-Unless a record says otherwise, the current evidence was collected on this
+Unless a record says otherwise, the evidence below was collected in this
 environment:
 
 | Field | Value |
 |---|---|
+| Revision | `ffc70b5` (`feat: complete multi-viewer host lifecycle`) |
 | Date | 2026-08-26 |
 | Distribution | CachyOS rolling, Linux `7.2.0-1-cachyos` |
 | Compositor | niri `26.04` (`8ed0da4`), ScreenCast Portal v5 |
@@ -22,8 +23,9 @@ environment:
 | Firefox-family vehicle | Zen Browser `1.21.15b`, checked first |
 | Chromium vehicle | Chromium `151.0.7922.173` |
 
-This host proves only the recorded scenarios. It does not establish support on
-another compositor, GPU, encoder, distribution, or browser build.
+This baseline proves only the recorded scenarios. It does not qualify current
+HEAD or establish support on another compositor, GPU, encoder, distribution, or
+browser build.
 
 ## Portal capture
 
@@ -76,8 +78,8 @@ reported no media error.
 Three established media sockets belonged to one Aercast process and Host UI
 count reached three. An intentionally one-byte-per-second response was dropped
 while all three Chromium responses stayed established and advanced. This is
-current evidence for one-encoder fan-out and stalled-reader isolation, not
-Phase 5 product acceptance.
+baseline evidence for one-encoder fan-out and stalled-reader isolation, not
+current-HEAD or Phase 5 product acceptance.
 
 The fMP4 late-join parser was also checked against real installed `mp4mux`
 output. It reconstructed `ftyp` + `moov`, then complete `moof` + `mdat` pairs,
@@ -110,7 +112,9 @@ identity were excluded; the integrated Portal stream played in Zen.
   and WirePlumber remained active.
 
 This is routing and signal evidence, not a human listening result or an A/V
-synchronization measurement.
+synchronization measurement. The synthetic source-creation commands were not
+retained, so this historical manual evidence is not independently reproducible
+and must be replaced by the current-HEAD Phase 4 run.
 
 ### PipeWire 1.6.8 prerequisite
 
@@ -125,10 +129,10 @@ yet covers the requested automatic `media.role=Communication` exclusion.
 
 ## Current lifecycle evidence and blockers
 
-The 2026-08-26 real niri run proved that the current development server can
-provide a waiting page, start a Portal share, survive two Start/Cancel cycles,
-serve one and three Viewers, isolate a stalled response, and cleanly remove its
-Portal session, media pipeline, audio graph objects, listener, and process.
+The 2026-08-26 real niri run proved that revision `ffc70b5` could provide a
+waiting page, start a Portal share, survive two Start/Cancel cycles, serve one
+and three Viewers, isolate a stalled response, and cleanly remove its Portal
+session, media pipeline, audio graph objects, listener, and process.
 
 That run also confirmed behavior superseded by the current product contract:
 

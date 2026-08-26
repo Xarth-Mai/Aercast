@@ -26,6 +26,7 @@
   function showError(error) {
     button.disabled = false;
     status.textContent = error.message;
+    document.body.dataset.state = "error";
     document.body.dataset.error = error.message;
   }
 
@@ -123,6 +124,7 @@
       });
       if (response.status !== 425) return response;
       if (response.body) await response.body.cancel();
+      document.body.dataset.state = "waiting";
       status.textContent = "Waiting for the Host to start sharing…";
       await delay(500);
     }
@@ -151,6 +153,8 @@
 
   async function connect(attempt) {
     while (running) {
+      document.body.dataset.state = "connecting";
+      delete document.body.dataset.error;
       status.textContent = "Connecting…";
       try {
         const response = await nextResponse(attempt);
@@ -175,12 +179,17 @@
         document.body.dataset.mime = mime;
         status.textContent = mime;
         await consume(attempt, response, mime);
+        if (running) {
+          document.body.dataset.state = "reconnecting";
+          status.textContent = "Reconnecting… Stream ended";
+        }
       } catch (error) {
         const cause = attempt.error ?? error;
         if (!running) {
           showError(cause);
           return;
         }
+        document.body.dataset.state = "reconnecting";
         status.textContent = `Reconnecting… ${cause.message}`;
       } finally {
         await stopAttempt(attempt);

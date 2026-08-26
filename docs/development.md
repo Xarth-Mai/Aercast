@@ -8,9 +8,9 @@ does not own homepage copy, visual tokens, or raw test output.
 ## Status
 
 Aercast is pre-alpha. Phase 4, single-Viewer core stability, is active. The
-repository already proves Portal capture, selective PipeWire audio, H.264/AAC
-fMP4 playback, bounded one-encoder fan-out, and a basic iced window on the
-recorded niri host. Unit coverage now separates process-token ownership from
+recorded pre-Phase-4 niri baseline proves Portal capture, selective PipeWire
+audio, H.264/AAC fMP4 playback, bounded one-encoder fan-out, and a basic iced
+window. Unit coverage now separates process-token ownership from
 replaceable media state and applies Communication-role audio policy. The code
 now bounds media recovery without reclassifying a reported audio failure as a
 cleanup failure; real browser recovery remains unverified.

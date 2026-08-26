@@ -16,9 +16,10 @@ a small group of browser viewers. It is built for gamers, not meetings.
 ## Status
 
 Aercast is **pre-alpha**, with no packaged release or supported installation
-procedure yet. Development is verified on niri with Zen Browser and Chromium,
-including live H.264/AAC playback, selective audio, and one-encoder multi-Viewer
-fan-out. [See the evidence.](docs/verification.md)
+procedure yet. Earlier niri development runs demonstrated live H.264/AAC
+playback and one-encoder multi-Viewer fan-out in Zen Browser and Chromium, plus
+selective-audio routing with Zen. The current build has not completed an
+end-to-end qualification run. [See the evidence.](docs/verification.md)
 
 GNOME, KDE, packaged installation, hardware encoding, 1080p60, and trusted-LAN
 latency targets are not yet verified.
