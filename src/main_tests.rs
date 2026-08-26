@@ -71,10 +71,10 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.phase, Phase::Ending);
     drop(update(
         &mut app,
-        Message::Host(HostEvent::Ended("http://127.0.0.1/s/fresh".to_owned())),
+        Message::Host(HostEvent::Waiting("http://127.0.0.1/s/token".to_owned())),
     ));
-    assert_eq!(app.phase, Phase::Ended);
-    assert_eq!(app.link, "http://127.0.0.1/s/fresh");
+    assert_eq!(app.phase, Phase::Waiting);
+    assert_eq!(app.link, "http://127.0.0.1/s/token");
 
     let id = window::Id::unique();
     assert_eq!(update(&mut app, Message::Close(id)).units(), 0);

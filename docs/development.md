@@ -10,8 +10,8 @@ does not own homepage copy, visual tokens, or raw test output.
 Aercast is pre-alpha. Phase 4, single-Viewer core stability, is active. The
 repository already proves Portal capture, selective PipeWire audio, H.264/AAC
 fMP4 playback, bounded one-encoder fan-out, and a basic iced window on the
-recorded niri host, but its current media and token lifecycle still implements
-the superseded behavior listed under [current blockers](#current-blockers).
+recorded niri host. Unit coverage now separates process-token ownership from
+replaceable media state; recovery and Communication policy remain incomplete.
 
 ## Product commitments
 
@@ -240,8 +240,8 @@ settings surface area:
 
 ### Current blockers
 
-- `web::Host::end` currently closes media and rotates the token together, so
-  Stop produces `404` instead of waiting.
+- Stop now preserves the token and returns the same route to waiting in unit
+  coverage, but the new behavior still needs real Zen and Chromium evidence.
 - The Portal owner currently runs one media attempt and treats any media error
   as fatal; no three-retry boundary exists.
 - Audio identity is stable and PID-free, but `media.role=Communication` is not

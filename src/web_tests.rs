@@ -234,7 +234,7 @@ fn lagged_viewer_does_not_harm_fast_viewers() {
 }
 
 #[tokio::test]
-async fn token_routes_revoke_and_isolate_sessions() {
+async fn token_routes_wait_between_isolated_media_sessions() {
     let host = Host::new().unwrap();
     let token = host.path().unwrap().trim_start_matches("/s/").to_owned();
     assert_eq!(token.len(), 64);
@@ -288,18 +288,23 @@ async fn token_routes_revoke_and_isolate_sessions() {
     assert!(body.next().await.unwrap().is_ok());
     assert_eq!(*count.borrow_and_update(), 1);
 
-    session.end().unwrap();
+    host.stop(&session).unwrap();
     assert_eq!(
         viewer_page(Path(token.clone()), State(host.clone()))
             .await
             .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::OK
     );
     assert!(body.next().await.is_none());
     assert_eq!(*count.borrow_and_update(), 0);
+    assert_eq!(
+        media_stream(Path(token.clone()), State(host.clone()))
+            .await
+            .status(),
+        StatusCode::TOO_EARLY
+    );
 
-    let next_token = host.path().unwrap().trim_start_matches("/s/").to_owned();
-    assert_ne!(token, next_token);
+    assert_eq!(host.path().unwrap(), format!("/s/{token}"));
     let next = host.start().unwrap();
     next.set_mime("video/mp4; codecs=\"test\"".to_owned())
         .unwrap();
@@ -307,5 +312,11 @@ async fn token_routes_revoke_and_isolate_sessions() {
     next.publish(&fragment(VIDEO_TRACK, 0x40, b"new-session"))
         .unwrap();
     assert!(body.next().await.is_none());
-    next.end().unwrap();
+    assert_eq!(
+        media_stream(Path(token), State(host.clone()))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    host.stop(&next).unwrap();
 }

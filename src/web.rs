@@ -37,7 +37,6 @@ struct HostState {
 #[derive(Clone)]
 pub(crate) struct MediaSession {
     hub: Arc<MediaHub>,
-    host: Host,
 }
 
 struct MediaHub {
@@ -112,13 +111,10 @@ impl Host {
             ));
         }
         state.media = Some(Arc::clone(&hub));
-        Ok(MediaSession {
-            hub,
-            host: self.clone(),
-        })
+        Ok(MediaSession { hub })
     }
 
-    pub(crate) fn end(&self, session: &MediaSession) -> io::Result<()> {
+    pub(crate) fn stop(&self, session: &MediaSession) -> io::Result<()> {
         let mut state = lock(&self.inner)?;
         if !state
             .media
@@ -127,16 +123,8 @@ impl Host {
         {
             return Ok(());
         }
-        state.token.clear();
-        session.hub.close()?;
-        match share_token() {
-            Ok(token) => {
-                state.token = token;
-                state.media = None;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
+        state.media = None;
+        session.hub.close()
     }
 
     fn access(&self, candidate: &str) -> io::Result<Access> {
@@ -152,10 +140,6 @@ impl Host {
 }
 
 impl MediaSession {
-    pub(crate) fn end(&self) -> io::Result<()> {
-        self.host.end(self)
-    }
-
     pub(crate) fn set_mime(&self, mime: String) -> io::Result<()> {
         lock(&self.hub.inner)?.mime = Some(mime);
         Ok(())

@@ -48,24 +48,15 @@ enum Command {
     Quit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
 enum ShareStop {
     End,
     Quit,
     PortalClosed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ShareResult {
-    Cancelled,
-    Ended,
-    Quit,
-}
-
 #[derive(Clone, Debug)]
 enum HostEvent {
     Waiting(String),
-    Ended(String),
     Sharing,
     Ending,
     Viewers(usize),
@@ -85,7 +76,6 @@ enum Message {
 enum Phase {
     Starting,
     Waiting,
-    Ended,
     Selecting,
     Sharing,
     Ending,
@@ -169,13 +159,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     app.phase = Phase::Waiting;
                 }
             }
-            HostEvent::Ended(link) => {
-                app.link = link;
-                app.viewers = 0;
-                if app.closing.is_none() {
-                    app.phase = Phase::Ended;
-                }
-            }
             HostEvent::Sharing if app.closing.is_none() => app.phase = Phase::Sharing,
             HostEvent::Ending if app.closing.is_none() => app.phase = Phase::Ending,
             HostEvent::Viewers(viewers) => app.viewers = viewers,
@@ -213,14 +196,13 @@ fn view(app: &App) -> Element<'_, Message> {
     let status = match &app.phase {
         Phase::Starting => "Starting Aercast…",
         Phase::Waiting => "Ready. Capture has not started.",
-        Phase::Ended => "Share ended. A fresh link is ready.",
         Phase::Selecting => "Choose one screen or window in the system picker.",
         Phase::Sharing => "Sharing.",
         Phase::Ending => "Ending share…",
         Phase::Closing => "Cleaning up…",
         Phase::Error(error) => error,
     };
-    let can_start = matches!(app.phase, Phase::Waiting | Phase::Ended);
+    let can_start = app.phase == Phase::Waiting;
     let can_end = matches!(app.phase, Phase::Selecting | Phase::Sharing);
     let end_label = if app.phase == Phase::Selecting {
         "Cancel"
@@ -262,16 +244,10 @@ async fn run_host(
     let address = listener.local_addr()?;
     let (shutdown, shutdown_request) = oneshot::channel();
     let mut server = tokio::spawn(web::serve(listener, host.clone(), shutdown_request));
-    let mut ended = false;
-
     let outcome: Result<()> = async {
         loop {
             let link = format!("http://{address}{}", host.path()?);
-            let _ = events.unbounded_send(if ended {
-                HostEvent::Ended(link)
-            } else {
-                HostEvent::Waiting(link)
-            });
+            let _ = events.unbounded_send(HostEvent::Waiting(link));
             let command = tokio::select! {
                 result = &mut server => return server_outcome(result).map(|_| ()),
                 signal = tokio::signal::ctrl_c() => {
@@ -282,13 +258,11 @@ async fn run_host(
             };
             match command {
                 Command::Start => {
-                    ended = false;
                     match share_once(&options, &host, &mut command_receiver, &mut server, &events)
                         .await?
                     {
-                        ShareResult::Cancelled => {}
-                        ShareResult::Ended => ended = true,
-                        ShareResult::Quit => break,
+                        ShareStop::End | ShareStop::PortalClosed => {}
+                        ShareStop::Quit => break,
                     }
                 }
                 Command::End => {}
@@ -325,7 +299,7 @@ async fn share_once(
     commands: &mut mpsc::Receiver<Command>,
     server: &mut Server,
     events: &Events,
-) -> Result<ShareResult> {
+) -> Result<ShareStop> {
     let portal = Screencast::new().await?;
     let available_sources = portal.available_source_types().await?;
     let available_cursors = portal.available_cursor_modes().await?;
@@ -414,7 +388,7 @@ async fn share_once(
             if let Err(error) = session.close().await {
                 eprintln!("Failed to close cancelled Portal session: {error}");
             }
-            return Ok(ShareResult::Cancelled);
+            return Ok(ShareStop::End);
         }
         Selection::Capture(Err(error)) => {
             if let Err(close_error) = session.close().await {
@@ -425,21 +399,21 @@ async fn share_once(
         Selection::Stop(quit) => {
             session.close().await?;
             return Ok(if quit {
-                ShareResult::Quit
+                ShareStop::Quit
             } else {
-                ShareResult::Cancelled
+                ShareStop::End
             });
         }
         Selection::Signal(signal) => {
             session.close().await?;
             signal?;
-            return Ok(ShareResult::Quit);
+            return Ok(ShareStop::Quit);
         }
         Selection::Server(result) => {
             if let Err(error) = session.close().await {
                 eprintln!("Failed to close Portal session: {error}");
             }
-            return server_outcome(result).map(|_| ShareResult::Cancelled);
+            return server_outcome(result);
         }
     };
 
@@ -467,9 +441,9 @@ async fn share_once(
         events,
     )
     .await;
-    let end_result = media.end();
-    if let Err(error) = &end_result {
-        eprintln!("Failed to revoke share session: {error}");
+    let stop_result = host.stop(&media);
+    if let Err(error) = &stop_result {
+        eprintln!("Failed to stop media session: {error}");
     }
     let portal_closed = matches!(result, Ok(ShareStop::PortalClosed));
     let close_result = if portal_closed {
@@ -481,13 +455,9 @@ async fn share_once(
         eprintln!("Failed to close Portal session: {error}");
     }
     let stop = result?;
-    end_result?;
+    stop_result?;
     close_result?;
-    Ok(if stop == ShareStop::Quit {
-        ShareResult::Quit
-    } else {
-        ShareResult::Ended
-    })
+    Ok(stop)
 }
 
 async fn share_control(
@@ -693,20 +663,13 @@ async fn serve_video(
                     break result;
                 };
                 let _ = events.unbounded_send(HostEvent::Ending);
-                let revoked = media.end();
-                if let Err(error) = &revoked {
-                    eprintln!("Failed to revoke share session: {error}");
-                }
                 let stopped = audio.stop().map_err(io::Error::other);
                 if let Err(error) = &stopped {
                     eprintln!("Failed to clean up selective audio: {error}");
                 }
                 match running {
                     Err(error) => Err(error),
-                    Ok(stop) => {
-                        revoked?;
-                        stopped.map(|()| stop).map_err(|error| error.into())
-                    }
+                    Ok(stop) => stopped.map(|()| stop).map_err(|error| error.into()),
                 }
             }
         },
