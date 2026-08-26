@@ -47,7 +47,7 @@ pub fn start(
 }
 
 impl AudioCapture {
-    pub fn stop(self) -> Result<(), String> {
+    pub fn stop(self, failure_reported: bool) -> Result<(), String> {
         let _ = self.stop.send(());
         match self.finished.recv_timeout(Duration::from_secs(6)) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
@@ -55,10 +55,17 @@ impl AudioCapture {
                 return Err("timed out while stopping selective audio".to_owned());
             }
         }
-        self.thread
-            .join()
-            .map_err(|_| "selective-audio thread panicked".to_owned())?
+        stop_result(
+            self.thread
+                .join()
+                .map_err(|_| "selective-audio thread panicked".to_owned())?,
+            failure_reported,
+        )
     }
+}
+
+fn stop_result(result: Result<(), String>, failure_reported: bool) -> Result<(), String> {
+    if failure_reported { Ok(()) } else { result }
 }
 
 struct Port {

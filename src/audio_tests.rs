@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn a_reported_audio_failure_is_not_a_cleanup_failure() {
+    assert_eq!(
+        stop_result(Err("reported media failure".to_owned()), true),
+        Ok(())
+    );
+    assert_eq!(
+        stop_result(Err("unreported cleanup failure".to_owned()), false),
+        Err("unreported cleanup failure".to_owned())
+    );
+}
+
+#[test]
 fn passive_link_contract_rejects_missing_property_error_and_wrong_endpoint() {
     let expected = Endpoints {
         output_node: 1,

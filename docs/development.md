@@ -12,7 +12,8 @@ repository already proves Portal capture, selective PipeWire audio, H.264/AAC
 fMP4 playback, bounded one-encoder fan-out, and a basic iced window on the
 recorded niri host. Unit coverage now separates process-token ownership from
 replaceable media state and applies Communication-role audio policy. The code
-now bounds media recovery; real browser recovery remains unverified.
+now bounds media recovery without reclassifying a reported audio failure as a
+cleanup failure; real browser recovery remains unverified.
 
 ## Product commitments
 
@@ -231,6 +232,8 @@ settings surface area:
   stream to `425`, and lets the same token enter a later media session.
 - One retry-policy check proves exactly three retry attempts and proves that
   Stop, Quit, Portal closure, and Host/server failures are not retried.
+- An audio-stop check proves a reported media failure remains retryable while
+  an unreported cleanup failure remains terminal.
 - Audio checks prove identity precedence, Communication exclusion, and the
   irrelevance of a changed process ID.
 - A real niri Portal run in Zen, then Chromium, proves initial waiting,

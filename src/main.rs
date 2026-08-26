@@ -691,14 +691,18 @@ async fn serve_video(
                 let _ = events.unbounded_send(HostEvent::Sharing);
                 let mut viewers = media.viewer_count();
                 let _ = events.unbounded_send(HostEvent::Viewers(*viewers.borrow_and_update()));
+                let mut audio_failure_reported = false;
                 let running = loop {
                     let result = tokio::select! {
                         biased;
                         stop = control.as_mut() => Ok(stop),
                         message = messages.next() => media_outcome(message),
-                        error = audio_errors.recv() => Err(io::Error::other(
-                            error.unwrap_or_else(|| "selective-audio thread stopped unexpectedly".to_owned())
-                        ).into()),
+                        error = audio_errors.recv() => {
+                            audio_failure_reported = error.is_some();
+                            Err(io::Error::other(error.unwrap_or_else(||
+                                "selective-audio thread stopped unexpectedly".to_owned()
+                            )).into())
+                        },
                         changed = viewers.changed() => {
                             if changed.is_err() {
                                 Err(io::Error::other("Viewer count channel closed").into())
@@ -715,8 +719,9 @@ async fn serve_video(
                 if running.is_ok() {
                     let _ = events.unbounded_send(HostEvent::Ending);
                 }
-                let stopped: Result<()> =
-                    audio.stop().map_err(|error| io::Error::other(error).into());
+                let stopped: Result<()> = audio
+                    .stop(audio_failure_reported)
+                    .map_err(|error| io::Error::other(error).into());
                 if let Err(error) = &stopped {
                     eprintln!("Failed to clean up selective audio: {error}");
                 }
