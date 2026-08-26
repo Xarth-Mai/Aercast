@@ -99,6 +99,9 @@ fn ui_commands_follow_the_host_lifecycle() {
         commands: Some(commands),
         closing: None,
         confirm_refresh: false,
+        settings: settings::Settings::default(),
+        settings_open: false,
+        settings_error: None,
     };
 
     drop(update(
@@ -106,8 +109,13 @@ fn ui_commands_follow_the_host_lifecycle() {
         Message::Host(HostEvent::Waiting("http://127.0.0.1/s/token".to_owned())),
     ));
     assert_eq!(app.phase, Phase::Waiting);
+    drop(update(&mut app, Message::Settings(true)));
+    assert!(app.settings_open);
+    drop(update(&mut app, Message::Settings(false)));
+    assert!(!app.settings_open);
+    app.settings.system_audio = false;
     drop(update(&mut app, Message::Start));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Start);
+    assert_eq!(receiver.try_recv().unwrap(), Command::Start(false));
     assert_eq!(app.phase, Phase::Selecting);
 
     drop(update(&mut app, Message::Host(HostEvent::Sharing)));

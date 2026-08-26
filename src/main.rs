@@ -20,7 +20,7 @@ use gst_app::AppSinkCallbacks;
 use iced::{
     Element, Length, Task, Theme, clipboard,
     futures::channel::mpsc::UnboundedSender,
-    widget::{button, column, container, row, text, text_input},
+    widget::{button, checkbox, column, container, row, space, svg, text, text_input},
     window,
 };
 use socket2::SockRef;
@@ -30,6 +30,7 @@ use tokio::{
 };
 
 mod audio;
+mod settings;
 mod web;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -45,7 +46,7 @@ struct Options {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Command {
-    Start,
+    Start(bool),
     End,
     Refresh(bool),
     Quit,
@@ -78,6 +79,8 @@ enum Message {
     Refresh,
     ConfirmRefresh,
     CancelRefresh,
+    Settings(bool),
+    SystemAudio(bool),
     Close(window::Id),
 }
 
@@ -99,6 +102,9 @@ struct App {
     commands: Option<mpsc::Sender<Command>>,
     closing: Option<window::Id>,
     confirm_refresh: bool,
+    settings: settings::Settings,
+    settings_open: bool,
+    settings_error: Option<String>,
 }
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
@@ -108,19 +114,25 @@ const MAX_MEDIA_RECOVERIES: u8 = 3;
 
 fn main() -> Result<()> {
     let options = options(std::env::args().skip(1))?;
+    let settings = settings::Settings::load()?;
     gst::init()?;
 
-    iced::application(move || boot(options.clone()), update, view)
-        .title("Aercast")
-        .theme(Theme::Dark)
-        .window_size((560.0, 320.0))
-        .exit_on_close_request(false)
-        .subscription(|_| window::close_requests().map(Message::Close))
-        .run()?;
+    iced::application(
+        move || boot(options.clone(), settings.clone()),
+        update,
+        view,
+    )
+    .title("Aercast")
+    .theme(Theme::Dark)
+    .window_size((480.0, 640.0))
+    .resizable(false)
+    .exit_on_close_request(false)
+    .subscription(|_| window::close_requests().map(Message::Close))
+    .run()?;
     Ok(())
 }
 
-fn boot(options: Options) -> (App, Task<Message>) {
+fn boot(options: Options, settings: settings::Settings) -> (App, Task<Message>) {
     let (events, incoming) = iced::futures::channel::mpsc::unbounded();
     let (commands, command_receiver) = mpsc::channel(8);
     (
@@ -131,6 +143,9 @@ fn boot(options: Options) -> (App, Task<Message>) {
             commands: Some(commands),
             closing: None,
             confirm_refresh: false,
+            settings,
+            settings_open: false,
+            settings_error: None,
         },
         Task::batch([
             Task::run(incoming, Message::Host),
@@ -146,7 +161,8 @@ fn boot(options: Options) -> (App, Task<Message>) {
 fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Start => {
-            if send_command(app, Command::Start) {
+            let system_audio = app.settings.system_audio;
+            if send_command(app, Command::Start(system_audio)) {
                 app.phase = Phase::Selecting;
             }
         }
@@ -165,6 +181,21 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let _ = send_command(app, Command::Refresh(true));
         }
         Message::CancelRefresh => app.confirm_refresh = false,
+        Message::Settings(open) => {
+            app.settings_open = open;
+            app.settings_error = None;
+        }
+        Message::SystemAudio(system_audio) => {
+            let mut settings = app.settings.clone();
+            settings.system_audio = system_audio;
+            match settings.save() {
+                Ok(()) => {
+                    app.settings = settings;
+                    app.settings_error = None;
+                }
+                Err(error) => app.settings_error = Some(error.to_string()),
+            }
+        }
         Message::Close(id) => {
             if app.commands.is_none() {
                 return window::close(id);
@@ -230,6 +261,13 @@ fn send_command(app: &mut App, command: Command) -> bool {
 }
 
 fn view(app: &App) -> Element<'_, Message> {
+    if app.settings_open {
+        return settings_view(app);
+    }
+    share_view(app)
+}
+
+fn share_view(app: &App) -> Element<'_, Message> {
     let status = match &app.phase {
         Phase::Starting => "Starting Aercast…",
         Phase::Waiting => "Ready. Capture has not started.",
@@ -262,7 +300,18 @@ fn view(app: &App) -> Element<'_, Message> {
 
     container(
         column![
-            text("Aercast").size(36),
+            row![
+                text("Aercast").size(36),
+                space().width(Length::Fill),
+                button(
+                    row![
+                        symbolic_icon(include_bytes!("../assets/settings-symbolic.svg")),
+                        text("Settings"),
+                    ]
+                    .spacing(8),
+                )
+                .on_press(Message::Settings(true)),
+            ],
             text(status),
             text_input("Share link will appear here", &app.link),
             row![
@@ -278,12 +327,48 @@ fn view(app: &App) -> Element<'_, Message> {
             text("Trusted LAN only. Use an external HTTPS reverse proxy elsewhere.").size(12),
         ]
         .spacing(16)
-        .max_width(520),
+        .max_width(432),
     )
     .padding(24)
     .center_x(Length::Fill)
     .center_y(Length::Fill)
     .into()
+}
+
+fn settings_view(app: &App) -> Element<'_, Message> {
+    container(
+        column![
+            button(
+                row![
+                    symbolic_icon(include_bytes!("../assets/back-symbolic.svg")),
+                    text("Back"),
+                ]
+                .spacing(8),
+            )
+            .on_press(Message::Settings(false)),
+            text("Settings").size(24),
+            checkbox(app.settings.system_audio)
+                .label("System audio")
+                .on_toggle(Message::SystemAudio),
+            text("Used when the next share starts.").size(12),
+            text(app.settings_error.as_deref().unwrap_or_default()).size(12),
+        ]
+        .spacing(16)
+        .max_width(432),
+    )
+    .padding(24)
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .into()
+}
+
+fn symbolic_icon(bytes: &'static [u8]) -> iced::widget::Svg<'static> {
+    svg(svg::Handle::from_memory(bytes))
+        .width(18)
+        .height(18)
+        .style(|theme: &Theme, _| svg::Style {
+            color: Some(theme.palette().text),
+        })
 }
 
 async fn run_host(
@@ -310,11 +395,12 @@ async fn run_host(
                 command = command_receiver.recv() => command.unwrap_or(Command::Quit),
             };
             match command {
-                Command::Start => {
+                Command::Start(system_audio) => {
                     match share_once(
                         &options,
                         &host,
                         address,
+                        system_audio,
                         &mut command_receiver,
                         &mut server,
                         &events,
@@ -359,6 +445,7 @@ async fn share_once(
     options: &Options,
     host: &web::Host,
     address: SocketAddr,
+    system_audio: bool,
     commands: &mut mpsc::Receiver<Command>,
     server: &mut Server,
     events: &Events,
@@ -432,7 +519,7 @@ async fn share_once(
             signal = tokio::signal::ctrl_c() => break Selection::Signal(signal),
             result = &mut *server => break Selection::Server(result),
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
-                Command::Start => println!("Source selection is already open."),
+                Command::Start(_) => println!("Source selection is already open."),
                 Command::End => break Selection::Stop(false),
                 Command::Refresh(_) => println!("Source selection is still open."),
                 Command::Quit => break Selection::Stop(true),
@@ -510,7 +597,7 @@ async fn share_once(
             node_id,
             remote.as_raw_fd(),
             &mut capture_caps,
-            options.exclusions.clone(),
+            system_audio.then(|| options.exclusions.clone()),
             media.clone(),
             control.as_mut(),
             events,
@@ -588,7 +675,7 @@ async fn share_control(
                 Err(error) => ShareStop::Failed(error.into()),
             },
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
-                Command::Start => println!("A share is already active."),
+                Command::Start(_) => println!("A share is already active."),
                 Command::End => {
                     println!("Ending share.");
                     return ShareStop::End;
@@ -689,12 +776,12 @@ async fn serve_video(
     node_id: u32,
     remote_fd: i32,
     capture_caps: &mut Option<gst::Caps>,
-    exclusions: Vec<String>,
+    audio_exclusions: Option<Vec<String>>,
     media: web::MediaSession,
     mut control: Pin<&mut impl Future<Output = ShareStop>>,
     events: &Events,
 ) -> Result<ShareStop> {
-    if exclusions.is_empty() {
+    if audio_exclusions.as_ref().is_some_and(Vec::is_empty) {
         eprintln!(
             "No audio exclusions configured; a Host-local Viewer may feed shared audio back into Aercast."
         );
@@ -719,7 +806,7 @@ async fn serve_video(
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no H.264 parser"))?
         .static_pad("src")
         .ok_or_else(|| io::Error::other("H.264 parser has no source pad"))?;
-    let system_audio = pipeline
+    let audio_source = pipeline
         .by_name("system-audio")
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no system-audio source"))?
         .downcast::<gst_app::AppSrc>()
@@ -783,9 +870,12 @@ async fn serve_video(
         .ok_or_else(|| io::Error::other("failed to install first-frame probe"))?;
     let outcome: Result<ShareStop> = match pipeline.set_state(gst::State::Playing) {
         Err(error) => Err(error.into()),
-        Ok(_) => match audio::start(system_audio, exclusions) {
+        Ok(_) => match audio_exclusions
+            .map(|exclusions| audio::start(audio_source, exclusions))
+            .transpose()
+        {
             Err(error) => Err(error.into()),
-            Ok((audio, mut audio_errors)) => {
+            Ok(mut audio) => {
                 println!("Browser stream running.");
                 let _ = events.unbounded_send(HostEvent::Sharing);
                 let mut audio_failure_reported = false;
@@ -793,7 +883,12 @@ async fn serve_video(
                     biased;
                     stop = control.as_mut() => Ok(stop),
                     message = messages.next() => media_outcome(message),
-                    error = audio_errors.recv() => {
+                    error = async {
+                        match audio.as_mut() {
+                            Some((_, errors)) => errors.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
                         audio_failure_reported = error.is_some();
                         Err(io::Error::other(error.unwrap_or_else(||
                             "selective-audio thread stopped unexpectedly".to_owned()
@@ -804,7 +899,7 @@ async fn serve_video(
                     let _ = events.unbounded_send(HostEvent::Ending);
                 }
                 let stopped: Result<()> = audio
-                    .stop(audio_failure_reported)
+                    .map_or(Ok(()), |(audio, _)| audio.stop(audio_failure_reported))
                     .map_err(|error| io::Error::other(error).into());
                 if let Err(error) = &stopped {
                     eprintln!("Failed to clean up selective audio: {error}");
