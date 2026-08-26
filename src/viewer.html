@@ -27,6 +27,33 @@
   const status = document.querySelector("#status");
   let running = false;
   let currentAttempt = null;
+  const createViewerId = () => Array.from(
+    crypto.getRandomValues(new Uint8Array(16)),
+    byte => byte.toString(16).padStart(2, "0")
+  ).join("");
+  let viewerId = createViewerId();
+  try {
+    const stored = sessionStorage.getItem("aercast-viewer-id");
+    if (/^[0-9a-f]{32}$/.test(stored ?? "")) viewerId = stored;
+    else sessionStorage.setItem("aercast-viewer-id", viewerId);
+    const nonce = createViewerId();
+    const channel = new BroadcastChannel("aercast-viewer-id");
+    const probe = () => channel.postMessage({ type: "probe", id: viewerId, nonce });
+    channel.onmessage = ({ data }) => {
+      if (data?.id !== viewerId) return;
+      if (data.type === "probe" && data.nonce !== nonce) {
+        channel.postMessage({ type: "owned", id: viewerId, nonce: data.nonce });
+      } else if (data.type === "owned" && data.nonce === nonce) {
+        viewerId = createViewerId();
+        try { sessionStorage.setItem("aercast-viewer-id", viewerId); } catch (_) {}
+        currentAttempt?.controller.abort(new Error("Viewer identity changed"));
+        probe();
+      }
+    };
+    probe();
+  } catch (_) {
+    viewerId = createViewerId();
+  }
 
   function showError(error) {
     button.disabled = false;
@@ -125,6 +152,7 @@
     while (running) {
       const response = await fetch(`${location.pathname}/stream`, {
         cache: "no-store",
+        headers: { "Aercast-Viewer-ID": viewerId },
         signal: attempt.controller.signal
       });
       if (response.status !== 425) return response;

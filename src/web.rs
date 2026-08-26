@@ -2,14 +2,16 @@ use std::{
     convert::Infallible,
     fs::File,
     io::{self, Read},
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{Path, State},
-    http::{StatusCode, header},
+    extract::{ConnectInfo, Path, State},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -23,6 +25,8 @@ const VIEWER_HTML: &str = include_str!("viewer.html");
 const MAX_BOX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED_GOP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VIEWERS: usize = 8;
+const MAX_VIEWER_RECORDS: usize = 100;
+const VIEWER_ID_HEADER: &str = "aercast-viewer-id";
 
 #[derive(Clone)]
 pub(crate) struct Host {
@@ -59,16 +63,42 @@ struct Subscription {
     receiver: broadcast::Receiver<Bytes>,
     closed: watch::Receiver<bool>,
     revoked: watch::Receiver<bool>,
+    replaced: watch::Receiver<bool>,
     _viewer: ViewerGuard,
 }
 
 struct ViewerGuard {
     generation: Arc<ViewerGeneration>,
+    id: [u8; 16],
+    epoch: u64,
 }
 
 struct ViewerGeneration {
-    viewers: watch::Sender<usize>,
+    inner: Mutex<ViewerState>,
+    changed: watch::Sender<()>,
     revoked: watch::Sender<bool>,
+}
+
+struct ViewerState {
+    records: Vec<ViewerRecord>,
+    next_key: u64,
+    next_epoch: u64,
+}
+
+struct ViewerRecord {
+    id: [u8; 16],
+    viewer: Viewer,
+    last_seen: Instant,
+    epoch: u64,
+    close: watch::Sender<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Viewer {
+    pub(crate) key: u64,
+    pub(crate) ip: IpAddr,
+    pub(crate) online_since: Option<Instant>,
+    pub(crate) duration: Duration,
 }
 
 enum Access {
@@ -110,17 +140,21 @@ impl Host {
 
     pub(crate) fn refresh(&self, confirmed: bool) -> io::Result<Option<String>> {
         let mut state = lock(&self.inner)?;
-        if *state.viewers.viewers.borrow() > 0 && !confirmed {
+        let token = share_token()?;
+        if !state.viewers.revoke(confirmed)? {
             return Ok(None);
         }
-        state.token = share_token()?;
-        state.viewers.revoked.send_replace(true);
+        state.token = token;
         state.viewers = Arc::new(ViewerGeneration::new());
         Ok(Some(format!("/s/{}", state.token)))
     }
 
-    pub(crate) fn viewer_count(&self) -> io::Result<watch::Receiver<usize>> {
-        Ok(lock(&self.inner)?.viewers.viewers.subscribe())
+    pub(crate) fn viewers(&self) -> io::Result<Vec<Viewer>> {
+        lock(&self.inner)?.viewers.snapshots()
+    }
+
+    pub(crate) fn viewer_updates(&self) -> io::Result<watch::Receiver<()>> {
+        Ok(lock(&self.inner)?.viewers.changed.subscribe())
     }
 
     pub(crate) fn start(&self) -> io::Result<MediaSession> {
@@ -146,7 +180,7 @@ impl Host {
             return Ok(());
         }
         state.media = None;
-        session.hub.close()
+        session.hub.close().and(state.viewers.disconnect_all())
     }
 
     fn access(&self, candidate: &str) -> io::Result<Access> {
@@ -213,7 +247,12 @@ impl MediaHub {
         }
     }
 
-    fn subscribe(&self, viewers: Arc<ViewerGeneration>) -> io::Result<Option<Subscription>> {
+    fn subscribe(
+        &self,
+        viewers: Arc<ViewerGeneration>,
+        id: [u8; 16],
+        ip: IpAddr,
+    ) -> io::Result<Option<Subscription>> {
         let state = lock(&self.inner)?;
         let Some(sender) = &state.sender else {
             return Ok(None);
@@ -223,7 +262,12 @@ impl MediaHub {
             return Ok(None);
         };
         let revoked = viewers.revoked.subscribe();
-        let viewer = ViewerGuard::new(viewers)?;
+        let (epoch, replaced) = viewers.connect(id, ip, Instant::now())?;
+        let viewer = ViewerGuard {
+            generation: viewers,
+            id,
+            epoch,
+        };
         let receiver = sender.subscribe();
         let mut replay = Vec::with_capacity(state.gop.len() + 1);
         replay.push(init.clone());
@@ -234,6 +278,7 @@ impl MediaHub {
             receiver,
             closed: self.closed.subscribe(),
             revoked,
+            replaced,
             _viewer: viewer,
         }))
     }
@@ -248,41 +293,171 @@ impl MediaHub {
     }
 }
 
-impl ViewerGuard {
-    fn new(generation: Arc<ViewerGeneration>) -> io::Result<Self> {
-        if *generation.revoked.borrow() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
-        }
-        if !generation.viewers.send_if_modified(|count| {
-            if *count >= MAX_VIEWERS {
-                false
-            } else {
-                *count += 1;
-                true
-            }
-        }) {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Viewer limit reached",
-            ));
-        }
-        Ok(Self { generation })
-    }
-}
-
 impl Drop for ViewerGuard {
     fn drop(&mut self) {
-        self.generation
-            .viewers
-            .send_modify(|count| *count = count.saturating_sub(1));
+        let _ = self
+            .generation
+            .disconnect(self.id, self.epoch, Instant::now());
     }
 }
 
 impl ViewerGeneration {
     fn new() -> Self {
-        let (viewers, _) = watch::channel(0);
+        let (changed, _) = watch::channel(());
         let (revoked, _) = watch::channel(false);
-        Self { viewers, revoked }
+        Self {
+            inner: Mutex::new(ViewerState {
+                records: Vec::new(),
+                next_key: 0,
+                next_epoch: 0,
+            }),
+            changed,
+            revoked,
+        }
+    }
+
+    fn snapshots(&self) -> io::Result<Vec<Viewer>> {
+        let mut viewers: Vec<_> = lock(&self.inner)?
+            .records
+            .iter()
+            .map(|record| record.viewer.clone())
+            .collect();
+        viewers.sort_by_key(|viewer| (!viewer.online(), viewer.key));
+        Ok(viewers)
+    }
+
+    fn connect(
+        self: &Arc<Self>,
+        id: [u8; 16],
+        ip: IpAddr,
+        now: Instant,
+    ) -> io::Result<(u64, watch::Receiver<bool>)> {
+        let mut state = lock(&self.inner)?;
+        if *self.revoked.borrow() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
+        }
+        let position = state.records.iter().position(|record| record.id == id);
+        let already_online =
+            position.is_some_and(|position| state.records[position].viewer.online_since.is_some());
+        if !already_online
+            && state
+                .records
+                .iter()
+                .filter(|record| record.viewer.online())
+                .count()
+                >= MAX_VIEWERS
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Viewer limit reached",
+            ));
+        }
+        if position.is_none() && state.records.len() >= MAX_VIEWER_RECORDS {
+            let oldest = state
+                .records
+                .iter()
+                .enumerate()
+                .filter(|(_, record)| !record.viewer.online())
+                .min_by_key(|(_, record)| (record.last_seen, record.viewer.key))
+                .map(|(position, _)| position)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "Viewer limit reached"))?;
+            state.records.remove(oldest);
+        }
+
+        state.next_epoch = state.next_epoch.wrapping_add(1);
+        let epoch = state.next_epoch;
+        let (close, replaced) = watch::channel(false);
+        if let Some(position) = position {
+            let record = &mut state.records[position];
+            if let Some(online_since) = record.viewer.online_since.take() {
+                record.viewer.duration += now.saturating_duration_since(online_since);
+                record.close.send_replace(true);
+            }
+            record.viewer.ip = ip;
+            record.viewer.online_since = Some(now);
+            record.last_seen = now;
+            record.epoch = epoch;
+            record.close = close;
+        } else {
+            state.next_key = state.next_key.wrapping_add(1);
+            let key = state.next_key;
+            state.records.push(ViewerRecord {
+                id,
+                viewer: Viewer {
+                    key,
+                    ip,
+                    online_since: Some(now),
+                    duration: Duration::ZERO,
+                },
+                last_seen: now,
+                epoch,
+                close,
+            });
+        }
+        drop(state);
+        self.changed.send_replace(());
+        Ok((epoch, replaced))
+    }
+
+    fn disconnect(&self, id: [u8; 16], epoch: u64, now: Instant) -> io::Result<()> {
+        let mut state = lock(&self.inner)?;
+        let Some(position) = state
+            .records
+            .iter()
+            .position(|record| record.id == id && record.epoch == epoch)
+        else {
+            return Ok(());
+        };
+        let record = &mut state.records[position];
+        let Some(online_since) = record.viewer.online_since.take() else {
+            return Ok(());
+        };
+        record.viewer.duration += now.saturating_duration_since(online_since);
+        record.last_seen = now;
+        drop(state);
+        self.changed.send_replace(());
+        Ok(())
+    }
+
+    fn disconnect_all(&self) -> io::Result<()> {
+        let now = Instant::now();
+        let mut state = lock(&self.inner)?;
+        let mut changed = false;
+        for record in &mut state.records {
+            if let Some(online_since) = record.viewer.online_since.take() {
+                record.viewer.duration += now.saturating_duration_since(online_since);
+                record.last_seen = now;
+                record.close.send_replace(true);
+                changed = true;
+            }
+        }
+        drop(state);
+        if changed {
+            self.changed.send_replace(());
+        }
+        Ok(())
+    }
+
+    fn revoke(&self, confirmed: bool) -> io::Result<bool> {
+        let state = lock(&self.inner)?;
+        if !confirmed && state.records.iter().any(|record| record.viewer.online()) {
+            return Ok(false);
+        }
+        self.revoked.send_replace(true);
+        Ok(true)
+    }
+}
+
+impl Viewer {
+    pub(crate) fn online(&self) -> bool {
+        self.online_since.is_some()
+    }
+
+    pub(crate) fn duration(&self) -> Duration {
+        self.duration
+            + self
+                .online_since
+                .map_or(Duration::ZERO, |since| since.elapsed())
     }
 }
 
@@ -346,7 +521,8 @@ pub(crate) async fn serve(
         Router::new()
             .route("/s/{token}", get(viewer_page))
             .route("/s/{token}/stream", get(media_stream).head(media_head))
-            .with_state(host),
+            .with_state(host)
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async {
         let _ = shutdown.await;
@@ -372,14 +548,29 @@ async fn viewer_page(Path(token): Path<String>, State(host): State<Host>) -> Res
     }
 }
 
-async fn media_stream(Path(token): Path<String>, State(host): State<Host>) -> Response {
-    let (media, viewers) = match host.access(&token) {
-        Ok(Access::Sharing(media, viewers)) => (media, viewers),
-        Ok(Access::Waiting) => return waiting(),
-        Ok(Access::Invalid) => return StatusCode::NOT_FOUND.into_response(),
+async fn media_stream(
+    Path(token): Path<String>,
+    State(host): State<Host>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    let access = match host.access(&token) {
+        Ok(access) => access,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let subscription = match media.subscribe(viewers) {
+    if matches!(access, Access::Invalid) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let id = match viewer_id(&headers) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let (media, viewers) = match access {
+        Access::Sharing(media, viewers) => (media, viewers),
+        Access::Waiting => return waiting(),
+        Access::Invalid => unreachable!("invalid access returned above"),
+    };
+    let subscription = match media.subscribe(viewers, id, peer.ip()) {
         Ok(Some(subscription)) => subscription,
         Ok(None) => return waiting(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -394,7 +585,10 @@ async fn media_stream(Path(token): Path<String>, State(host): State<Host>) -> Re
     let body = Body::from_stream(stream::unfold(
         subscription,
         |mut subscription| async move {
-            if *subscription.closed.borrow() || *subscription.revoked.borrow() {
+            if *subscription.closed.borrow()
+                || *subscription.revoked.borrow()
+                || *subscription.replaced.borrow()
+            {
                 return None;
             }
             if let Some(chunk) = subscription.replay.next() {
@@ -404,6 +598,7 @@ async fn media_stream(Path(token): Path<String>, State(host): State<Host>) -> Re
                 biased;
                 _ = subscription.closed.changed() => None,
                 _ = subscription.revoked.changed() => None,
+                _ = subscription.replaced.changed() => None,
                 result = subscription.receiver.recv() => match result {
                     Ok(chunk) => Some((Ok(chunk), subscription)),
                     Err(error) => {
@@ -436,6 +631,24 @@ fn waiting() -> Response {
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from("Share has not started"))
         .expect("static waiting response is valid")
+}
+
+fn viewer_id(headers: &HeaderMap) -> io::Result<[u8; 16]> {
+    let mut values = headers.get_all(VIEWER_ID_HEADER).iter();
+    let value = values
+        .next()
+        .filter(|_| values.next().is_none())
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            value.len() == 32
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid Viewer identity"))?;
+    u128::from_str_radix(value, 16)
+        .map(u128::to_be_bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid Viewer identity"))
 }
 
 fn share_token() -> io::Result<String> {

@@ -1,5 +1,16 @@
 use super::*;
 
+fn test_viewers(count: usize, online: bool) -> Vec<web::Viewer> {
+    (0..count)
+        .map(|key| web::Viewer {
+            key: key as u64,
+            ip: format!("192.0.2.{}", key + 1).parse().unwrap(),
+            online_since: online.then(Instant::now),
+            duration: Duration::from_secs(65),
+        })
+        .collect()
+}
+
 #[test]
 #[ignore = "requires an isolated session bus"]
 fn a_later_instance_activates_the_primary() {
@@ -137,7 +148,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     let mut app = App {
         phase: Phase::Starting,
         link: String::new(),
-        viewers: 0,
+        viewers: Vec::new(),
         commands: Some(commands),
         window: Some(window),
         confirm_refresh: false,
@@ -275,7 +286,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::Closed(reopened)));
     assert_eq!(app.window, None);
 
-    app.viewers = 2;
+    app.viewers = test_viewers(2, true);
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
     assert!(!app.confirm_refresh);
@@ -292,7 +303,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         Message::Host(HostEvent::Link("http://127.0.0.1/s/replacement".to_owned())),
     ));
     assert_eq!(app.link, "http://127.0.0.1/s/replacement");
-    app.viewers = 0;
+    assert!(app.viewers.is_empty());
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
     assert!(!app.confirm_refresh);
@@ -305,6 +316,11 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
     assert_eq!(app.phase, Phase::Ending);
     assert_eq!(app.active_system_audio, Some(true));
+    let offline = test_viewers(1, false);
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Viewers(offline.clone())),
+    ));
     drop(update(
         &mut app,
         Message::Host(HostEvent::Waiting("http://127.0.0.1/s/token".to_owned())),
@@ -312,6 +328,8 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.phase, Phase::Waiting);
     assert_eq!(app.link, "http://127.0.0.1/s/token");
     assert_eq!(app.active_system_audio, None);
+    assert_eq!(app.viewers, offline);
+    assert_eq!(format_duration(app.viewers[0].duration()), "1:05");
 
     assert_eq!(
         update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
@@ -321,17 +339,17 @@ fn ui_commands_follow_the_host_lifecycle() {
     let (commands, _) = mpsc::channel(1);
     app.commands = Some(commands);
     app.phase = Phase::Waiting;
-    app.viewers = 2;
+    app.viewers = test_viewers(2, true);
     assert_eq!(
         update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
         1
     );
-    assert_eq!(app.viewers, 0);
+    assert!(app.viewers.is_empty());
 
     let (commands, _) = mpsc::channel(1);
     app.commands = Some(commands);
     app.phase = Phase::Sharing;
-    app.viewers = 3;
+    app.viewers = test_viewers(3, true);
     app.settings_open = true;
     assert_eq!(
         update(
@@ -342,7 +360,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         0
     );
     assert_eq!(app.phase, Phase::Error("stopped".to_owned()));
-    assert_eq!(app.viewers, 0);
+    assert!(app.viewers.is_empty());
     assert_ne!(update(&mut app, Message::Show).units(), 0);
     let reopened = app.window.unwrap();
     assert_eq!(app.phase, Phase::Error("stopped".to_owned()));

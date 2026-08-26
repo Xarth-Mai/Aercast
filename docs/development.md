@@ -79,6 +79,8 @@ cleanup failure; real browser recovery remains unverified.
   written to ordinary logs.
 - A random tab-scoped Viewer ID merges automatic reconnects into one record.
   Host-disconnected pages stop automatic reconnect but expose manual retry.
+- Connection duration accumulates across reconnects of that tab from the Host's
+  monotonic clock and freezes while its record is offline.
 - The Viewer page contains only playback, volume, fullscreen, connection state,
   automatic reconnect, and manual retry controls.
 

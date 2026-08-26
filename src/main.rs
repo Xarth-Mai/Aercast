@@ -21,7 +21,9 @@ use gst_app::AppSinkCallbacks;
 use iced::{
     Element, Length, Task, Theme, clipboard,
     futures::channel::mpsc::{Receiver, Sender, UnboundedSender},
-    widget::{button, checkbox, column, container, row, space, svg, text, text_input},
+    widget::{
+        button, checkbox, column, container, row, rule, scrollable, space, svg, text, text_input,
+    },
     window,
 };
 use socket2::SockRef;
@@ -71,7 +73,7 @@ enum HostEvent {
     ConfirmRefresh,
     Sharing(bool),
     Ending,
-    Viewers(usize),
+    Viewers(Vec<web::Viewer>),
     NetworkApplied(std::result::Result<settings::Settings, String>),
     Stopped(std::result::Result<(), String>),
 }
@@ -95,6 +97,7 @@ enum Message {
     NetworkPort(String),
     ShareBaseUrl(String),
     ApplyNetwork,
+    Tick,
     Close(window::Id),
     Closed(window::Id),
 }
@@ -146,7 +149,7 @@ enum Phase {
 struct App {
     phase: Phase,
     link: String,
-    viewers: usize,
+    viewers: Vec<web::Viewer>,
     commands: Option<mpsc::Sender<Command>>,
     window: Option<window::Id>,
     confirm_refresh: bool,
@@ -193,10 +196,16 @@ fn main() -> Result<()> {
     )
     .title("Aercast")
     .theme(Theme::Dark)
-    .subscription(|_| {
+    .subscription(|app| {
+        let tick = if app.window.is_some() && app.viewers.iter().any(web::Viewer::online) {
+            iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)
+        } else {
+            iced::Subscription::none()
+        };
         iced::Subscription::batch([
             window::close_requests().map(Message::Close),
             window::close_events().map(Message::Closed),
+            tick,
         ])
     })
     .run()?;
@@ -218,7 +227,7 @@ fn boot(
     let app = App {
         phase: Phase::Starting,
         link: String::new(),
-        viewers: 0,
+        viewers: Vec::new(),
         commands: Some(commands),
         window: None,
         confirm_refresh: false,
@@ -356,6 +365,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
             }
         }
+        Message::Tick => {}
         Message::Close(id) => {
             if app.window.take_if(|window| *window == id).is_some() {
                 return window::close(id);
@@ -365,14 +375,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Host(event) => match event {
             HostEvent::NetworkUnavailable(error) => {
                 app.link.clear();
-                app.viewers = 0;
                 app.applying_network = false;
                 app.settings_error = Some(error.clone());
                 app.phase = Phase::NetworkError(error);
             }
             HostEvent::Waiting(link) => {
                 app.link = link;
-                app.viewers = 0;
                 app.confirm_refresh = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
@@ -380,7 +388,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             HostEvent::Link(link) => {
                 app.link = link;
-                app.viewers = 0;
+                app.viewers.clear();
                 app.confirm_refresh = false;
             }
             HostEvent::ConfirmRefresh if app.phase == Phase::Sharing => {
@@ -416,7 +424,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             HostEvent::Stopped(result) => {
                 app.commands = None;
-                app.viewers = 0;
+                app.viewers.clear();
                 app.confirm_refresh = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
@@ -510,6 +518,30 @@ fn share_view(app: &App) -> Element<'_, Message> {
     } else {
         column![]
     };
+    let online = app.viewers.iter().filter(|viewer| viewer.online()).count();
+    let viewer_rows = app
+        .viewers
+        .iter()
+        .enumerate()
+        .fold(column![], |rows, (index, viewer)| {
+            let rows = if index == 0 {
+                rows
+            } else {
+                rows.push(rule::horizontal(1))
+            };
+            rows.push(
+                container(
+                    row![
+                        text(viewer.ip.to_string()).size(12),
+                        space().width(Length::Fill),
+                        text(if viewer.online() { "Online" } else { "Offline" }).size(12),
+                        text(format_duration(viewer.duration())).size(12),
+                    ]
+                    .spacing(8),
+                )
+                .padding([6, 8]),
+            )
+        });
 
     container(
         column![
@@ -536,7 +568,10 @@ fn share_view(app: &App) -> Element<'_, Message> {
             button("Refresh Link")
                 .on_press_maybe((app.phase == Phase::Sharing).then_some(Message::Refresh)),
             refresh_confirmation,
-            text(format!("Viewers: {}", app.viewers)),
+            text(format!("Viewers: {online}/{}", app.viewers.len())),
+            container(scrollable(viewer_rows).height(Length::Fixed(144.0)))
+                .style(container::bordered_box)
+                .width(Length::Fill),
             text("Trusted LAN only. Use an external HTTPS reverse proxy elsewhere.").size(12),
         ]
         .spacing(16)
@@ -546,6 +581,11 @@ fn share_view(app: &App) -> Element<'_, Message> {
     .center_x(Length::Fill)
     .center_y(Length::Fill)
     .into()
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 fn settings_view(app: &App) -> Element<'_, Message> {
@@ -1010,10 +1050,12 @@ async fn share_once(
             events,
         )
         .await;
-        let stopped = host.stop(&media);
-        let _ = events.unbounded_send(HostEvent::Viewers(0));
+        let stopped = host.stop(&media).and_then(|()| host.viewers());
+        if let Ok(viewers) = &stopped {
+            let _ = events.unbounded_send(HostEvent::Viewers(viewers.clone()));
+        }
         let attempt = match stopped {
-            Ok(()) => attempt,
+            Ok(_) => attempt,
             Err(error) => {
                 eprintln!("Failed to stop media session: {error}");
                 Ok(ShareStop::Failed(error.into()))
@@ -1083,10 +1125,16 @@ async fn share_control(
     link_base: &str,
     events: &Events,
 ) -> ShareStop {
-    let mut viewers = match host.viewer_count() {
+    let mut viewer_updates = match host.viewer_updates() {
         Ok(viewers) => viewers,
         Err(error) => return ShareStop::Failed(error.into()),
     };
+    match host.viewers() {
+        Ok(viewers) => {
+            let _ = events.unbounded_send(HostEvent::Viewers(viewers));
+        }
+        Err(error) => return ShareStop::Failed(error.into()),
+    }
     tokio::pin!(session_closed);
     loop {
         tokio::select! {
@@ -1111,7 +1159,7 @@ async fn share_control(
                 }
                 Command::Refresh(confirmed) => match host.refresh(confirmed) {
                     Ok(Some(path)) => {
-                        viewers = match host.viewer_count() {
+                        viewer_updates = match host.viewer_updates() {
                             Ok(viewers) => viewers,
                             Err(error) => return ShareStop::Failed(error.into()),
                         };
@@ -1128,15 +1176,19 @@ async fn share_control(
                     return ShareStop::Quit;
                 }
             },
-            changed = viewers.changed() => {
+            changed = viewer_updates.changed() => {
                 if changed.is_err() {
                     return ShareStop::Failed(io::Error::other(
-                        "Viewer count channel closed"
+                        "Viewer update channel closed"
                     ).into());
                 }
-                let _ = events.unbounded_send(HostEvent::Viewers(
-                    *viewers.borrow_and_update()
-                ));
+                viewer_updates.borrow_and_update();
+                match host.viewers() {
+                    Ok(viewers) => {
+                        let _ = events.unbounded_send(HostEvent::Viewers(viewers));
+                    }
+                    Err(error) => return ShareStop::Failed(error.into()),
+                }
             },
             _ = &mut session_closed => {
                 println!("Portal session closed; stopping stream.");

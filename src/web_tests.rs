@@ -1,11 +1,55 @@
 use super::*;
 use futures_util::StreamExt as _;
 use gst::prelude::*;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 const VIDEO_TRACK: u32 = 37;
 
 fn viewers(host: &Host) -> Arc<ViewerGeneration> {
     lock(&host.inner).unwrap().viewers.clone()
+}
+
+fn subscribe(session: &MediaSession, generation: Arc<ViewerGeneration>, id: u8) -> Subscription {
+    session
+        .hub
+        .subscribe(generation, [id; 16], IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .unwrap()
+        .unwrap()
+}
+
+fn viewer_headers(id: u8) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        VIEWER_ID_HEADER,
+        format!("{id:02x}").repeat(16).parse().unwrap(),
+    );
+    headers
+}
+
+fn peer(ip: Ipv4Addr) -> ConnectInfo<SocketAddr> {
+    ConnectInfo(SocketAddrV4::new(ip, 12345).into())
+}
+
+async fn stream(host: &Host, token: &str, id: u8, ip: Ipv4Addr) -> Response {
+    request(host, token, viewer_headers(id), ip).await
+}
+
+async fn request(host: &Host, token: &str, headers: HeaderMap, ip: Ipv4Addr) -> Response {
+    media_stream(
+        Path(token.to_owned()),
+        State(host.clone()),
+        peer(ip),
+        headers,
+    )
+    .await
+}
+
+fn online(host: &Host) -> usize {
+    host.viewers()
+        .unwrap()
+        .iter()
+        .filter(|viewer| viewer.online())
+        .count()
 }
 
 fn mp4_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -149,7 +193,11 @@ fn installed_mp4mux_output_builds_a_decodable_replay_boundary() {
         let sample = sink.pull_sample().unwrap();
         let buffer = sample.buffer().unwrap().map_readable().unwrap();
         session.publish(buffer.as_slice()).unwrap();
-        if let Some(subscription) = session.hub.subscribe(viewers.clone()).unwrap() {
+        if let Some(subscription) = session
+            .hub
+            .subscribe(viewers.clone(), [1; 16], IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .unwrap()
+        {
             break subscription.replay.collect::<Vec<_>>();
         }
     };
@@ -174,19 +222,22 @@ fn three_subscribers_get_one_atomic_replay_then_live_media() {
     session.publish(&key).unwrap();
     session.publish(&delta).unwrap();
     let mut viewers: Vec<_> = (0..3)
-        .map(|_| session.hub.subscribe(generation.clone()).unwrap().unwrap())
+        .map(|id| subscribe(&session, generation.clone(), id))
         .collect();
-    let mut count = host.viewer_count().unwrap();
-    assert_eq!(*count.borrow_and_update(), 3);
+    assert_eq!(online(&host), 3);
     let extras: Vec<_> = (3..MAX_VIEWERS)
-        .map(|_| session.hub.subscribe(generation.clone()).unwrap().unwrap())
+        .map(|id| subscribe(&session, generation.clone(), id as u8))
         .collect();
     assert!(matches!(
-        session.hub.subscribe(generation),
+        session.hub.subscribe(
+            generation,
+            [MAX_VIEWERS as u8; 16],
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        ),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock
     ));
     drop(extras);
-    assert_eq!(*count.borrow_and_update(), 3);
+    assert_eq!(online(&host), 3);
     assert!(viewers.iter_mut().all(|viewer| {
         viewer.replay.by_ref().collect::<Vec<_>>()
             == [
@@ -204,11 +255,11 @@ fn three_subscribers_get_one_atomic_replay_then_live_media() {
             .all(|viewer| { viewer.receiver.try_recv().unwrap().as_ref() == live.as_slice() })
     );
     viewers.pop();
-    assert_eq!(*count.borrow_and_update(), 2);
+    assert_eq!(online(&host), 2);
     viewers.pop();
-    assert_eq!(*count.borrow_and_update(), 1);
+    assert_eq!(online(&host), 1);
     viewers.pop();
-    assert_eq!(*count.borrow_and_update(), 0);
+    assert_eq!(online(&host), 0);
 }
 
 #[test]
@@ -228,11 +279,23 @@ fn oversized_gop_waits_for_the_next_keyframe() {
     session
         .publish(&fragment(VIDEO_TRACK, 0x100c0, b"overflow"))
         .unwrap();
-    assert!(session.hub.subscribe(viewers.clone()).unwrap().is_none());
+    assert!(
+        session
+            .hub
+            .subscribe(viewers.clone(), [1; 16], IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .unwrap()
+            .is_none()
+    );
     session
         .publish(&fragment(VIDEO_TRACK, 0x40, b"recovered"))
         .unwrap();
-    assert!(session.hub.subscribe(viewers).unwrap().is_some());
+    assert!(
+        session
+            .hub
+            .subscribe(viewers, [1; 16], IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -248,7 +311,7 @@ fn lagged_viewer_does_not_harm_fast_viewers() {
         .publish(&fragment(VIDEO_TRACK, 0x40, b"key"))
         .unwrap();
     let mut viewers: Vec<_> = (0..3)
-        .map(|_| session.hub.subscribe(generation.clone()).unwrap().unwrap())
+        .map(|id| subscribe(&session, generation.clone(), id))
         .collect();
     for viewer in &mut viewers {
         viewer.replay.by_ref().for_each(drop);
@@ -273,6 +336,155 @@ fn lagged_viewer_does_not_harm_fast_viewers() {
     }
 }
 
+#[test]
+fn reconnect_merges_history_and_stale_disconnect_cannot_win() {
+    let generation = Arc::new(ViewerGeneration::new());
+    let id = [7; 16];
+    let start = Instant::now();
+    let (old_epoch, mut old_close) = generation
+        .connect(id, "192.0.2.1".parse().unwrap(), start)
+        .unwrap();
+    let (new_epoch, _) = generation
+        .connect(
+            id,
+            "192.0.2.2".parse().unwrap(),
+            start + Duration::from_secs(3),
+        )
+        .unwrap();
+    assert!(*old_close.borrow_and_update());
+    assert_eq!(
+        generation
+            .snapshots()
+            .unwrap()
+            .iter()
+            .filter(|viewer| viewer.online())
+            .count(),
+        1
+    );
+    let viewers = generation.snapshots().unwrap();
+    assert_eq!(viewers.len(), 1);
+    assert_eq!(viewers[0].ip, "192.0.2.2".parse::<IpAddr>().unwrap());
+    assert_eq!(viewers[0].duration, Duration::from_secs(3));
+
+    generation
+        .disconnect(id, old_epoch, start + Duration::from_secs(4))
+        .unwrap();
+    assert!(generation.snapshots().unwrap()[0].online());
+    generation
+        .disconnect(id, new_epoch, start + Duration::from_secs(5))
+        .unwrap();
+    let viewer = generation.snapshots().unwrap().pop().unwrap();
+    assert!(!viewer.online());
+    assert_eq!(viewer.duration, Duration::from_secs(5));
+
+    let (later_epoch, _) = generation
+        .connect(
+            id,
+            "192.0.2.3".parse().unwrap(),
+            start + Duration::from_secs(20),
+        )
+        .unwrap();
+    generation
+        .disconnect(id, later_epoch, start + Duration::from_secs(22))
+        .unwrap();
+    assert_eq!(
+        generation.snapshots().unwrap()[0].duration,
+        Duration::from_secs(7)
+    );
+}
+
+#[test]
+fn history_caps_at_100_and_evicts_only_the_oldest_offline_record() {
+    let generation = Arc::new(ViewerGeneration::new());
+    let start = Instant::now();
+    for value in 0..MAX_VIEWER_RECORDS {
+        let id = (value as u128).to_be_bytes();
+        let now = start + Duration::from_secs(value as u64);
+        let (epoch, _) = generation
+            .connect(id, IpAddr::V4(Ipv4Addr::LOCALHOST), now)
+            .unwrap();
+        generation
+            .disconnect(id, epoch, now + Duration::from_millis(1))
+            .unwrap();
+    }
+    let peer: IpAddr = "203.0.113.9".parse().unwrap();
+    generation
+        .connect(
+            (MAX_VIEWER_RECORDS as u128).to_be_bytes(),
+            peer,
+            start + Duration::from_secs(MAX_VIEWER_RECORDS as u64),
+        )
+        .unwrap();
+
+    let viewers = generation.snapshots().unwrap();
+    assert_eq!(viewers.len(), MAX_VIEWER_RECORDS);
+    assert!(viewers[0].online());
+    assert_eq!(viewers[0].key, 101);
+    assert_eq!(viewers[0].ip, peer);
+    assert!(!viewers.iter().any(|viewer| viewer.key == 1));
+    assert!(viewers.iter().any(|viewer| viewer.key == 2));
+}
+
+#[tokio::test]
+async fn stream_identity_is_canonical_and_uses_only_the_tcp_peer_ip() {
+    let host = Host::new().unwrap();
+    let token = host.path().unwrap().trim_start_matches("/s/").to_owned();
+    assert_eq!(
+        request(&host, "invalid", HeaderMap::new(), Ipv4Addr::LOCALHOST,)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&host, &token, HeaderMap::new(), Ipv4Addr::LOCALHOST,)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    for invalid in ["AA".repeat(16), "0".repeat(31)] {
+        let mut headers = HeaderMap::new();
+        headers.insert(VIEWER_ID_HEADER, invalid.parse().unwrap());
+        assert_eq!(
+            request(&host, &token, headers, Ipv4Addr::LOCALHOST)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut duplicate = viewer_headers(1);
+    duplicate.append(VIEWER_ID_HEADER, "11".repeat(16).parse().unwrap());
+    assert_eq!(
+        request(&host, &token, duplicate, Ipv4Addr::LOCALHOST)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut opaque = HeaderMap::new();
+    opaque.insert(
+        VIEWER_ID_HEADER,
+        axum::http::HeaderValue::from_bytes(&[0xff; 32]).unwrap(),
+    );
+    assert_eq!(
+        request(&host, &token, opaque, Ipv4Addr::LOCALHOST)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let session = host.start().unwrap();
+    session.set_mime("video/mp4".to_owned()).unwrap();
+    session.publish(&init()).unwrap();
+    session
+        .publish(&fragment(VIDEO_TRACK, 0x40, b"peer"))
+        .unwrap();
+    let actual = Ipv4Addr::new(203, 0, 113, 7);
+    let mut headers = viewer_headers(1);
+    headers.insert("x-forwarded-for", "198.51.100.8".parse().unwrap());
+    let response = request(&host, &token, headers, actual).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(host.viewers().unwrap()[0].ip, IpAddr::V4(actual));
+}
+
 #[tokio::test]
 async fn token_routes_wait_between_isolated_media_sessions() {
     let host = Host::new().unwrap();
@@ -294,7 +506,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         StatusCode::NOT_FOUND
     );
     assert_eq!(
-        media_stream(Path("invalid".to_owned()), State(host.clone()))
+        stream(&host, "invalid", 1, Ipv4Addr::LOCALHOST)
             .await
             .status(),
         StatusCode::NOT_FOUND
@@ -316,6 +528,12 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"id=\"player\"".as_slice(),
         b"#play { position: absolute;".as_slice(),
         b"video.controls = true;".as_slice(),
+        b"crypto.getRandomValues(new Uint8Array(16))".as_slice(),
+        b"sessionStorage.getItem(\"aercast-viewer-id\")".as_slice(),
+        b"new BroadcastChannel(\"aercast-viewer-id\")".as_slice(),
+        b"{ type: \"owned\", id: viewerId, nonce: data.nonce }".as_slice(),
+        b"currentAttempt?.controller.abort(new Error(\"Viewer identity changed\"))".as_slice(),
+        b"\"Aercast-Viewer-ID\": viewerId".as_slice(),
     ] {
         assert!(
             html.windows(required.len())
@@ -323,9 +541,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         );
     }
     assert_eq!(
-        media_stream(Path(token.clone()), State(host.clone()))
-            .await
-            .status(),
+        stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await.status(),
         StatusCode::TOO_EARLY
     );
 
@@ -337,12 +553,12 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     session
         .publish(&fragment(VIDEO_TRACK, 0x40, b"old-session"))
         .unwrap();
-    let mut count = host.viewer_count().unwrap();
-    let response = media_stream(Path(token.clone()), State(host.clone())).await;
+    let response = stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body().into_data_stream().fuse();
     assert!(body.next().await.unwrap().is_ok());
-    assert_eq!(*count.borrow_and_update(), 1);
+    let first_key = host.viewers().unwrap()[0].key;
+    assert_eq!(online(&host), 1);
 
     host.stop(&session).unwrap();
     assert_eq!(
@@ -352,11 +568,10 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         StatusCode::OK
     );
     assert!(body.next().await.is_none());
-    assert_eq!(*count.borrow_and_update(), 0);
+    assert_eq!(online(&host), 0);
+    assert_eq!(host.viewers().unwrap().len(), 1);
     assert_eq!(
-        media_stream(Path(token.clone()), State(host.clone()))
-            .await
-            .status(),
+        stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await.status(),
         StatusCode::TOO_EARLY
     );
 
@@ -369,13 +584,19 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     next.publish(&next_init).unwrap();
     next.publish(&next_fragment).unwrap();
     assert!(body.next().await.is_none());
-    let response = media_stream(Path(token), State(host.clone())).await;
+    let response = stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(host.viewers().unwrap().len(), 1);
+    assert_eq!(host.viewers().unwrap()[0].key, first_key);
     let mut next_body = response.into_body().into_data_stream();
     assert_eq!(next_body.next().await.unwrap().unwrap(), next_init);
     assert_eq!(next_body.next().await.unwrap().unwrap(), next_fragment);
     host.stop(&next).unwrap();
     assert!(next_body.next().await.is_none());
+
+    let refreshed = host.refresh(false).unwrap();
+    assert!(refreshed.is_some());
+    assert!(host.viewers().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -392,13 +613,13 @@ async fn refresh_revokes_old_viewers_without_restarting_media() {
     session.publish(&key).unwrap();
 
     let mut old_bodies = Vec::new();
-    for _ in 0..MAX_VIEWERS {
-        let response = media_stream(Path(old_token.clone()), State(host.clone())).await;
+    for id in 0..MAX_VIEWERS {
+        let response = stream(&host, &old_token, id as u8, Ipv4Addr::LOCALHOST).await;
         assert_eq!(response.status(), StatusCode::OK);
         old_bodies.push(response.into_body().into_data_stream());
     }
     assert_eq!(
-        media_stream(Path(old_token.clone()), State(host.clone()))
+        stream(&host, &old_token, MAX_VIEWERS as u8, Ipv4Addr::LOCALHOST,)
             .await
             .status(),
         StatusCode::TOO_MANY_REQUESTS
@@ -426,7 +647,7 @@ async fn refresh_revokes_old_viewers_without_restarting_media() {
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            media_stream(Path(revoked.clone()), State(host.clone()))
+            stream(&host, &revoked, 1, Ipv4Addr::LOCALHOST)
                 .await
                 .status(),
             StatusCode::NOT_FOUND
@@ -440,11 +661,10 @@ async fn refresh_revokes_old_viewers_without_restarting_media() {
         assert!(body.next().await.is_none());
     }
 
-    let mut count = host.viewer_count().unwrap();
-    assert_eq!(*count.borrow_and_update(), 0);
-    let response = media_stream(Path(token), State(host.clone())).await;
+    assert!(host.viewers().unwrap().is_empty());
+    let response = stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(*count.borrow_and_update(), 1);
+    assert_eq!(online(&host), 1);
     let mut body = response.into_body().into_data_stream();
     assert_eq!(body.next().await.unwrap().unwrap(), init);
     assert_eq!(body.next().await.unwrap().unwrap(), key);
