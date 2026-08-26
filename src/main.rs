@@ -29,11 +29,12 @@ use iced::{
 use socket2::SockRef;
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
 };
 
 mod audio;
 mod settings;
+mod tray;
 mod web;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -91,7 +92,11 @@ enum Message {
     CancelRefresh,
     Show,
     Quit,
+    ConfirmQuit,
+    CancelQuit,
     QuitQueued(bool),
+    BusClosed,
+    TrayStopped(std::result::Result<(), String>),
     ApplySystemAudio,
     Settings(bool),
     SystemAudio(bool),
@@ -137,7 +142,7 @@ fn claim_instance(
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Phase {
     Starting,
     NetworkError(String),
@@ -155,6 +160,7 @@ struct App {
     commands: Option<mpsc::Sender<Command>>,
     window: Option<window::Id>,
     confirm_refresh: bool,
+    confirm_quit: bool,
     settings: settings::Settings,
     settings_open: bool,
     settings_error: Option<String>,
@@ -164,6 +170,9 @@ struct App {
     network_port: String,
     share_base_url: String,
     applying_network: bool,
+    tray_updates: Option<watch::Sender<Phase>>,
+    tray_stopped: bool,
+    host_stopped: bool,
     quitting: bool,
 }
 
@@ -221,11 +230,13 @@ fn boot(
     instance: zbus::Connection,
 ) -> (App, Task<Message>) {
     let (events, incoming) = iced::futures::channel::mpsc::unbounded();
+    let (tray_messages, tray_events) = iced::futures::channel::mpsc::unbounded();
     let (commands, command_receiver) = mpsc::channel(8);
     let host_settings = settings.clone();
     let network_address = settings.listen_address.to_string();
     let network_port = settings.listen_port.to_string();
     let share_base_url = settings.share_base_url.clone().unwrap_or_default();
+    let (tray_updates, tray_state) = watch::channel(Phase::Starting);
     let app = App {
         phase: Phase::Starting,
         link: String::new(),
@@ -233,6 +244,7 @@ fn boot(
         commands: Some(commands),
         window: None,
         confirm_refresh: false,
+        confirm_quit: false,
         settings,
         settings_open: false,
         settings_error: None,
@@ -242,6 +254,9 @@ fn boot(
         network_port,
         share_base_url,
         applying_network: false,
+        tray_updates: Some(tray_updates),
+        tray_stopped: false,
+        host_stopped: false,
         quitting: false,
     };
     (
@@ -249,7 +264,13 @@ fn boot(
         Task::batch([
             Task::done(Message::Show),
             Task::run(activations, |message| message),
-            Task::perform(async move { instance.closed().await }, |_| Message::Quit),
+            Task::run(tray_events, |message| message),
+            Task::perform(async move { instance.closed().await }, |_| {
+                Message::BusClosed
+            }),
+            Task::perform(tray::run(tray_messages, tray_state), |result| {
+                Message::TrayStopped(result.map_err(|error| error.to_string()))
+            }),
             Task::run(incoming, Message::Host),
             Task::perform(
                 run_host(options, host_settings, events, command_receiver),
@@ -264,10 +285,26 @@ fn boot(
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
+    let task = update_app(app, message);
+    if let Some(updates) = &app.tray_updates {
+        updates.send_if_modified(|current| {
+            if *current == app.phase {
+                false
+            } else {
+                current.clone_from(&app.phase);
+                true
+            }
+        });
+    }
+    task
+}
+
+fn update_app(app: &mut App, message: Message) -> Task<Message> {
     if app.quitting
         && !matches!(
             &message,
             Message::QuitQueued(_)
+                | Message::TrayStopped(_)
                 | Message::Close(_)
                 | Message::Closed(_)
                 | Message::Host(HostEvent::Stopped(_))
@@ -276,14 +313,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         return Task::none();
     }
     match message {
+        Message::Start if app.phase != Phase::Waiting || app.applying_network => {}
         Message::Start => {
             let system_audio = app.settings.system_audio;
             if send_command(app, Command::Start(system_audio)) {
                 app.phase = Phase::Selecting;
             }
         }
+        Message::End if !matches!(app.phase, Phase::Selecting | Phase::Sharing) => {}
         Message::End => {
             app.confirm_refresh = false;
+            app.confirm_quit = false;
             app.applying_system_audio = None;
             if send_command(app, Command::End) {
                 app.phase = Phase::Ending;
@@ -303,14 +343,33 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::CancelRefresh => app.confirm_refresh = false,
         Message::Show => return show_window(app),
         Message::Quit => {
-            app.quitting = true;
-            app.phase = Phase::Ending;
-            return app.commands.take().map_or_else(iced::exit, |commands| {
-                Task::perform(queue_quit(commands), Message::QuitQueued)
-            });
+            if app.phase == Phase::Sharing {
+                app.confirm_refresh = false;
+                app.confirm_quit = true;
+                app.settings_open = false;
+                return show_window(app);
+            }
+            return begin_quit(app);
         }
+        Message::ConfirmQuit if app.confirm_quit => return begin_quit(app),
+        Message::ConfirmQuit => {}
+        Message::CancelQuit => app.confirm_quit = false,
         Message::QuitQueued(true) => {}
-        Message::QuitQueued(false) => return iced::exit(),
+        Message::QuitQueued(false) => {
+            app.host_stopped = true;
+            return finish_quit(app);
+        }
+        Message::BusClosed => return begin_quit(app),
+        Message::TrayStopped(result) => {
+            app.tray_updates = None;
+            app.tray_stopped = true;
+            if let Err(error) = result {
+                eprintln!("Tray unavailable: {error}");
+            }
+            if app.quitting {
+                return finish_quit(app);
+            }
+        }
         Message::ApplySystemAudio => {
             let system_audio = app.settings.system_audio;
             if app.phase == Phase::Sharing
@@ -381,12 +440,14 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             HostEvent::NetworkUnavailable(error) => {
                 app.link.clear();
                 app.applying_network = false;
+                app.confirm_quit = false;
                 app.settings_error = Some(error.clone());
                 app.phase = Phase::NetworkError(error);
             }
             HostEvent::Waiting(link) => {
                 app.link = link;
                 app.confirm_refresh = false;
+                app.confirm_quit = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
                 app.phase = Phase::Waiting;
@@ -410,6 +471,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             HostEvent::Ending => {
                 app.confirm_refresh = false;
+                app.confirm_quit = false;
                 app.applying_system_audio = None;
                 app.phase = Phase::Ending;
             }
@@ -429,8 +491,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             HostEvent::Stopped(result) => {
                 app.commands = None;
+                app.host_stopped = true;
                 app.viewers.clear();
                 app.confirm_refresh = false;
+                app.confirm_quit = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
                 app.applying_network = false;
@@ -438,10 +502,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     if let Err(error) = result {
                         eprintln!("Failed to stop Aercast: {error}");
                     }
-                    return iced::exit();
+                    return finish_quit(app);
                 }
                 match result {
-                    Ok(()) => return iced::exit(),
+                    Ok(()) => {
+                        app.quitting = true;
+                        app.phase = Phase::Ending;
+                        app.tray_updates.take();
+                        return finish_quit(app);
+                    }
                     Err(error) => app.phase = Phase::Error(error),
                 }
             }
@@ -460,8 +529,31 @@ fn send_command(app: &mut App, command: Command) -> bool {
         true
     } else {
         app.confirm_refresh = false;
+        app.confirm_quit = false;
         app.phase = Phase::Error("Host control is unavailable".to_owned());
         false
+    }
+}
+
+fn begin_quit(app: &mut App) -> Task<Message> {
+    app.confirm_quit = false;
+    app.quitting = true;
+    app.phase = Phase::Ending;
+    app.tray_updates.take();
+    match app.commands.take() {
+        Some(commands) => Task::perform(queue_quit(commands), Message::QuitQueued),
+        None => {
+            app.host_stopped = true;
+            finish_quit(app)
+        }
+    }
+}
+
+fn finish_quit(app: &App) -> Task<Message> {
+    if app.host_stopped && app.tray_stopped {
+        iced::exit()
+    } else {
+        Task::none()
     }
 }
 
@@ -514,6 +606,19 @@ fn share_view(app: &App) -> Element<'_, Message> {
             row![
                 button("Cancel").on_press(Message::CancelRefresh),
                 button("Refresh Link").on_press(Message::ConfirmRefresh),
+            ]
+            .spacing(12),
+        ]
+        .spacing(8)
+    } else {
+        column![]
+    };
+    let quit_confirmation = if app.confirm_quit && app.phase == Phase::Sharing {
+        column![
+            text("Quit Aercast and stop the active share?"),
+            row![
+                button("Cancel").on_press(Message::CancelQuit),
+                button("Quit Aercast").on_press(Message::ConfirmQuit),
             ]
             .spacing(12),
         ]
@@ -585,6 +690,7 @@ fn share_view(app: &App) -> Element<'_, Message> {
             button("Refresh Link")
                 .on_press_maybe((app.phase == Phase::Sharing).then_some(Message::Refresh)),
             refresh_confirmation,
+            quit_confirmation,
             text(format!("Viewers: {online}/{}", app.viewers.len())),
             container(scrollable(viewer_rows).height(Length::Fixed(144.0)))
                 .style(container::bordered_box)

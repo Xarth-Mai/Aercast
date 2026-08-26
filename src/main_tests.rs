@@ -155,6 +155,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         commands: Some(commands),
         window: Some(window),
         confirm_refresh: false,
+        confirm_quit: false,
         settings: settings::Settings::default(),
         settings_open: false,
         settings_error: None,
@@ -164,6 +165,9 @@ fn ui_commands_follow_the_host_lifecycle() {
         network_port: "8877".to_owned(),
         share_base_url: String::new(),
         applying_network: false,
+        tray_updates: None,
+        tray_stopped: true,
+        host_stopped: false,
         quitting: false,
     };
 
@@ -231,6 +235,8 @@ fn ui_commands_follow_the_host_lifecycle() {
         Command::Network(network.clone())
     );
     assert!(app.applying_network);
+    drop(update(&mut app, Message::Start));
+    assert!(receiver.try_recv().is_err());
     drop(update(&mut app, Message::SystemAudio(false)));
     assert!(app.settings.system_audio);
     drop(update(
@@ -344,6 +350,8 @@ fn ui_commands_follow_the_host_lifecycle() {
         update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
         1
     );
+    app.quitting = false;
+    app.host_stopped = false;
 
     let (commands, _) = mpsc::channel(1);
     app.commands = Some(commands);
@@ -354,6 +362,8 @@ fn ui_commands_follow_the_host_lifecycle() {
         1
     );
     assert!(app.viewers.is_empty());
+    app.quitting = false;
+    app.host_stopped = false;
 
     let (commands, _) = mpsc::channel(1);
     app.commands = Some(commands);
@@ -378,10 +388,25 @@ fn ui_commands_follow_the_host_lifecycle() {
 
     let (commands, _) = mpsc::channel(1);
     app.commands = Some(commands);
+    app.host_stopped = false;
+    app.phase = Phase::Sharing;
     let closing = window::Id::unique();
     app.window = Some(closing);
-    assert_eq!(update(&mut app, Message::Quit).units(), 1);
+    assert_ne!(update(&mut app, Message::Quit).units(), 0);
+    assert!(app.confirm_quit);
+    assert!(!app.quitting);
+    assert!(app.commands.is_some());
+    assert!(!app.settings_open);
+    drop(update(&mut app, Message::CancelQuit));
+    assert!(!app.confirm_quit);
+    drop(update(&mut app, Message::Quit));
+    assert!(app.confirm_quit);
+    let (tray_updates, _) = watch::channel(Phase::Sharing);
+    app.tray_updates = Some(tray_updates);
+    app.tray_stopped = false;
+    assert_eq!(update(&mut app, Message::ConfirmQuit).units(), 1);
     assert!(app.commands.is_none());
+    assert!(app.tray_updates.is_none());
     assert_eq!(app.phase, Phase::Ending);
     assert!(app.quitting);
     drop(update(
@@ -399,8 +424,19 @@ fn ui_commands_follow_the_host_lifecycle() {
             Message::Host(HostEvent::Stopped(Err("cleanup failed".to_owned())))
         )
         .units(),
-        1
+        0
     );
+    assert_eq!(update(&mut app, Message::TrayStopped(Ok(()))).units(), 1);
+
+    let (commands, _) = mpsc::channel(1);
+    app.commands = Some(commands);
+    app.host_stopped = false;
+    app.tray_stopped = true;
+    app.quitting = false;
+    app.phase = Phase::Sharing;
+    assert_eq!(update(&mut app, Message::BusClosed).units(), 1);
+    assert!(!app.confirm_quit);
+    assert!(app.quitting);
 }
 
 #[tokio::test(flavor = "current_thread")]
