@@ -64,7 +64,7 @@ async fn server_failure_is_terminal_control() {
             std::future::pending(),
             &mut server,
             &host,
-            "127.0.0.1:1".parse().unwrap(),
+            "http://127.0.0.1:1",
             &events,
         )
         .await,
@@ -85,7 +85,7 @@ async fn apply_requests_a_media_restart_without_reclassifying_control() {
             std::future::pending(),
             &mut server,
             &host,
-            "127.0.0.1:1".parse().unwrap(),
+            "http://127.0.0.1:1",
             &events,
         )
         .await,
@@ -105,9 +105,8 @@ async fn quit_waits_for_a_full_control_queue() {
 }
 
 #[test]
-fn arguments_accept_bind_and_repeated_exclusions() {
+fn arguments_accept_repeated_exclusions() {
     let empty = options(std::iter::empty()).unwrap();
-    assert_eq!(empty.bind, SocketAddr::from(([127, 0, 0, 1], 8877)));
     assert!(empty.exclusions.is_empty());
     assert_eq!(
         options(
@@ -126,15 +125,9 @@ fn arguments_accept_bind_and_repeated_exclusions() {
     assert!(options(["--bad".to_owned()].into_iter()).is_err());
     assert!(options(["--monitor".to_owned()].into_iter()).is_err());
     assert!(options(["--window".to_owned()].into_iter()).is_err());
+    assert!(options(["--bind".to_owned(), "127.0.0.1:9000".to_owned()].into_iter()).is_err());
     assert!(options(["--exclude".to_owned()].into_iter()).is_err());
     assert!(options(["--exclude".to_owned(), "--monitor".to_owned()].into_iter()).is_err());
-    assert_eq!(
-        options(["--bind".to_owned(), "192.168.1.10:8080".to_owned()].into_iter())
-            .unwrap()
-            .bind,
-        "192.168.1.10:8080".parse().unwrap()
-    );
-    assert!(options(["--bind".to_owned(), "0.0.0.0:8080".to_owned()].into_iter()).is_err());
 }
 
 #[test]
@@ -153,18 +146,100 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings_error: None,
         active_system_audio: None,
         applying_system_audio: None,
+        network_address: "127.0.0.1".to_owned(),
+        network_port: "8877".to_owned(),
+        share_base_url: String::new(),
+        applying_network: false,
         quitting: false,
     };
 
     drop(update(
         &mut app,
-        Message::Host(HostEvent::Waiting("http://127.0.0.1/s/token".to_owned())),
+        Message::Host(HostEvent::NetworkUnavailable(
+            "Could not listen on 127.0.0.1:8877".to_owned(),
+        )),
+    ));
+    assert!(matches!(app.phase, Phase::NetworkError(_)));
+    assert!(app.settings_error.is_some());
+    drop(update(&mut app, Message::ApplyNetwork));
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        Command::Network(settings::Settings::default())
+    );
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::NetworkUnavailable(
+            "Still could not listen on 127.0.0.1:8877".to_owned(),
+        )),
+    ));
+    app.network_port = "9000".to_owned();
+    let recovered_network = app
+        .settings
+        .with_network(&app.network_address, &app.network_port, &app.share_base_url)
+        .unwrap();
+    drop(update(&mut app, Message::ApplyNetwork));
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        Command::Network(recovered_network.clone())
+    );
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::NetworkApplied(Ok(recovered_network))),
+    ));
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Waiting(
+            "http://127.0.0.1:9000/s/token".to_owned(),
+        )),
     ));
     assert_eq!(app.phase, Phase::Waiting);
     drop(update(&mut app, Message::Settings(true)));
     assert!(app.settings_open);
     drop(update(&mut app, Message::Settings(false)));
     assert!(!app.settings_open);
+
+    app.network_address = "0.0.0.0".to_owned();
+    drop(update(&mut app, Message::ApplyNetwork));
+    assert!(app.settings_error.is_some());
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(app.link, "http://127.0.0.1:9000/s/token");
+
+    app.network_address = "127.0.0.1".to_owned();
+    app.network_port = "9001".to_owned();
+    app.share_base_url = "https://share.example:443/".to_owned();
+    let network = app
+        .settings
+        .with_network(&app.network_address, &app.network_port, &app.share_base_url)
+        .unwrap();
+    drop(update(&mut app, Message::ApplyNetwork));
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        Command::Network(network.clone())
+    );
+    assert!(app.applying_network);
+    drop(update(&mut app, Message::SystemAudio(false)));
+    assert!(app.settings.system_audio);
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::NetworkApplied(Err("occupied".to_owned()))),
+    ));
+    assert!(!app.applying_network);
+    assert_eq!(app.settings.listen_port, 9000);
+    assert_eq!(app.link, "http://127.0.0.1:9000/s/token");
+
+    drop(update(&mut app, Message::ApplyNetwork));
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        Command::Network(network.clone())
+    );
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::NetworkApplied(Ok(network))),
+    ));
+    assert!(!app.applying_network);
+    assert_eq!(app.settings.listen_port, 9001);
+    assert_eq!(app.share_base_url, "https://share.example:443");
+
     app.settings.system_audio = false;
     drop(update(&mut app, Message::Start));
     assert_eq!(receiver.try_recv().unwrap(), Command::Start(false));
@@ -299,6 +374,71 @@ fn ui_commands_follow_the_host_lifecycle() {
         .units(),
         1
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn occupied_startup_bind_recovers_without_rotating_the_token() {
+    let host = web::Host::new().unwrap();
+    let path = host.path().unwrap();
+    let (occupied, occupied_address) = bind_listener("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let occupied_settings = settings::Settings::default()
+        .with_network("127.0.0.1", &occupied_address.port().to_string(), "")
+        .unwrap();
+    assert!(prepare_listener(&occupied_settings, None).await.is_err());
+    drop(occupied);
+
+    let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let old_address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let network = settings::Settings::default()
+        .with_network(
+            "127.0.0.1",
+            &old_address.port().to_string(),
+            "https://share.example:443/",
+        )
+        .unwrap();
+    let (old_listener, old_address) = prepare_listener(&network, None).await.unwrap().unwrap();
+    let old_server = start_server(old_listener, old_address, &host);
+    drop(tokio::net::TcpStream::connect(old_address).await.unwrap());
+    assert_eq!(host.path().unwrap(), path);
+
+    let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let new_address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let network = settings::Settings::default()
+        .with_network(
+            "127.0.0.1",
+            &new_address.port().to_string(),
+            "https://share.example:443/",
+        )
+        .unwrap();
+    let (new_listener, rebound_address) = prepare_listener(&network, Some(old_address))
+        .await
+        .unwrap()
+        .unwrap();
+    let new_server = start_server(new_listener, rebound_address, &host);
+    stop_server(old_server.task, old_server.shutdown)
+        .await
+        .unwrap();
+
+    assert_eq!(host.path().unwrap(), path);
+    drop(
+        tokio::net::TcpStream::connect(rebound_address)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        format!(
+            "{}{path}",
+            link_base(network.share_base_url.as_deref(), rebound_address)
+        ),
+        format!("https://share.example:443{path}")
+    );
+    assert!(tokio::net::TcpStream::connect(old_address).await.is_err());
+
+    stop_server(new_server.task, new_server.shutdown)
+        .await
+        .unwrap();
 }
 
 #[test]

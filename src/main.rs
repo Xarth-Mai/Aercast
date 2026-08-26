@@ -42,14 +42,14 @@ const INSTANCE_PATH: &str = "/org/aercast/Aercast";
 
 #[derive(Clone)]
 struct Options {
-    bind: SocketAddr,
     exclusions: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Command {
     Start(bool),
     Apply(bool),
+    Network(settings::Settings),
     End,
     Refresh(bool),
     Quit,
@@ -66,11 +66,13 @@ enum ShareStop {
 #[derive(Clone, Debug)]
 enum HostEvent {
     Waiting(String),
+    NetworkUnavailable(String),
     Link(String),
     ConfirmRefresh,
     Sharing(bool),
     Ending,
     Viewers(usize),
+    NetworkApplied(std::result::Result<settings::Settings, String>),
     Stopped(std::result::Result<(), String>),
 }
 
@@ -89,6 +91,10 @@ enum Message {
     ApplySystemAudio,
     Settings(bool),
     SystemAudio(bool),
+    NetworkAddress(String),
+    NetworkPort(String),
+    ShareBaseUrl(String),
+    ApplyNetwork,
     Close(window::Id),
     Closed(window::Id),
 }
@@ -129,6 +135,7 @@ fn claim_instance(
 #[derive(Debug, PartialEq)]
 enum Phase {
     Starting,
+    NetworkError(String),
     Waiting,
     Selecting,
     Sharing,
@@ -148,10 +155,20 @@ struct App {
     settings_error: Option<String>,
     active_system_audio: Option<bool>,
     applying_system_audio: Option<bool>,
+    network_address: String,
+    network_port: String,
+    share_base_url: String,
+    applying_network: bool,
     quitting: bool,
 }
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
+
+struct RunningServer {
+    address: SocketAddr,
+    shutdown: oneshot::Sender<()>,
+    task: Server,
+}
 const STALLED_CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
 const MEDIA_RECOVERY_DELAY: Duration = Duration::from_millis(500);
 const MAX_MEDIA_RECOVERIES: u8 = 3;
@@ -194,6 +211,10 @@ fn boot(
 ) -> (App, Task<Message>) {
     let (events, incoming) = iced::futures::channel::mpsc::unbounded();
     let (commands, command_receiver) = mpsc::channel(8);
+    let host_settings = settings.clone();
+    let network_address = settings.listen_address.to_string();
+    let network_port = settings.listen_port.to_string();
+    let share_base_url = settings.share_base_url.clone().unwrap_or_default();
     let app = App {
         phase: Phase::Starting,
         link: String::new(),
@@ -206,6 +227,10 @@ fn boot(
         settings_error: None,
         active_system_audio: None,
         applying_system_audio: None,
+        network_address,
+        network_port,
+        share_base_url,
+        applying_network: false,
         quitting: false,
     };
     (
@@ -215,11 +240,14 @@ fn boot(
             Task::run(activations, |message| message),
             Task::perform(async move { instance.closed().await }, |_| Message::Quit),
             Task::run(incoming, Message::Host),
-            Task::perform(run_host(options, events, command_receiver), |result| {
-                Message::Host(HostEvent::Stopped(
-                    result.map_err(|error| error.to_string()),
-                ))
-            }),
+            Task::perform(
+                run_host(options, host_settings, events, command_receiver),
+                |result| {
+                    Message::Host(HostEvent::Stopped(
+                        result.map_err(|error| error.to_string()),
+                    ))
+                },
+            ),
         ]),
     )
 }
@@ -285,6 +313,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.settings_open = open;
             app.settings_error = None;
         }
+        Message::SystemAudio(_) if app.applying_network => {}
         Message::SystemAudio(system_audio) => {
             let mut settings = app.settings.clone();
             settings.system_audio = system_audio;
@@ -296,6 +325,37 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 Err(error) => app.settings_error = Some(error.to_string()),
             }
         }
+        Message::NetworkAddress(address) => {
+            app.network_address = address;
+            app.settings_error = None;
+        }
+        Message::NetworkPort(port) => {
+            app.network_port = port;
+            app.settings_error = None;
+        }
+        Message::ShareBaseUrl(base_url) => {
+            app.share_base_url = base_url;
+            app.settings_error = None;
+        }
+        Message::ApplyNetwork => {
+            if matches!(&app.phase, Phase::Waiting | Phase::NetworkError(_))
+                && !app.applying_network
+            {
+                match app.settings.with_network(
+                    &app.network_address,
+                    &app.network_port,
+                    &app.share_base_url,
+                ) {
+                    Ok(settings) => {
+                        if send_command(app, Command::Network(settings)) {
+                            app.applying_network = true;
+                            app.settings_error = None;
+                        }
+                    }
+                    Err(error) => app.settings_error = Some(error.to_string()),
+                }
+            }
+        }
         Message::Close(id) => {
             if app.window.take_if(|window| *window == id).is_some() {
                 return window::close(id);
@@ -303,6 +363,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::Closed(id) => app.window = app.window.filter(|window| *window != id),
         Message::Host(event) => match event {
+            HostEvent::NetworkUnavailable(error) => {
+                app.link.clear();
+                app.viewers = 0;
+                app.applying_network = false;
+                app.settings_error = Some(error.clone());
+                app.phase = Phase::NetworkError(error);
+            }
             HostEvent::Waiting(link) => {
                 app.link = link;
                 app.viewers = 0;
@@ -334,12 +401,26 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.phase = Phase::Ending;
             }
             HostEvent::Viewers(viewers) => app.viewers = viewers,
+            HostEvent::NetworkApplied(result) => {
+                app.applying_network = false;
+                match result {
+                    Ok(settings) => {
+                        app.network_address = settings.listen_address.to_string();
+                        app.network_port = settings.listen_port.to_string();
+                        app.share_base_url = settings.share_base_url.clone().unwrap_or_default();
+                        app.settings = settings;
+                        app.settings_error = None;
+                    }
+                    Err(error) => app.settings_error = Some(error),
+                }
+            }
             HostEvent::Stopped(result) => {
                 app.commands = None;
                 app.viewers = 0;
                 app.confirm_refresh = false;
                 app.active_system_audio = None;
                 app.applying_system_audio = None;
+                app.applying_network = false;
                 if app.quitting {
                     if let Err(error) = result {
                         eprintln!("Failed to stop Aercast: {error}");
@@ -401,6 +482,7 @@ fn view(app: &App, _: window::Id) -> Element<'_, Message> {
 fn share_view(app: &App) -> Element<'_, Message> {
     let status = match &app.phase {
         Phase::Starting => "Starting Aercast…",
+        Phase::NetworkError(error) => error,
         Phase::Waiting => "Ready. Capture has not started.",
         Phase::Selecting => "Choose one screen or window in the system picker.",
         Phase::Sharing if app.applying_system_audio.is_some() => "Restarting media…",
@@ -408,7 +490,7 @@ fn share_view(app: &App) -> Element<'_, Message> {
         Phase::Ending => "Ending share…",
         Phase::Error(error) => error,
     };
-    let can_start = app.phase == Phase::Waiting;
+    let can_start = app.phase == Phase::Waiting && !app.applying_network;
     let can_end = matches!(app.phase, Phase::Selecting | Phase::Sharing);
     let end_label = if app.phase == Phase::Selecting {
         "Cancel"
@@ -472,8 +554,12 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         .active_system_audio
         .is_some_and(|active| active != app.settings.system_audio);
     let applying = app.applying_system_audio.is_some();
+    let network_dirty = app.network_address != app.settings.listen_address.to_string()
+        || app.network_port != app.settings.listen_port.to_string()
+        || app.share_base_url != app.settings.share_base_url.as_deref().unwrap_or_default();
     let hint = match &app.phase {
         Phase::Starting => "Starting Aercast…",
+        Phase::NetworkError(error) => error,
         Phase::Waiting => "Used when the next share starts.",
         Phase::Sharing if applying => "Restarting media with the requested setting…",
         Phase::Sharing if dirty => "Saved. Apply it to the current share when ready.",
@@ -508,9 +594,43 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             text("Settings").size(24),
             checkbox(app.settings.system_audio)
                 .label("System audio")
-                .on_toggle(Message::SystemAudio),
+                .on_toggle_maybe((!app.applying_network).then_some(Message::SystemAudio)),
             text(hint).size(12),
             apply,
+            text("Network").size(15),
+            row![
+                column![
+                    text("Listen address").size(12),
+                    text_input("127.0.0.1", &app.network_address)
+                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkAddress)),
+                ]
+                .spacing(4)
+                .width(Length::FillPortion(3)),
+                column![
+                    text("Port").size(12),
+                    text_input("8877", &app.network_port)
+                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkPort)),
+                ]
+                .spacing(4)
+                .width(Length::FillPortion(1)),
+            ]
+            .spacing(12),
+            text("Share base URL (optional)").size(12),
+            text_input("https://host:port", &app.share_base_url)
+                .on_input_maybe((!app.applying_network).then_some(Message::ShareBaseUrl)),
+            button(if app.applying_network {
+                "Applying network…"
+            } else {
+                "Apply Network"
+            })
+            .on_press_maybe(
+                (((app.phase == Phase::Waiting && network_dirty)
+                    || matches!(&app.phase, Phase::NetworkError(_)))
+                    && !app.applying_network)
+                    .then_some(Message::ApplyNetwork),
+            ),
+            text("Network changes apply only while stopped.").size(12),
+            text("Changing the listener may leave old waiting pages unable to recover.").size(12),
             text(app.settings_error.as_deref().unwrap_or_default()).size(12),
         ]
         .spacing(16)
@@ -533,36 +653,62 @@ fn symbolic_icon(bytes: &'static [u8]) -> iced::widget::Svg<'static> {
 
 async fn run_host(
     options: Options,
+    settings: settings::Settings,
     events: Events,
     mut command_receiver: mpsc::Receiver<Command>,
 ) -> Result<()> {
     let host = web::Host::new()?;
-    let listener = TcpListener::bind(options.bind).await?;
-    SockRef::from(&listener).set_tcp_user_timeout(Some(STALLED_CLIENT_TIMEOUT))?;
-    let address = listener.local_addr()?;
-    let (shutdown, shutdown_request) = oneshot::channel();
-    let mut server = tokio::spawn(web::serve(listener, host.clone(), shutdown_request));
+    let bind = settings.bind()?;
+    let mut server = match bind_listener(bind).await {
+        Ok((listener, address)) => Some(start_server(listener, address, &host)),
+        Err(error) => {
+            let _ = events.unbounded_send(HostEvent::NetworkUnavailable(format!(
+                "Could not listen on {bind}: {error}. Change Network settings and apply them."
+            )));
+            None
+        }
+    };
+    let mut share_base_url = settings.share_base_url;
     let outcome: Result<()> = async {
         loop {
-            let link = format!("http://{address}{}", host.path()?);
-            let _ = events.unbounded_send(HostEvent::Waiting(link));
-            let command = tokio::select! {
-                result = &mut server => return server_outcome(result).map(|_| ()),
-                signal = tokio::signal::ctrl_c() => {
-                    signal?;
-                    Command::Quit
+            if let Some(server) = &server {
+                let link = format!(
+                    "{}{}",
+                    link_base(share_base_url.as_deref(), server.address),
+                    host.path()?
+                );
+                let _ = events.unbounded_send(HostEvent::Waiting(link));
+            }
+            let command = {
+                let server_result = async {
+                    match server.as_mut() {
+                        Some(server) => (&mut server.task).await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::pin!(server_result);
+                tokio::select! {
+                    result = &mut server_result => return server_outcome(result).map(|_| ()),
+                    signal = tokio::signal::ctrl_c() => {
+                        signal?;
+                        Command::Quit
+                    }
+                    command = command_receiver.recv() => command.unwrap_or(Command::Quit),
                 }
-                command = command_receiver.recv() => command.unwrap_or(Command::Quit),
             };
             match command {
                 Command::Start(system_audio) => {
+                    let Some(server) = server.as_mut() else {
+                        continue;
+                    };
+                    let link_base = link_base(share_base_url.as_deref(), server.address);
                     match share_once(
                         &options,
                         &host,
-                        address,
+                        &link_base,
                         system_audio,
                         &mut command_receiver,
-                        &mut server,
+                        &mut server.task,
                         &events,
                     )
                     .await?
@@ -573,6 +719,44 @@ async fn run_host(
                     }
                 }
                 Command::Apply(_) => {}
+                Command::Network(settings) => {
+                    let listener = match async {
+                        let listener = prepare_listener(
+                            &settings,
+                            server.as_ref().map(|server| server.address),
+                        )
+                        .await?;
+                        settings.save().map_err(|error| {
+                            io::Error::new(
+                                error.kind(),
+                                format!("could not save settings: {error}"),
+                            )
+                        })?;
+                        Ok::<_, io::Error>(listener)
+                    }
+                    .await
+                    {
+                        Ok(listener) => listener,
+                        Err(error) => {
+                            let error = format!("Network settings unchanged: {error}");
+                            let event = if server.is_some() {
+                                HostEvent::NetworkApplied(Err(error))
+                            } else {
+                                HostEvent::NetworkUnavailable(error)
+                            };
+                            let _ = events.unbounded_send(event);
+                            continue;
+                        }
+                    };
+                    if let Some((listener, new_address)) = listener {
+                        let new_server = start_server(listener, new_address, &host);
+                        if let Some(old_server) = server.replace(new_server) {
+                            stop_server(old_server.task, old_server.shutdown).await?;
+                        }
+                    }
+                    share_base_url = settings.share_base_url.clone();
+                    let _ = events.unbounded_send(HostEvent::NetworkApplied(Ok(settings)));
+                }
                 Command::End => {}
                 Command::Refresh(_) => {}
                 Command::Quit => break,
@@ -583,29 +767,76 @@ async fn run_host(
     .await;
 
     if let Err(error) = outcome {
-        server.abort();
+        if let Some(server) = server {
+            server.task.abort();
+        }
         return Err(error);
     }
+    if let Some(server) = server {
+        stop_server(server.task, server.shutdown).await?;
+    }
+    Ok(())
+}
+
+async fn bind_listener(bind: SocketAddr) -> io::Result<(TcpListener, SocketAddr)> {
+    let listener = TcpListener::bind(bind).await?;
+    SockRef::from(&listener).set_tcp_user_timeout(Some(STALLED_CLIENT_TIMEOUT))?;
+    let address = listener.local_addr()?;
+    Ok((listener, address))
+}
+
+fn start_server(listener: TcpListener, address: SocketAddr, host: &web::Host) -> RunningServer {
+    let (shutdown, shutdown_request) = oneshot::channel();
+    RunningServer {
+        address,
+        shutdown,
+        task: tokio::spawn(web::serve(listener, host.clone(), shutdown_request)),
+    }
+}
+
+async fn prepare_listener(
+    settings: &settings::Settings,
+    current_address: Option<SocketAddr>,
+) -> io::Result<Option<(TcpListener, SocketAddr)>> {
+    let bind = settings.bind()?;
+    let listener = if Some(bind) == current_address {
+        None
+    } else {
+        Some(bind_listener(bind).await.map_err(|error| {
+            io::Error::new(error.kind(), format!("could not bind {bind}: {error}"))
+        })?)
+    };
+    Ok(listener)
+}
+
+async fn stop_server(mut server: Server, shutdown: oneshot::Sender<()>) -> io::Result<()> {
     let _ = shutdown.send(());
     match tokio::time::timeout(STALLED_CLIENT_TIMEOUT + Duration::from_secs(1), &mut server).await {
         Ok(Ok(result)) => result?,
-        Ok(Err(error)) => return Err(io::Error::other(error.to_string()).into()),
+        Ok(Err(error)) => return Err(io::Error::other(error.to_string())),
         Err(_) => {
             server.abort();
             if let Err(error) = server.await
                 && !error.is_cancelled()
             {
-                return Err(io::Error::other(error.to_string()).into());
+                return Err(io::Error::other(error.to_string()));
             }
         }
     }
     Ok(())
 }
 
+fn link_base(base_url: Option<&str>, address: SocketAddr) -> String {
+    match base_url {
+        Some(base_url) => base_url.to_owned(),
+        None => format!("http://{address}"),
+    }
+}
+
 async fn share_once(
     options: &Options,
     host: &web::Host,
-    address: SocketAddr,
+    link_base: &str,
     mut system_audio: bool,
     commands: &mut mpsc::Receiver<Command>,
     server: &mut Server,
@@ -678,6 +909,11 @@ async fn share_once(
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
                 Command::Start(_) => println!("Source selection is already open."),
                 Command::Apply(_) => println!("Source selection is still open."),
+                Command::Network(_) => {
+                    let _ = events.unbounded_send(HostEvent::NetworkApplied(Err(
+                        "Stop sharing before applying network settings".to_owned()
+                    )));
+                }
                 Command::End => break Selection::Stop(false),
                 Command::Refresh(_) => println!("Source selection is still open."),
                 Command::Quit => break Selection::Stop(true),
@@ -733,7 +969,7 @@ async fn share_once(
             },
             server,
             host,
-            address,
+            link_base,
             events,
         );
         tokio::pin!(control);
@@ -844,7 +1080,7 @@ async fn share_control(
     session_closed: impl Future<Output = ()>,
     server: &mut Server,
     host: &web::Host,
-    address: SocketAddr,
+    link_base: &str,
     events: &Events,
 ) -> ShareStop {
     let mut viewers = match host.viewer_count() {
@@ -864,6 +1100,11 @@ async fn share_control(
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
                 Command::Start(_) => println!("A share is already active."),
                 Command::Apply(system_audio) => return ShareStop::Apply(system_audio),
+                Command::Network(_) => {
+                    let _ = events.unbounded_send(HostEvent::NetworkApplied(Err(
+                        "Stop sharing before applying network settings".to_owned()
+                    )));
+                }
                 Command::End => {
                     println!("Ending share.");
                     return ShareStop::End;
@@ -874,9 +1115,8 @@ async fn share_control(
                             Ok(viewers) => viewers,
                             Err(error) => return ShareStop::Failed(error.into()),
                         };
-                        let _ = events.unbounded_send(HostEvent::Link(format!(
-                            "http://{address}{path}"
-                        )));
+                        let _ = events
+                            .unbounded_send(HostEvent::Link(format!("{link_base}{path}")));
                     }
                     Ok(None) => {
                         let _ = events.unbounded_send(HostEvent::ConfirmRefresh);
@@ -914,22 +1154,9 @@ fn should_retry<T, E>(outcome: &std::result::Result<T, E>, recoveries: u8) -> bo
 }
 
 fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
-    let mut bind = None;
     let mut exclusions = Vec::new();
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "--bind" if bind.is_none() => {
-                let address = args
-                    .next()
-                    .filter(|value| !value.starts_with("--"))
-                    .ok_or_else(usage)?
-                    .parse::<SocketAddr>()
-                    .map_err(|_| usage())?;
-                if address.ip().is_unspecified() || address.ip().is_multicast() {
-                    return Err(usage());
-                }
-                bind = Some(address);
-            }
             "--exclude" => exclusions.push(
                 args.next()
                     .filter(|value| !value.is_empty() && !value.starts_with("--"))
@@ -938,14 +1165,11 @@ fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
             _ => return Err(usage()),
         }
     }
-    Ok(Options {
-        bind: bind.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8877))),
-        exclusions,
-    })
+    Ok(Options { exclusions })
 }
 
 fn usage() -> io::Error {
-    io::Error::other("usage: aercast [--bind IP:PORT] [--exclude APPLICATION_ID_OR_NAME]...")
+    io::Error::other("usage: aercast [--exclude APPLICATION_ID_OR_NAME]...")
 }
 
 fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {

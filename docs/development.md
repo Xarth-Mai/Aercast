@@ -201,8 +201,8 @@ exclusions.
 
 ### Desktop implementation
 
-- The product has only a GUI. Existing bind and exclusion command-line
-  flags are temporary development inputs and must be removed before Phase 5 is
+- The product has only a GUI. Existing exclusion command-line flags are
+  temporary development inputs and must be removed before Phase 5 is
   accepted.
 - iced uses Wayland, Tokio, and the `wgpu` renderer. Phase 5 moves the lifecycle
   to `iced::daemon`; hidden means no mapped window while the process continues.
