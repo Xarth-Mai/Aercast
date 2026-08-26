@@ -16,7 +16,26 @@ const FRAME_BYTES: usize = 2 * size_of::<f32>();
 pub struct AudioCapture {
     stop: pw::channel::Sender<()>,
     finished: Receiver<()>,
-    thread: thread::JoinHandle<Result<(), String>>,
+    thread: thread::JoinHandle<Result<(), AudioFailure>>,
+}
+
+enum AudioFailure {
+    Media(String),
+    Cleanup(String),
+}
+
+impl AudioFailure {
+    fn message(&self) -> &str {
+        match self {
+            Self::Media(message) | Self::Cleanup(message) => message,
+        }
+    }
+}
+
+impl From<String> for AudioFailure {
+    fn from(message: String) -> Self {
+        Self::Media(message)
+    }
 }
 
 pub fn start(
@@ -31,7 +50,7 @@ pub fn start(
         .spawn(move || {
             let result = run(appsrc, exclusions, receiver);
             if let Err(error) = &result {
-                let _ = errors.send(error.clone());
+                let _ = errors.send(error.message().to_owned());
             }
             let _ = finished_sender.send(());
             result
@@ -64,8 +83,18 @@ impl AudioCapture {
     }
 }
 
-fn stop_result(result: Result<(), String>, failure_reported: bool) -> Result<(), String> {
-    if failure_reported { Ok(()) } else { result }
+fn stop_result(result: Result<(), AudioFailure>, failure_reported: bool) -> Result<(), String> {
+    match result {
+        Err(AudioFailure::Media(_)) if failure_reported => Ok(()),
+        Err(error) => Err(error.message().to_owned()),
+        Ok(()) => Ok(()),
+    }
+}
+
+fn record_cleanup_failure(failure: &mut Option<AudioFailure>, error: String) {
+    if !matches!(failure, Some(AudioFailure::Cleanup(_))) {
+        *failure = Some(AudioFailure::Cleanup(error));
+    }
 }
 
 struct Port {
@@ -151,7 +180,7 @@ struct State {
     received_audio: bool,
     activation_started: Option<Instant>,
     stopping: bool,
-    failure: Option<String>,
+    failure: Option<AudioFailure>,
 }
 
 impl State {
@@ -687,7 +716,7 @@ impl State {
 
     fn fail(&mut self, error: String) {
         if self.failure.is_none() {
-            self.failure = Some(error);
+            self.failure = Some(AudioFailure::Media(error));
             let _ = self.stream.set_active(false);
             let _ = self.stream.flush(false);
             self.active = false;
@@ -699,17 +728,21 @@ impl State {
     fn begin_cleanup(&mut self) -> Option<AsyncSeq> {
         self.stopping = true;
         if let Err(error) = self.destroy_links() {
-            self.failure.get_or_insert(error);
+            record_cleanup_failure(&mut self.failure, error);
         }
         if let Err(error) = self.stream.disconnect() {
-            self.failure
-                .get_or_insert_with(|| format!("failed to disconnect selective audio: {error}"));
+            record_cleanup_failure(
+                &mut self.failure,
+                format!("failed to disconnect selective audio: {error}"),
+            );
         }
         match self.core.sync(0) {
             Ok(seq) => Some(seq),
             Err(error) => {
-                self.failure
-                    .get_or_insert_with(|| format!("failed to flush audio cleanup: {error}"));
+                record_cleanup_failure(
+                    &mut self.failure,
+                    format!("failed to flush audio cleanup: {error}"),
+                );
                 None
             }
         }
@@ -763,7 +796,7 @@ fn run(
     appsrc: gst_app::AppSrc,
     exclusions: Vec<String>,
     stop: pw::channel::Receiver<()>,
-) -> Result<(), String> {
+) -> Result<(), AudioFailure> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|error| error.to_string())?;
     let context =
@@ -923,16 +956,21 @@ fn run(
             let weak = weak.clone();
             move |_| {
                 if let Some(state) = weak.upgrade() {
-                    state
-                        .borrow_mut()
-                        .fail("timed out while flushing selective-audio cleanup".to_owned());
+                    let mut state = state.borrow_mut();
+                    record_cleanup_failure(
+                        &mut state.failure,
+                        "timed out while flushing selective-audio cleanup".to_owned(),
+                    );
+                    state.mainloop.quit();
                 }
             }
         });
         cleanup_timeout
             .update_timer(Some(Duration::from_secs(5)), None)
             .into_result()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                AudioFailure::Cleanup(format!("failed to arm audio cleanup timeout: {error}"))
+            })?;
         mainloop.run();
     }
     drop(readiness_timer);

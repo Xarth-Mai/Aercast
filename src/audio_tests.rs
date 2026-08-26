@@ -3,12 +3,32 @@ use super::*;
 #[test]
 fn a_reported_audio_failure_is_not_a_cleanup_failure() {
     assert_eq!(
-        stop_result(Err("reported media failure".to_owned()), true),
+        stop_result(
+            Err(AudioFailure::Media("reported media failure".to_owned())),
+            true,
+        ),
         Ok(())
     );
     assert_eq!(
-        stop_result(Err("unreported cleanup failure".to_owned()), false),
-        Err("unreported cleanup failure".to_owned())
+        stop_result(
+            Err(AudioFailure::Cleanup("cleanup failure".to_owned())),
+            true,
+        ),
+        Err("cleanup failure".to_owned())
+    );
+
+    let mut failure = Some(AudioFailure::Media("reported media failure".to_owned()));
+    record_cleanup_failure(&mut failure, "cleanup failure".to_owned());
+    assert_eq!(
+        stop_result(Err(failure.unwrap()), true),
+        Err("cleanup failure".to_owned())
+    );
+
+    let mut failure = Some(AudioFailure::Cleanup("first cleanup failure".to_owned()));
+    record_cleanup_failure(&mut failure, "later cleanup failure".to_owned());
+    assert_eq!(
+        stop_result(Err(failure.unwrap()), true),
+        Err("first cleanup failure".to_owned())
     );
 }
 
