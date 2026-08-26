@@ -1,13 +1,9 @@
 use std::{
-    convert::Infallible,
     future::Future,
     io,
+    net::SocketAddr,
     os::fd::{AsRawFd, OwnedFd},
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use ashpd::{
@@ -17,49 +13,319 @@ use ashpd::{
         screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType},
     },
 };
-use axum::{
-    Router,
-    body::{Body, Bytes},
-    extract::State,
-    http::{StatusCode, header},
-    response::{Html, IntoResponse, Response},
-    routing::get,
-};
-use futures_util::{StreamExt, stream};
+use futures_util::StreamExt;
 use gst::prelude::*;
 use gst_app::AppSinkCallbacks;
+use iced::{
+    Element, Length, Task, Theme, clipboard,
+    futures::channel::mpsc::UnboundedSender,
+    widget::{button, column, container, row, text, text_input},
+    window,
+};
+use socket2::SockRef;
 use tokio::{
     net::TcpListener,
-    sync::{Notify, broadcast, watch},
+    sync::{mpsc, oneshot},
 };
 
 mod audio;
+mod web;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-const VIEWER_HTML: &str = include_str!("viewer.html");
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type Events = UnboundedSender<HostEvent>;
 
 #[derive(Clone)]
-struct WebState {
-    media: broadcast::Sender<Bytes>,
-    mime: watch::Receiver<Option<String>>,
-    start: Arc<Notify>,
-    claimed: Arc<AtomicBool>,
-}
-
 struct Options {
+    bind: SocketAddr,
     source: Option<SourceType>,
     exclusions: Vec<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let Options {
-        source: requested_source,
-        exclusions,
-    } = options(std::env::args().skip(1))?;
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Command {
+    Start,
+    End,
+    Quit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ShareStop {
+    End,
+    Quit,
+    PortalClosed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ShareResult {
+    Cancelled,
+    Ended,
+    Quit,
+}
+
+#[derive(Clone, Debug)]
+enum HostEvent {
+    Waiting(String),
+    Ended(String),
+    Sharing,
+    Ending,
+    Viewers(usize),
+    Stopped(std::result::Result<(), String>),
+}
+
+#[derive(Clone, Debug)]
+enum Message {
+    Host(HostEvent),
+    Start,
+    End,
+    Copy,
+    Close(window::Id),
+}
+
+#[derive(Debug, PartialEq)]
+enum Phase {
+    Starting,
+    Waiting,
+    Ended,
+    Selecting,
+    Sharing,
+    Ending,
+    Closing,
+    Error(String),
+}
+
+struct App {
+    phase: Phase,
+    link: String,
+    viewers: usize,
+    commands: Option<mpsc::Sender<Command>>,
+    closing: Option<window::Id>,
+}
+
+type Server = tokio::task::JoinHandle<io::Result<()>>;
+const STALLED_CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn main() -> Result<()> {
+    let options = options(std::env::args().skip(1))?;
     gst::init()?;
 
+    iced::application(move || boot(options.clone()), update, view)
+        .title("Aercast")
+        .theme(Theme::Dark)
+        .window_size((560.0, 320.0))
+        .exit_on_close_request(false)
+        .subscription(|_| window::close_requests().map(Message::Close))
+        .run()?;
+    Ok(())
+}
+
+fn boot(options: Options) -> (App, Task<Message>) {
+    let (events, incoming) = iced::futures::channel::mpsc::unbounded();
+    let (commands, command_receiver) = mpsc::channel(8);
+    (
+        App {
+            phase: Phase::Starting,
+            link: String::new(),
+            viewers: 0,
+            commands: Some(commands),
+            closing: None,
+        },
+        Task::batch([
+            Task::run(incoming, Message::Host),
+            Task::perform(run_host(options, events, command_receiver), |result| {
+                Message::Host(HostEvent::Stopped(
+                    result.map_err(|error| error.to_string()),
+                ))
+            }),
+        ]),
+    )
+}
+
+fn update(app: &mut App, message: Message) -> Task<Message> {
+    match message {
+        Message::Start => {
+            if send_command(app, Command::Start) {
+                app.phase = Phase::Selecting;
+            }
+        }
+        Message::End => {
+            if send_command(app, Command::End) {
+                app.phase = Phase::Ending;
+            }
+        }
+        Message::Copy => return clipboard::write(app.link.clone()),
+        Message::Close(id) => {
+            if app.commands.is_none() {
+                return window::close(id);
+            }
+            app.closing = Some(id);
+            let _ = send_command(app, Command::Quit);
+            app.phase = Phase::Closing;
+        }
+        Message::Host(event) => match event {
+            HostEvent::Waiting(link) => {
+                app.link = link;
+                app.viewers = 0;
+                if app.closing.is_none() {
+                    app.phase = Phase::Waiting;
+                }
+            }
+            HostEvent::Ended(link) => {
+                app.link = link;
+                app.viewers = 0;
+                if app.closing.is_none() {
+                    app.phase = Phase::Ended;
+                }
+            }
+            HostEvent::Sharing if app.closing.is_none() => app.phase = Phase::Sharing,
+            HostEvent::Ending if app.closing.is_none() => app.phase = Phase::Ending,
+            HostEvent::Viewers(viewers) => app.viewers = viewers,
+            HostEvent::Stopped(result) => {
+                app.commands = None;
+                app.viewers = 0;
+                if let Some(id) = app.closing.take() {
+                    return window::close(id);
+                }
+                match result {
+                    Ok(()) => return iced::exit(),
+                    Err(error) => app.phase = Phase::Error(error),
+                }
+            }
+            HostEvent::Sharing | HostEvent::Ending => {}
+        },
+    }
+    Task::none()
+}
+
+fn send_command(app: &mut App, command: Command) -> bool {
+    if app
+        .commands
+        .as_ref()
+        .is_some_and(|commands| commands.try_send(command).is_ok())
+    {
+        true
+    } else {
+        app.phase = Phase::Error("Host control is unavailable".to_owned());
+        false
+    }
+}
+
+fn view(app: &App) -> Element<'_, Message> {
+    let status = match &app.phase {
+        Phase::Starting => "Starting Aercast…",
+        Phase::Waiting => "Ready. Capture has not started.",
+        Phase::Ended => "Share ended. A fresh link is ready.",
+        Phase::Selecting => "Choose one screen or window in the system picker.",
+        Phase::Sharing => "Sharing.",
+        Phase::Ending => "Ending share…",
+        Phase::Closing => "Cleaning up…",
+        Phase::Error(error) => error,
+    };
+    let can_start = matches!(app.phase, Phase::Waiting | Phase::Ended);
+    let can_end = matches!(app.phase, Phase::Selecting | Phase::Sharing);
+    let end_label = if app.phase == Phase::Selecting {
+        "Cancel"
+    } else {
+        "End Sharing"
+    };
+
+    container(
+        column![
+            text("Aercast").size(36),
+            text(status),
+            text_input("Share link will appear here", &app.link),
+            row![
+                button("Copy Link").on_press_maybe((!app.link.is_empty()).then_some(Message::Copy)),
+                button("Start Sharing").on_press_maybe(can_start.then_some(Message::Start)),
+                button(end_label).on_press_maybe(can_end.then_some(Message::End)),
+            ]
+            .spacing(12),
+            text(format!("Viewers: {}", app.viewers)),
+            text("Trusted LAN only. Use an external HTTPS reverse proxy elsewhere.").size(12),
+        ]
+        .spacing(16)
+        .max_width(520),
+    )
+    .padding(24)
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .into()
+}
+
+async fn run_host(
+    options: Options,
+    events: Events,
+    mut command_receiver: mpsc::Receiver<Command>,
+) -> Result<()> {
+    let host = web::Host::new()?;
+    let listener = TcpListener::bind(options.bind).await?;
+    SockRef::from(&listener).set_tcp_user_timeout(Some(STALLED_CLIENT_TIMEOUT))?;
+    let address = listener.local_addr()?;
+    let (shutdown, shutdown_request) = oneshot::channel();
+    let mut server = tokio::spawn(web::serve(listener, host.clone(), shutdown_request));
+    let mut ended = false;
+
+    let outcome: Result<()> = async {
+        loop {
+            let link = format!("http://{address}{}", host.path()?);
+            let _ = events.unbounded_send(if ended {
+                HostEvent::Ended(link)
+            } else {
+                HostEvent::Waiting(link)
+            });
+            let command = tokio::select! {
+                result = &mut server => return server_outcome(result).map(|_| ()),
+                signal = tokio::signal::ctrl_c() => {
+                    signal?;
+                    Command::Quit
+                }
+                command = command_receiver.recv() => command.unwrap_or(Command::Quit),
+            };
+            match command {
+                Command::Start => {
+                    ended = false;
+                    match share_once(&options, &host, &mut command_receiver, &mut server, &events)
+                        .await?
+                    {
+                        ShareResult::Cancelled => {}
+                        ShareResult::Ended => ended = true,
+                        ShareResult::Quit => break,
+                    }
+                }
+                Command::End => {}
+                Command::Quit => break,
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(error) = outcome {
+        server.abort();
+        return Err(error);
+    }
+    let _ = shutdown.send(());
+    match tokio::time::timeout(STALLED_CLIENT_TIMEOUT + Duration::from_secs(1), &mut server).await {
+        Ok(Ok(result)) => result?,
+        Ok(Err(error)) => return Err(io::Error::other(error.to_string()).into()),
+        Err(_) => {
+            server.abort();
+            if let Err(error) = server.await
+                && !error.is_cancelled()
+            {
+                return Err(io::Error::other(error.to_string()).into());
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn share_once(
+    options: &Options,
+    host: &web::Host,
+    commands: &mut mpsc::Receiver<Command>,
+    server: &mut Server,
+    events: &Events,
+) -> Result<ShareResult> {
     let portal = Screencast::new().await?;
     let available_sources = portal.available_source_types().await?;
     let available_cursors = portal.available_cursor_modes().await?;
@@ -67,7 +333,7 @@ async fn main() -> Result<()> {
     println!("Available source types: {available_sources:?}");
     println!("Available cursor modes: {available_cursors:?}");
 
-    let requested_sources = match requested_source {
+    let requested_sources = match options.source {
         Some(source) => source.into(),
         None => SourceType::Monitor | SourceType::Window,
     };
@@ -83,76 +349,130 @@ async fn main() -> Result<()> {
 
     let session = portal.create_session(Default::default()).await?;
     let mut closed = session.receive_closed().await?;
-    let mut interrupt = Box::pin(tokio::signal::ctrl_c());
-    let capture: ashpd::Result<Option<(u32, OwnedFd)>> = tokio::select! {
-        result = async {
-            portal
-                .select_sources(
-                    &session,
-                    SelectSourcesOptions::default()
-                        .set_sources(sources)
-                        .set_multiple(false)
-                        .set_cursor_mode(cursor)
-                        .set_persist_mode(PersistMode::DoNot),
-                )
-                .await?
-                .response()?;
-
-            let response = portal
-                .start(&session, None, Default::default())
-                .await?
-                .response()?;
-            let stream = response
-                .streams()
-                .first()
-                .ok_or_else(|| io::Error::other("portal returned no selected stream"))?;
-            println!(
-                "Selected stream: node={}, source={:?}, size={:?}, position={:?}, id={:?}, mapping_id={:?}",
-                stream.pipe_wire_node_id(),
-                stream.source_type(),
-                stream.size(),
-                stream.position(),
-                stream.id(),
-                stream.mapping_id(),
-            );
-
-            let remote = portal
-                .open_pipe_wire_remote(&session, Default::default())
-                .await?;
-            Ok((stream.pipe_wire_node_id(), remote))
-        } => result.map(Some),
-        signal = &mut interrupt => match signal {
-            Ok(()) => {
-                println!("Ctrl-C received; cancelling Portal request.");
-                Ok(None)
-            }
-            Err(error) => Err(error.into()),
-        },
-    };
-
-    let result = match capture {
-        Ok(Some((node_id, remote))) => {
-            serve_video(
-                node_id,
-                remote.as_raw_fd(),
-                exclusions,
-                async {
-                    let _ = closed.next().await;
-                },
-                interrupt,
+    let capture = async {
+        portal
+            .select_sources(
+                &session,
+                SelectSourcesOptions::default()
+                    .set_sources(sources)
+                    .set_multiple(false)
+                    .set_cursor_mode(cursor)
+                    .set_persist_mode(PersistMode::DoNot),
             )
-            .await
+            .await?
+            .response()?;
+
+        let response = portal
+            .start(&session, None, Default::default())
+            .await?
+            .response()?;
+        let stream = response
+            .streams()
+            .first()
+            .ok_or_else(|| io::Error::other("portal returned no selected stream"))?;
+        println!(
+            "Selected stream: node={}, source={:?}, size={:?}, position={:?}, id={:?}, mapping_id={:?}",
+            stream.pipe_wire_node_id(),
+            stream.source_type(),
+            stream.size(),
+            stream.position(),
+            stream.id(),
+            stream.mapping_id(),
+        );
+        let remote = portal
+            .open_pipe_wire_remote(&session, Default::default())
+            .await?;
+        Ok((stream.pipe_wire_node_id(), remote))
+    };
+    tokio::pin!(capture);
+
+    enum Selection {
+        Capture(ashpd::Result<(u32, OwnedFd)>),
+        Stop(bool),
+        Signal(io::Result<()>),
+        Server(std::result::Result<io::Result<()>, tokio::task::JoinError>),
+    }
+    let selection = loop {
+        tokio::select! {
+            result = &mut capture => break Selection::Capture(result),
+            signal = tokio::signal::ctrl_c() => break Selection::Signal(signal),
+            result = &mut *server => break Selection::Server(result),
+            command = commands.recv() => match command.unwrap_or(Command::Quit) {
+                Command::Start => println!("Source selection is already open."),
+                Command::End => break Selection::Stop(false),
+                Command::Quit => break Selection::Stop(true),
+            },
         }
-        Ok(None) => Ok(false),
-        Err(ashpd::Error::Response(ResponseError::Cancelled))
-        | Err(ashpd::Error::Portal(PortalError::Cancelled(_))) => {
+    };
+    let (node_id, remote) = match selection {
+        Selection::Capture(Ok(capture)) => capture,
+        Selection::Capture(
+            Err(ashpd::Error::Response(ResponseError::Cancelled))
+            | Err(ashpd::Error::Portal(PortalError::Cancelled(_))),
+        ) => {
             println!("Portal request cancelled.");
-            Ok(false)
+            if let Err(error) = session.close().await {
+                eprintln!("Failed to close cancelled Portal session: {error}");
+            }
+            return Ok(ShareResult::Cancelled);
         }
-        Err(error) => Err(error.into()),
+        Selection::Capture(Err(error)) => {
+            if let Err(close_error) = session.close().await {
+                eprintln!("Failed to close Portal session: {close_error}");
+            }
+            return Err(error.into());
+        }
+        Selection::Stop(quit) => {
+            session.close().await?;
+            return Ok(if quit {
+                ShareResult::Quit
+            } else {
+                ShareResult::Cancelled
+            });
+        }
+        Selection::Signal(signal) => {
+            session.close().await?;
+            signal?;
+            return Ok(ShareResult::Quit);
+        }
+        Selection::Server(result) => {
+            if let Err(error) = session.close().await {
+                eprintln!("Failed to close Portal session: {error}");
+            }
+            return server_outcome(result).map(|_| ShareResult::Cancelled);
+        }
     };
 
-    let close_result = if matches!(&result, Ok(true)) {
+    let media = match host.start() {
+        Ok(media) => media,
+        Err(error) => {
+            if let Err(close_error) = session.close().await {
+                eprintln!("Failed to close Portal session: {close_error}");
+            }
+            return Err(error.into());
+        }
+    };
+    let result = serve_video(
+        node_id,
+        remote.as_raw_fd(),
+        options.exclusions.clone(),
+        media.clone(),
+        share_control(
+            commands,
+            async {
+                let _ = closed.next().await;
+            },
+            server,
+        ),
+        events,
+    )
+    .await;
+    let end_result = media.end();
+    if let Err(error) = &end_result {
+        eprintln!("Failed to revoke share session: {error}");
+    }
+    let portal_closed = matches!(result, Ok(ShareStop::PortalClosed));
+    let close_result = if portal_closed {
         Ok(())
     } else {
         session.close().await
@@ -160,16 +480,73 @@ async fn main() -> Result<()> {
     if let Err(error) = &close_result {
         eprintln!("Failed to close Portal session: {error}");
     }
-    result?;
+    let stop = result?;
+    end_result?;
     close_result?;
-    Ok(())
+    Ok(if stop == ShareStop::Quit {
+        ShareResult::Quit
+    } else {
+        ShareResult::Ended
+    })
+}
+
+async fn share_control(
+    commands: &mut mpsc::Receiver<Command>,
+    session_closed: impl Future<Output = ()>,
+    server: &mut Server,
+) -> Result<ShareStop> {
+    tokio::pin!(session_closed);
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            println!("Stopping Aercast.");
+            Ok(ShareStop::Quit)
+        },
+        quit = stop_command(commands) => {
+            if quit {
+                println!("Stopping Aercast.");
+                Ok(ShareStop::Quit)
+            } else {
+                println!("Ending share.");
+                Ok(ShareStop::End)
+            }
+        },
+        _ = &mut session_closed => {
+            println!("Portal session closed; stopping stream.");
+            Ok(ShareStop::PortalClosed)
+        }
+        result = &mut *server => server_outcome(result),
+    }
+}
+
+async fn stop_command(commands: &mut mpsc::Receiver<Command>) -> bool {
+    loop {
+        match commands.recv().await.unwrap_or(Command::Quit) {
+            Command::Start => println!("A share is already active."),
+            Command::End => return false,
+            Command::Quit => return true,
+        }
+    }
 }
 
 fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
+    let mut bind = None;
     let mut source = None;
     let mut exclusions = Vec::new();
     while let Some(argument) = args.next() {
         match argument.as_str() {
+            "--bind" if bind.is_none() => {
+                let address = args
+                    .next()
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(usage)?
+                    .parse::<SocketAddr>()
+                    .map_err(|_| usage())?;
+                if address.ip().is_unspecified() || address.ip().is_multicast() {
+                    return Err(usage());
+                }
+                bind = Some(address);
+            }
             "--monitor" if source.is_none() => source = Some(SourceType::Monitor),
             "--window" if source.is_none() => source = Some(SourceType::Window),
             "--exclude" => exclusions.push(
@@ -180,11 +557,17 @@ fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
             _ => return Err(usage()),
         }
     }
-    Ok(Options { source, exclusions })
+    Ok(Options {
+        bind: bind.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0))),
+        source,
+        exclusions,
+    })
 }
 
 fn usage() -> io::Error {
-    io::Error::other("usage: aercast [--monitor|--window] [--exclude APPLICATION_ID_OR_NAME]...")
+    io::Error::other(
+        "usage: aercast [--bind IP:PORT] [--monitor|--window] [--exclude APPLICATION_ID_OR_NAME]...",
+    )
 }
 
 fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {
@@ -193,72 +576,20 @@ fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {
         .or_else(|| hidden.then_some(CursorMode::Hidden))
 }
 
-async fn viewer_page() -> Response {
-    (
-        [
-            (header::CACHE_CONTROL, "no-store"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
-        Html(VIEWER_HTML),
-    )
-        .into_response()
-}
-
-async fn media_stream(State(state): State<WebState>) -> Response {
-    if state
-        .claimed
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
-        return (StatusCode::CONFLICT, "Phase 2 supports one viewer").into_response();
-    }
-
-    let receiver = state.media.subscribe();
-    state.start.notify_one();
-    let mut mime = state.mime;
-    let content_type = loop {
-        if let Some(content_type) = mime.borrow().clone() {
-            break content_type;
-        }
-        if mime.changed().await.is_err() {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-    };
-    let body = Body::from_stream(stream::unfold(receiver, |mut receiver| async move {
-        match receiver.recv().await {
-            Ok(chunk) => Some((Ok::<Bytes, Infallible>(chunk), receiver)),
-            Err(error) => {
-                eprintln!("Viewer stream closed: {error}");
-                None
-            }
-        }
-    }));
-
-    Response::builder()
-        .header(header::CONTENT_TYPE, content_type)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-        .body(body)
-        .expect("generated media headers are valid")
-}
-
 async fn serve_video(
     node_id: u32,
     remote_fd: i32,
     exclusions: Vec<String>,
-    session_closed: impl Future<Output = ()>,
-    interrupt: impl Future<Output = io::Result<()>>,
-) -> Result<bool> {
+    media: web::MediaSession,
+    control: impl Future<Output = Result<ShareStop>>,
+    events: &Events,
+) -> Result<ShareStop> {
     if exclusions.is_empty() {
-        eprintln!("Selective audio disabled: a Host-local Viewer must be passed as --exclude ID.");
+        eprintln!(
+            "No audio exclusions configured; a Host-local Viewer may feed shared audio back into Aercast."
+        );
     }
-    // ponytail: raw mux-buffer queue for one viewer; Phase 4 publishes cached GOPs.
-    let (media, _) = broadcast::channel(512);
-    let web_media = media.clone();
-    let (mime_sender, mime) = watch::channel(None);
-    let start = Arc::new(Notify::new());
-    let claimed = Arc::new(AtomicBool::new(false));
-    let media_started: Arc<OnceLock<Instant>> = Arc::new(OnceLock::new());
+    let started = Instant::now();
 
     // ponytail: normalize this niri/AMD DMA-BUF at 720p30 for the software proof.
     let pipeline = gst::parse::launch(&pipeline_description(node_id, remote_fd))?
@@ -275,15 +606,20 @@ async fn serve_video(
         .downcast::<gst_app::AppSrc>()
         .map_err(|_| io::Error::other("GStreamer system-audio source is not appsrc"))?;
     parser_pad
-        .add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
-            if let Some(gst::PadProbeData::Event(event)) = &info.data
-                && let gst::EventView::Caps(event) = event.view()
-                && let Some(mime) = h264_mime(event.caps())
-            {
-                mime_sender.send_replace(Some(mime));
-                return gst::PadProbeReturn::Remove;
+        .add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
+            let media = media.clone();
+            move |_, info| {
+                if let Some(gst::PadProbeData::Event(event)) = &info.data
+                    && let gst::EventView::Caps(event) = event.view()
+                    && let Some(mime) = h264_mime(event.caps())
+                {
+                    if let Err(error) = media.set_mime(mime) {
+                        eprintln!("Failed to publish media type: {error}");
+                    }
+                    return gst::PadProbeReturn::Remove;
+                }
+                gst::PadProbeReturn::Ok
             }
-            gst::PadProbeReturn::Ok
         })
         .ok_or_else(|| io::Error::other("failed to install codec probe"))?;
 
@@ -295,19 +631,20 @@ async fn serve_video(
     app_sink.set_callbacks(
         AppSinkCallbacks::builder()
             .new_sample({
-                let media_started = Arc::clone(&media_started);
+                let media = media.clone();
                 let mut first_fragment = true;
                 move |sink| {
                     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Error)?;
                     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                     let bytes = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    if first_fragment && bytes.as_slice().get(4..8) == Some(b"moof".as_slice()) {
-                        if let Some(started) = media_started.get() {
-                            println!("First fMP4 fragment: {} ms", started.elapsed().as_millis());
-                        }
+                    let fragment = media.publish(bytes.as_slice()).map_err(|error| {
+                        eprintln!("Failed to publish fMP4: {error}");
+                        gst::FlowError::Error
+                    })?;
+                    if first_fragment && fragment {
+                        println!("First fMP4 fragment: {} ms", started.elapsed().as_millis());
                         first_fragment = false;
                     }
-                    let _ = media.send(Bytes::copy_from_slice(bytes.as_slice()));
                     Ok(gst::FlowSuccess::Ok)
                 }
             })
@@ -319,100 +656,69 @@ async fn serve_video(
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no bus"))?;
     let message_types = [gst::MessageType::Eos, gst::MessageType::Error];
     let mut messages = bus.stream_filtered(&message_types);
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let address = listener.local_addr()?;
-    let app = Router::new()
-        .route("/", get(viewer_page))
-        .route(
-            "/stream",
-            get(media_stream).head(|| async { StatusCode::METHOD_NOT_ALLOWED }),
-        )
-        .with_state(WebState {
-            media: web_media,
-            mime,
-            start: Arc::clone(&start),
-            claimed,
-        });
-    let server = async move { axum::serve(listener, app).await };
-    println!("Open http://{address}/ and select Play / Enable Audio; press Ctrl-C to stop.");
-
-    tokio::pin!(session_closed);
-    tokio::pin!(interrupt);
-    tokio::pin!(server);
-    let outcome: Result<bool> = tokio::select! {
-        _ = start.notified() => {
-            let started = Instant::now();
-            let _ = media_started.set(started);
-            parser_pad
-                .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
-                    println!("First encoded frame: {} ms", started.elapsed().as_millis());
-                    gst::PadProbeReturn::Remove
-                })
-                .ok_or_else(|| io::Error::other("failed to install first-frame probe"))?;
-            match pipeline.set_state(gst::State::Playing) {
-                Err(error) => Err(error.into()),
-                Ok(_) => {
-                    match audio::start(system_audio, exclusions) {
-                        Err(error) => Err(error.into()),
-                        Ok((audio, mut audio_errors)) => {
-                            println!("Browser stream running.");
-                            let running = tokio::select! {
-                                signal = &mut interrupt => match signal {
-                                    Ok(()) => {
-                                        println!("Ctrl-C received; stopping stream.");
-                                        Ok(false)
-                                    }
-                                    Err(error) => Err(error.into()),
-                                },
-                                _ = &mut session_closed => {
-                                    println!("Portal session closed; stopping stream.");
-                                    Ok(true)
-                                }
-                                result = &mut server => server_outcome(result),
-                                message = messages.next() => media_outcome(message),
-                                error = audio_errors.recv() => Err(io::Error::other(
-                                    error.unwrap_or_else(|| "selective-audio thread stopped unexpectedly".to_owned())
-                                ).into()),
-                            };
-                            let stopped = audio.stop().map_err(io::Error::other);
-                            if let Err(error) = &stopped {
-                                eprintln!("Failed to clean up selective audio: {error}");
-                            }
-                            match running {
-                                Err(error) => Err(error),
-                                Ok(portal_closed) => stopped
-                                    .map(|()| portal_closed)
-                                    .map_err(|error| error.into()),
+    parser_pad
+        .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+            println!("First encoded frame: {} ms", started.elapsed().as_millis());
+            gst::PadProbeReturn::Remove
+        })
+        .ok_or_else(|| io::Error::other("failed to install first-frame probe"))?;
+    tokio::pin!(control);
+    let outcome: Result<ShareStop> = match pipeline.set_state(gst::State::Playing) {
+        Err(error) => Err(error.into()),
+        Ok(_) => match audio::start(system_audio, exclusions) {
+            Err(error) => Err(error.into()),
+            Ok((audio, mut audio_errors)) => {
+                println!("Browser stream running.");
+                let _ = events.unbounded_send(HostEvent::Sharing);
+                let mut viewers = media.viewer_count();
+                let _ = events.unbounded_send(HostEvent::Viewers(*viewers.borrow_and_update()));
+                let running = loop {
+                    let result = tokio::select! {
+                        stop = &mut control => stop,
+                        message = messages.next() => media_outcome(message),
+                        error = audio_errors.recv() => Err(io::Error::other(
+                            error.unwrap_or_else(|| "selective-audio thread stopped unexpectedly".to_owned())
+                        ).into()),
+                        changed = viewers.changed() => {
+                            if changed.is_err() {
+                                Err(io::Error::other("Viewer count channel closed").into())
+                            } else {
+                                let _ = events.unbounded_send(HostEvent::Viewers(
+                                    *viewers.borrow_and_update()
+                                ));
+                                continue;
                             }
                         }
+                    };
+                    break result;
+                };
+                let _ = events.unbounded_send(HostEvent::Ending);
+                let revoked = media.end();
+                if let Err(error) = &revoked {
+                    eprintln!("Failed to revoke share session: {error}");
+                }
+                let stopped = audio.stop().map_err(io::Error::other);
+                if let Err(error) = &stopped {
+                    eprintln!("Failed to clean up selective audio: {error}");
+                }
+                match running {
+                    Err(error) => Err(error),
+                    Ok(stop) => {
+                        revoked?;
+                        stopped.map(|()| stop).map_err(|error| error.into())
                     }
                 }
             }
-        }
-        signal = &mut interrupt => {
-            match signal {
-                Ok(()) => {
-                    println!("Ctrl-C received; stopping server.");
-                    Ok(false)
-                }
-                Err(error) => Err(error.into()),
-            }
-        }
-        _ = &mut session_closed => {
-            println!("Portal session closed; stopping server.");
-            Ok(true)
-        }
-        result = &mut server => server_outcome(result),
+        },
     };
 
     let stop_result = pipeline.set_state(gst::State::Null);
     if let Err(error) = &stop_result {
         eprintln!("Failed to stop GStreamer pipeline: {error}");
     }
-    let portal_closed = outcome?;
+    let stop = outcome?;
     stop_result?;
-    Ok(portal_closed)
+    Ok(stop)
 }
 
 fn pipeline_description(node_id: u32, remote_fd: i32) -> String {
@@ -436,19 +742,22 @@ fn avc_codec(config: &[u8]) -> Option<String> {
         .then(|| format!("avc1.{:02x}{:02x}{:02x}", config[1], config[2], config[3]))
 }
 
-fn server_outcome(result: io::Result<()>) -> Result<bool> {
+fn server_outcome(
+    result: std::result::Result<io::Result<()>, tokio::task::JoinError>,
+) -> Result<ShareStop> {
     match result {
-        Ok(()) => Err(io::Error::other("HTTP server stopped").into()),
-        Err(error) => Err(error.into()),
+        Ok(Ok(())) => Err(io::Error::other("HTTP server stopped").into()),
+        Ok(Err(error)) => Err(error.into()),
+        Err(error) => Err(io::Error::other(format!("HTTP server task failed: {error}")).into()),
     }
 }
 
-fn media_outcome(message: Option<gst::Message>) -> Result<bool> {
+fn media_outcome(message: Option<gst::Message>) -> Result<ShareStop> {
     match message {
         Some(message) => match message.view() {
             gst::MessageView::Eos(..) => {
                 println!("Capture stream ended.");
-                Ok(false)
+                Ok(ShareStop::End)
             }
             gst::MessageView::Error(error) => {
                 let source = message
@@ -469,73 +778,5 @@ fn media_outcome(message: Option<gst::Message>) -> Result<bool> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embedded_cursor_is_preferred_with_hidden_fallback() {
-        assert_eq!(cursor_mode(true, true), Some(CursorMode::Embedded));
-        assert_eq!(cursor_mode(false, true), Some(CursorMode::Hidden));
-        assert_eq!(cursor_mode(false, false), None);
-    }
-
-    #[test]
-    fn arguments_accept_one_source_and_repeated_exclusions() {
-        let empty = options(std::iter::empty()).unwrap();
-        assert_eq!(empty.source, None);
-        assert!(empty.exclusions.is_empty());
-        assert_eq!(
-            options(["--window".to_owned()].into_iter()).unwrap().source,
-            Some(SourceType::Window)
-        );
-        assert_eq!(
-            options(
-                [
-                    "--exclude".to_owned(),
-                    "org.example.Chat".to_owned(),
-                    "--monitor".to_owned(),
-                    "--exclude".to_owned(),
-                    "game-bin".to_owned(),
-                ]
-                .into_iter()
-            )
-            .unwrap()
-            .exclusions,
-            ["org.example.Chat", "game-bin"]
-        );
-        assert!(options(["--bad".to_owned()].into_iter()).is_err());
-        assert!(options(["--monitor".to_owned(), "--window".to_owned()].into_iter()).is_err());
-        assert!(options(["--exclude".to_owned()].into_iter()).is_err());
-        assert!(options(["--exclude".to_owned(), "--monitor".to_owned()].into_iter()).is_err());
-    }
-
-    #[test]
-    fn avc_config_produces_the_codec_parameter() {
-        gst::init().unwrap();
-        assert_eq!(
-            avc_codec(&[1, 0x42, 0xc0, 0x1f]),
-            Some("avc1.42c01f".to_owned())
-        );
-        assert_eq!(avc_codec(&[1, 0x42, 0xc0]), None);
-        assert_eq!(avc_codec(&[0, 0x42, 0xc0, 0x1f]), None);
-
-        let caps = gst::Caps::builder("video/x-h264")
-            .field("codec_data", gst::Buffer::from_slice([1, 0x42, 0xc0, 0x1f]))
-            .build();
-        assert_eq!(
-            h264_mime(&caps),
-            Some("video/mp4; codecs=\"avc1.42c01f, mp4a.40.2\"".to_owned())
-        );
-    }
-
-    #[test]
-    fn av_pipeline_description_has_no_syntax_error() {
-        gst::init().unwrap();
-        if let Err(error) = gst::parse::launch(&pipeline_description(1, 0)) {
-            assert_ne!(
-                error.kind::<gst::ParseError>(),
-                Some(gst::ParseError::Syntax)
-            );
-        }
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;

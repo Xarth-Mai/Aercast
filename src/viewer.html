@@ -20,6 +20,8 @@
   const video = document.querySelector("video");
   const button = document.querySelector("#play");
   const status = document.querySelector("#status");
+  let running = false;
+  let currentAttempt = null;
 
   function showError(error) {
     button.disabled = false;
@@ -61,51 +63,143 @@
     await trim(buffer, false);
   }
 
+  function delay(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+  }
+
+  function withAbort(promise, signal) {
+    if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Stream aborted"));
+    return new Promise((resolve, reject) => {
+      const aborted = () => { cleanup(); reject(signal.reason ?? new Error("Stream aborted")); };
+      const cleanup = () => signal.removeEventListener("abort", aborted);
+      signal.addEventListener("abort", aborted, { once: true });
+      promise.then(
+        value => { cleanup(); resolve(value); },
+        error => { cleanup(); reject(error); }
+      );
+    });
+  }
+
+  function beginAttempt() {
+    const controller = new AbortController();
+    const media = new MediaSource();
+    const opened = new Promise(resolve => media.addEventListener("sourceopen", resolve, { once: true }));
+    const attempt = {
+      controller,
+      media,
+      opened,
+      source: URL.createObjectURL(media),
+      response: null,
+      reader: null,
+      error: null
+    };
+    currentAttempt = attempt;
+    video.src = attempt.source;
+    void video.play().catch(error => {
+      if (!controller.signal.aborted) showError(error);
+    });
+    return attempt;
+  }
+
+  async function stopAttempt(attempt) {
+    attempt.controller.abort();
+    try {
+      if (attempt.reader) await attempt.reader.cancel();
+      else if (attempt.response?.body) await attempt.response.body.cancel();
+    } catch (_) {}
+    if (currentAttempt === attempt) currentAttempt = null;
+    if (video.src === attempt.source) {
+      video.removeAttribute("src");
+      video.load();
+    }
+    URL.revokeObjectURL(attempt.source);
+  }
+
+  async function nextResponse(attempt) {
+    while (running) {
+      const response = await fetch(`${location.pathname}/stream`, {
+        cache: "no-store",
+        signal: attempt.controller.signal
+      });
+      if (response.status !== 425) return response;
+      if (response.body) await response.body.cancel();
+      status.textContent = "Waiting for the Host to start sharing…";
+      await delay(500);
+    }
+    throw new Error("Share stopped");
+  }
+
+  async function consume(attempt, response, mime) {
+    await withAbort(attempt.opened, attempt.controller.signal);
+    const buffer = attempt.media.addSourceBuffer(mime);
+    const reader = response.body.getReader();
+    attempt.reader = reader;
+    let positioned = false;
+
+    while (true) {
+      const { done, value } = await withAbort(reader.read(), attempt.controller.signal);
+      if (done) break;
+      await withAbort(append(buffer, value), attempt.controller.signal);
+      if (!positioned && buffer.buffered.length) {
+        const start = buffer.buffered.start(0);
+        if (video.currentTime < start) video.currentTime = start;
+        positioned = true;
+      }
+    }
+    if (attempt.media.readyState === "open" && !buffer.updating) attempt.media.endOfStream();
+  }
+
+  async function connect(attempt) {
+    while (running) {
+      status.textContent = "Connecting…";
+      try {
+        const response = await nextResponse(attempt);
+        attempt.response = response;
+        if (response.status === 404) {
+          if (response.body) await response.body.cancel();
+          attempt.response = null;
+          running = false;
+          button.disabled = true;
+          status.textContent = "This share has ended or the link is invalid.";
+          document.body.dataset.state = "ended";
+          return;
+        }
+        if (!response.ok || !response.body) {
+          throw new Error(`Stream request failed: HTTP ${response.status}`);
+        }
+        const mime = response.headers.get("content-type");
+        if (!mime || !MediaSource.isTypeSupported(mime)) {
+          running = false;
+          throw new Error(`Unsupported media type: ${mime ?? "missing"}`);
+        }
+        document.body.dataset.mime = mime;
+        status.textContent = mime;
+        await consume(attempt, response, mime);
+      } catch (error) {
+        const cause = attempt.error ?? error;
+        if (!running) {
+          showError(cause);
+          return;
+        }
+        status.textContent = `Reconnecting… ${cause.message}`;
+      } finally {
+        await stopAttempt(attempt);
+      }
+      if (!running) return;
+      await delay(500);
+      attempt = beginAttempt();
+    }
+  }
+
   button.addEventListener("click", async () => {
     button.disabled = true;
     video.muted = false;
-    if (video.src) {
-      try {
-        await video.play();
-      } catch (error) {
-        showError(error);
-      }
+    if (running) {
+      try { await video.play(); } catch (error) { showError(error); }
       return;
     }
-    status.textContent = "Connecting…";
-    try {
-      const media = new MediaSource();
-      const opened = new Promise(resolve => media.addEventListener("sourceopen", resolve, { once: true }));
-      video.src = URL.createObjectURL(media);
-      void video.play().catch(showError);
-
-      const response = await fetch("/stream", { cache: "no-store" });
-      if (!response.ok) throw new Error(`Stream request failed: HTTP ${response.status}`);
-      const mime = response.headers.get("content-type");
-      if (!mime || !MediaSource.isTypeSupported(mime)) {
-        throw new Error(`Unsupported media type: ${mime ?? "missing"}`);
-      }
-
-      document.body.dataset.mime = mime;
-      await opened;
-      const buffer = media.addSourceBuffer(mime);
-      const reader = response.body.getReader();
-      status.textContent = mime;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        await append(buffer, value);
-      }
-      if (media.readyState === "open" && !buffer.updating) media.endOfStream();
-      status.textContent = "Stream ended.";
-    } catch (error) {
-      const source = video.src;
-      video.removeAttribute("src");
-      video.load();
-      URL.revokeObjectURL(source);
-      showError(error);
-    }
+    running = true;
+    void connect(beginAttempt());
   });
 
   video.addEventListener("playing", () => {
@@ -114,9 +208,13 @@
     status.textContent = document.body.dataset.mime ?? "Playing.";
   });
   video.addEventListener("error", () => {
+    const attempt = currentAttempt;
+    if (!attempt) return;
     const message = video.error?.message ?? "Video playback failed";
-    status.textContent = message;
+    attempt.error = new Error(message);
     document.body.dataset.error = message;
+    status.textContent = message;
+    attempt.controller.abort(attempt.error);
   });
 </script>
 </html>

@@ -1,8 +1,9 @@
 # AGENTS.md
 
 These instructions apply to the entire repository. Read [README.md](README.md)
-before changing code; it is the source of truth for the product direction,
-current milestone, and non-goals.
+for the product contract and [docs/development.md](docs/development.md) for the
+engineering decisions, current milestone, acceptance criteria, and non-goals
+before changing code.
 
 ## Product invariants
 
@@ -22,8 +23,9 @@ current milestone, and non-goals.
 
 ## How to work
 
-- Implement only the current roadmap milestone and its smallest runnable
-  vertical slice. Do not add adjacent features "while here."
+- Implement only the current milestone in
+  [docs/development.md](docs/development.md) and its smallest runnable vertical
+  slice. Do not add adjacent features "while here."
 - Understand the real flow before editing. For a bug, find every caller and fix
   the shared root cause once.
 - Prefer the standard library, native platform features, and existing
@@ -37,8 +39,9 @@ current milestone, and non-goals.
 - Back performance and compatibility claims with recorded measurements on the
   relevant compositor, browser, and hardware. Optimize only a measured
   bottleneck.
-- Keep public documentation honest: distinguish implemented behavior, verified
-  results, working assumptions, and targets.
+- Keep README product-facing and honest: distinguish commitments, targets, and
+  verified support. Put implementation status, commands, host-specific
+  measurements, research, and risk logs under `docs/`.
 
 The canonical checks are `cargo fmt --check` and `cargo test`. A real capture
 smoke check uses `cargo run -- --monitor` or `cargo run -- --window` and
