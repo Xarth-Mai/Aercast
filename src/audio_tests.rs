@@ -84,7 +84,7 @@ fn capture_requires_its_own_active_route_to_an_audio_sink() {
 }
 
 #[test]
-fn unsafe_stream_overrides_and_identity_precedence_are_checked() {
+fn unsafe_stream_overrides_and_audio_policy_are_checked() {
     let mut properties = stream_properties();
     assert!(validate_stream_properties(properties.dict()).is_ok());
     assert!(validate_exported_node(properties.dict()).is_ok());
@@ -93,28 +93,49 @@ fn unsafe_stream_overrides_and_identity_precedence_are_checked() {
     properties.insert("node.driver", "true");
     assert!(validate_exported_node(properties.dict()).is_err());
 
-    let properties = pw::properties::properties! {
+    let mut properties = pw::properties::properties! {
         *pw::keys::APP_ID => "org.example.Game",
+        *pw::keys::APP_PROCESS_BINARY => "game-bin",
+        *pw::keys::APP_NAME => "Example Game",
+        *pw::keys::APP_PROCESS_ID => "1234",
+    };
+    let normal = playback_policy(properties.dict());
+    assert_eq!(normal.identity.as_deref(), Some("org.example.Game"));
+    properties.insert(*pw::keys::APP_PROCESS_ID, "9999");
+    assert_eq!(normal, playback_policy(properties.dict()));
+    let binary_fallback = pw::properties::properties! {
+        *pw::keys::APP_PROCESS_BINARY => "game-bin",
         *pw::keys::APP_NAME => "Example Game",
     };
     assert_eq!(
-        playback_identity(properties.dict()).as_deref(),
-        Some("org.example.Game")
+        playback_identity(binary_fallback.dict()).as_deref(),
+        Some("game-bin")
     );
-    let fallback = pw::properties::properties! {
+    let name_fallback = pw::properties::properties! {
         *pw::keys::APP_NAME => "Example Game",
+        *pw::keys::APP_PROCESS_ID => "5678",
     };
     assert_eq!(
-        playback_identity(fallback.dict()).as_deref(),
+        playback_identity(name_fallback.dict()).as_deref(),
         Some("Example Game")
     );
-    assert!(!excluded("org.example.Game", &["Example Game".to_owned()]));
+    let communication = pw::properties::properties! {
+        *pw::keys::APP_ID => "org.example.Game",
+        *pw::keys::MEDIA_ROLE => "Communication",
+        *pw::keys::APP_PROCESS_ID => "42",
+    };
+    let communication = playback_policy(communication.dict());
+    assert!(excluded(&communication, &[]));
+    assert!(!excluded(&normal, &["Example Game".to_owned()]));
+    assert!(excluded(&normal, &["org.example.Game".to_owned()]));
+    assert!(!excluded(&normal, &[]));
     assert!(excluded(
-        "org.example.Game",
-        &["org.example.Game".to_owned()]
+        &PlaybackPolicy {
+            identity: Some("org.aercast.Aercast".to_owned()),
+            communication: false,
+        },
+        &[],
     ));
-    assert!(!excluded("org.example.Game", &[]));
-    assert!(excluded("org.aercast.Aercast", &[]));
     assert!(vanished_object(42, -2));
     assert!(!vanished_object(pw::core::PW_ID_CORE, -2));
     assert!(!vanished_object(42, -13));

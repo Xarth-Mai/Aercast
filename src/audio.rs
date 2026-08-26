@@ -71,7 +71,13 @@ struct Port {
 struct Playback {
     _listener: pw::node::NodeListener,
     _proxy: pw::node::Node,
+    policy: PlaybackPolicy,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+struct PlaybackPolicy {
     identity: Option<String>,
+    communication: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -189,7 +195,7 @@ impl State {
                         Playback {
                             _listener: listener,
                             _proxy: proxy,
-                            identity: None,
+                            policy: PlaybackPolicy::default(),
                         },
                     );
                     true
@@ -274,12 +280,12 @@ impl State {
         if !info.change_mask().contains(pw::node::NodeChangeMask::PROPS) {
             return;
         }
-        let identity = info.props().and_then(playback_identity);
+        let policy = info.props().map(playback_policy).unwrap_or_default();
         let changed = self.playback.get_mut(&id).is_some_and(|playback| {
-            if playback.identity == identity {
+            if playback.policy == policy {
                 false
             } else {
-                playback.identity = identity;
+                playback.policy = policy;
                 true
             }
         });
@@ -495,13 +501,13 @@ impl State {
         }
         let mut links = Vec::new();
         for (&output_node, playback) in &self.playback {
-            let Some(identity) = playback.identity.as_deref() else {
+            if excluded(&playback.policy, &self.exclusions) {
+                continue;
+            }
+            let Some(identity) = playback.policy.identity.as_deref() else {
                 eprintln!("playback node {output_node} has no stable application identity");
                 continue;
             };
-            if excluded(identity, &self.exclusions) {
-                continue;
-            }
             let output = match stereo_ports(&self.ports, output_node, "out") {
                 Ok(output) => output,
                 Err(error) => {
@@ -1111,8 +1117,19 @@ fn playback_identity(props: &spa::utils::dict::DictRef) -> Option<String> {
     })
 }
 
-fn excluded(identity: &str, exclusions: &[String]) -> bool {
-    identity == "org.aercast.Aercast" || exclusions.iter().any(|excluded| excluded == identity)
+fn playback_policy(props: &spa::utils::dict::DictRef) -> PlaybackPolicy {
+    PlaybackPolicy {
+        identity: playback_identity(props),
+        communication: props.get(*pw::keys::MEDIA_ROLE) == Some("Communication"),
+    }
+}
+
+fn excluded(policy: &PlaybackPolicy, exclusions: &[String]) -> bool {
+    policy.communication
+        || policy.identity.as_deref().is_some_and(|identity| {
+            identity == "org.aercast.Aercast"
+                || exclusions.iter().any(|excluded| excluded == identity)
+        })
 }
 
 fn stereo_ports(
