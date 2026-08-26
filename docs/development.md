@@ -11,8 +11,8 @@ Aercast is pre-alpha. Phase 4, single-Viewer core stability, is active. The
 repository already proves Portal capture, selective PipeWire audio, H.264/AAC
 fMP4 playback, bounded one-encoder fan-out, and a basic iced window on the
 recorded niri host. Unit coverage now separates process-token ownership from
-replaceable media state and applies Communication-role audio policy; media
-recovery remains incomplete.
+replaceable media state and applies Communication-role audio policy. The code
+now bounds media recovery; real browser recovery remains unverified.
 
 ## Product commitments
 
@@ -241,17 +241,15 @@ settings surface area:
 
 ### Current blockers
 
-- Stop now preserves the token and returns the same route to waiting in unit
-  coverage, but the new behavior still needs real Zen and Chromium evidence.
-- The Portal owner currently runs one media attempt and treats any media error
-  as fatal; no three-retry boundary exists.
+- Stop token continuity and the three-recovery policy have unit coverage;
+  same-Portal-session recovery still needs real Zen and Chromium evidence.
 - Communication-role exclusion is unit-covered with PID-independent stable
   identity, but still needs real PipeWire evidence.
 
 ### Risks
 
-- A new restricted PipeWire remote may be required for every recovery attempt;
-  Portal/session lifetime and FD reuse must be verified on the real compositor.
+- Each recovery opens a fresh restricted PipeWire remote; repeated access to
+  the same Portal session must be verified on the real compositor.
 - PipeWire 1.6.8 removes client-supplied `link.passive=true` unless the Host has
   deliberately enabled passive client links in its link factory. Aercast must
   fail closed and must never write or reload that daemon-wide setting.

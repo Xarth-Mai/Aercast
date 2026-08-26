@@ -2,7 +2,8 @@ use std::{
     future::Future,
     io,
     net::SocketAddr,
-    os::fd::{AsRawFd, OwnedFd},
+    os::fd::AsRawFd,
+    pin::Pin,
     time::{Duration, Instant},
 };
 
@@ -13,7 +14,7 @@ use ashpd::{
         screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType},
     },
 };
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use gst::prelude::*;
 use gst_app::AppSinkCallbacks;
 use iced::{
@@ -31,7 +32,8 @@ use tokio::{
 mod audio;
 mod web;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Result<T> = std::result::Result<T, Error>;
 type Events = UnboundedSender<HostEvent>;
 
 #[derive(Clone)]
@@ -52,6 +54,7 @@ enum ShareStop {
     End,
     Quit,
     PortalClosed,
+    Failed(Error),
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +96,8 @@ struct App {
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
 const STALLED_CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
+const MEDIA_RECOVERY_DELAY: Duration = Duration::from_millis(500);
+const MAX_MEDIA_RECOVERIES: u8 = 3;
 
 fn main() -> Result<()> {
     let options = options(std::env::args().skip(1))?;
@@ -263,6 +268,7 @@ async fn run_host(
                     {
                         ShareStop::End | ShareStop::PortalClosed => {}
                         ShareStop::Quit => break,
+                        ShareStop::Failed(error) => return Err(error),
                     }
                 }
                 Command::End => {}
@@ -353,15 +359,12 @@ async fn share_once(
             stream.id(),
             stream.mapping_id(),
         );
-        let remote = portal
-            .open_pipe_wire_remote(&session, Default::default())
-            .await?;
-        Ok((stream.pipe_wire_node_id(), remote))
+        Ok(stream.pipe_wire_node_id())
     };
     tokio::pin!(capture);
 
     enum Selection {
-        Capture(ashpd::Result<(u32, OwnedFd)>),
+        Capture(ashpd::Result<u32>),
         Stop(bool),
         Signal(io::Result<()>),
         Server(std::result::Result<io::Result<()>, tokio::task::JoinError>),
@@ -378,7 +381,7 @@ async fn share_once(
             },
         }
     };
-    let (node_id, remote) = match selection {
+    let node_id = match selection {
         Selection::Capture(Ok(capture)) => capture,
         Selection::Capture(
             Err(ashpd::Error::Response(ResponseError::Cancelled))
@@ -417,35 +420,71 @@ async fn share_once(
         }
     };
 
-    let media = match host.start() {
-        Ok(media) => media,
-        Err(error) => {
-            if let Err(close_error) = session.close().await {
-                eprintln!("Failed to close Portal session: {close_error}");
+    let control = share_control(
+        commands,
+        async {
+            let _ = closed.next().await;
+        },
+        server,
+    );
+    tokio::pin!(control);
+    let mut recoveries = 0;
+    let result = loop {
+        let remote = tokio::select! {
+            biased;
+            stop = control.as_mut() => {
+                break Ok(stop);
             }
-            return Err(error.into());
+            remote = portal.open_pipe_wire_remote(&session, Default::default()) => match remote {
+                Ok(remote) => remote,
+                Err(error) => break Ok(ShareStop::Failed(error.into())),
+            },
+        };
+        let media = match host.start() {
+            Ok(media) => media,
+            Err(error) => break Ok(ShareStop::Failed(error.into())),
+        };
+        let attempt = serve_video(
+            node_id,
+            remote.as_raw_fd(),
+            options.exclusions.clone(),
+            media.clone(),
+            control.as_mut(),
+            events,
+        )
+        .await;
+        let stopped = host.stop(&media);
+        let _ = events.unbounded_send(HostEvent::Viewers(0));
+        let attempt = match stopped {
+            Ok(()) => attempt,
+            Err(error) => {
+                eprintln!("Failed to stop media session: {error}");
+                Ok(ShareStop::Failed(error.into()))
+            }
+        };
+        if attempt.is_err()
+            && let Some(stop) = control.as_mut().now_or_never()
+        {
+            break Ok(stop);
+        }
+        if !should_retry(&attempt, recoveries) {
+            break attempt;
+        }
+        recoveries += 1;
+        if let Err(error) = &attempt {
+            eprintln!(
+                "Media attempt failed; recovery {recoveries}/{MAX_MEDIA_RECOVERIES}: {error}"
+            );
+        }
+        tokio::select! {
+            biased;
+            stop = control.as_mut() => {
+                break Ok(stop);
+            }
+            _ = tokio::time::sleep(MEDIA_RECOVERY_DELAY) => {}
         }
     };
-    let result = serve_video(
-        node_id,
-        remote.as_raw_fd(),
-        options.exclusions.clone(),
-        media.clone(),
-        share_control(
-            commands,
-            async {
-                let _ = closed.next().await;
-            },
-            server,
-        ),
-        events,
-    )
-    .await;
-    let stop_result = host.stop(&media);
-    if let Err(error) = &stop_result {
-        eprintln!("Failed to stop media session: {error}");
-    }
-    let portal_closed = matches!(result, Ok(ShareStop::PortalClosed));
+    let portal_closed = matches!(&result, Ok(ShareStop::PortalClosed));
     let close_result = if portal_closed {
         Ok(())
     } else {
@@ -454,38 +493,45 @@ async fn share_once(
     if let Err(error) = &close_result {
         eprintln!("Failed to close Portal session: {error}");
     }
-    let stop = result?;
-    stop_result?;
-    close_result?;
-    Ok(stop)
+    match result {
+        Ok(ShareStop::Failed(error)) | Err(error) => Err(error),
+        Ok(stop) => {
+            close_result?;
+            Ok(stop)
+        }
+    }
 }
 
 async fn share_control(
     commands: &mut mpsc::Receiver<Command>,
     session_closed: impl Future<Output = ()>,
     server: &mut Server,
-) -> Result<ShareStop> {
+) -> ShareStop {
     tokio::pin!(session_closed);
     tokio::select! {
         signal = tokio::signal::ctrl_c() => {
-            signal?;
-            println!("Stopping Aercast.");
-            Ok(ShareStop::Quit)
+            match signal {
+                Ok(()) => {
+                    println!("Stopping Aercast.");
+                    ShareStop::Quit
+                }
+                Err(error) => ShareStop::Failed(error.into()),
+            }
         },
         quit = stop_command(commands) => {
             if quit {
                 println!("Stopping Aercast.");
-                Ok(ShareStop::Quit)
+                ShareStop::Quit
             } else {
                 println!("Ending share.");
-                Ok(ShareStop::End)
+                ShareStop::End
             }
         },
         _ = &mut session_closed => {
             println!("Portal session closed; stopping stream.");
-            Ok(ShareStop::PortalClosed)
+            ShareStop::PortalClosed
         }
-        result = &mut *server => server_outcome(result),
+        result = &mut *server => server_outcome(result).unwrap_or_else(ShareStop::Failed),
     }
 }
 
@@ -497,6 +543,10 @@ async fn stop_command(commands: &mut mpsc::Receiver<Command>) -> bool {
             Command::Quit => return true,
         }
     }
+}
+
+fn should_retry<T, E>(outcome: &std::result::Result<T, E>, recoveries: u8) -> bool {
+    outcome.is_err() && recoveries < MAX_MEDIA_RECOVERIES
 }
 
 fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
@@ -551,7 +601,7 @@ async fn serve_video(
     remote_fd: i32,
     exclusions: Vec<String>,
     media: web::MediaSession,
-    control: impl Future<Output = Result<ShareStop>>,
+    mut control: Pin<&mut impl Future<Output = ShareStop>>,
     events: &Events,
 ) -> Result<ShareStop> {
     if exclusions.is_empty() {
@@ -632,7 +682,6 @@ async fn serve_video(
             gst::PadProbeReturn::Remove
         })
         .ok_or_else(|| io::Error::other("failed to install first-frame probe"))?;
-    tokio::pin!(control);
     let outcome: Result<ShareStop> = match pipeline.set_state(gst::State::Playing) {
         Err(error) => Err(error.into()),
         Ok(_) => match audio::start(system_audio, exclusions) {
@@ -644,7 +693,8 @@ async fn serve_video(
                 let _ = events.unbounded_send(HostEvent::Viewers(*viewers.borrow_and_update()));
                 let running = loop {
                     let result = tokio::select! {
-                        stop = &mut control => stop,
+                        biased;
+                        stop = control.as_mut() => Ok(stop),
                         message = messages.next() => media_outcome(message),
                         error = audio_errors.recv() => Err(io::Error::other(
                             error.unwrap_or_else(|| "selective-audio thread stopped unexpectedly".to_owned())
@@ -662,14 +712,17 @@ async fn serve_video(
                     };
                     break result;
                 };
-                let _ = events.unbounded_send(HostEvent::Ending);
-                let stopped = audio.stop().map_err(io::Error::other);
+                if running.is_ok() {
+                    let _ = events.unbounded_send(HostEvent::Ending);
+                }
+                let stopped: Result<()> =
+                    audio.stop().map_err(|error| io::Error::other(error).into());
                 if let Err(error) = &stopped {
                     eprintln!("Failed to clean up selective audio: {error}");
                 }
-                match running {
-                    Err(error) => Err(error),
-                    Ok(stop) => stopped.map(|()| stop).map_err(|error| error.into()),
+                match stopped {
+                    Ok(()) => running,
+                    Err(error) => Ok(ShareStop::Failed(error)),
                 }
             }
         },
@@ -679,9 +732,10 @@ async fn serve_video(
     if let Err(error) = &stop_result {
         eprintln!("Failed to stop GStreamer pipeline: {error}");
     }
-    let stop = outcome?;
-    stop_result?;
-    Ok(stop)
+    match stop_result {
+        Ok(_) => outcome,
+        Err(error) => Ok(ShareStop::Failed(error.into())),
+    }
 }
 
 fn pipeline_description(node_id: u32, remote_fd: i32) -> String {
@@ -718,10 +772,7 @@ fn server_outcome(
 fn media_outcome(message: Option<gst::Message>) -> Result<ShareStop> {
     match message {
         Some(message) => match message.view() {
-            gst::MessageView::Eos(..) => {
-                println!("Capture stream ended.");
-                Ok(ShareStop::End)
-            }
+            gst::MessageView::Eos(..) => Err(io::Error::other("capture stream ended").into()),
             gst::MessageView::Error(error) => {
                 let source = message
                     .src()

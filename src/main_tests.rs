@@ -8,6 +8,40 @@ fn embedded_cursor_is_preferred_with_hidden_fallback() {
 }
 
 #[test]
+fn retry_policy_allows_exactly_three_media_recoveries() {
+    let media_failure = Err::<(), ()>(());
+    for recoveries in 0..MAX_MEDIA_RECOVERIES {
+        assert!(should_retry(&media_failure, recoveries));
+    }
+    assert!(!should_retry(&media_failure, MAX_MEDIA_RECOVERIES));
+
+    for terminal in [
+        ShareStop::End,
+        ShareStop::Quit,
+        ShareStop::PortalClosed,
+        ShareStop::Failed(io::Error::other("host failed").into()),
+    ] {
+        assert!(!should_retry(&Ok::<_, ()>(terminal), 0));
+    }
+}
+
+#[test]
+fn media_eos_is_recoverable() {
+    gst::init().unwrap();
+    assert!(media_outcome(Some(gst::message::Eos::new())).is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn server_failure_is_terminal_control() {
+    let (_commands, mut receiver) = mpsc::channel(1);
+    let mut server = tokio::spawn(async { Err(io::Error::other("server failed")) });
+    assert!(matches!(
+        share_control(&mut receiver, std::future::pending(), &mut server).await,
+        ShareStop::Failed(_)
+    ));
+}
+
+#[test]
 fn arguments_accept_one_source_and_repeated_exclusions() {
     let empty = options(std::iter::empty()).unwrap();
     assert_eq!(empty.bind, SocketAddr::from(([127, 0, 0, 1], 0)));
