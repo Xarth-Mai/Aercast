@@ -698,7 +698,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 app.viewers.clear();
                 app.confirm_refresh = false;
             }
-            HostEvent::ConfirmRefresh if app.phase == Phase::Sharing => {
+            HostEvent::ConfirmRefresh if matches!(app.phase, Phase::Waiting | Phase::Sharing) => {
                 app.confirm_refresh = true;
             }
             HostEvent::Sharing(system_audio)
@@ -871,7 +871,9 @@ fn share_view(app: &App) -> Element<'_, Message> {
         Phase::Ending => ("Stopping…", None),
         _ => ("Start Sharing", can_start.then_some(Message::Start)),
     };
-    let refresh_confirmation = if app.confirm_refresh && app.phase == Phase::Sharing {
+    let refresh_confirmation = if app.confirm_refresh
+        && matches!(app.phase, Phase::Waiting | Phase::Sharing)
+    {
         column![
             text("Refreshing disconnects every current Viewer."),
             row![
@@ -992,7 +994,8 @@ fn share_view(app: &App) -> Element<'_, Message> {
             row![
                 accessibility::button(
                     button("Refresh Link").style(|_, status| app.appearance.neutral_button(status)),
-                    (app.phase == Phase::Sharing).then_some(Message::Refresh),
+                    (matches!(app.phase, Phase::Waiting | Phase::Sharing) && !app.link.is_empty())
+                        .then_some(Message::Refresh),
                     focus_ring,
                 ),
                 accessibility::text_input(
@@ -1494,7 +1497,11 @@ async fn run_host(
                     let _ = events.unbounded_send(HostEvent::NetworkApplied(Ok(settings)));
                 }
                 Command::End => {}
-                Command::Refresh(_) => {}
+                Command::Refresh(confirmed) => {
+                    if server.is_some() && host.refresh(confirmed)?.is_none() {
+                        let _ = events.unbounded_send(HostEvent::ConfirmRefresh);
+                    }
+                }
                 Command::Disconnect(key) => host.disconnect_viewer(key)?,
                 Command::Quit => break,
             }

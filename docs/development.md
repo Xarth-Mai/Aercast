@@ -65,10 +65,11 @@ cleanup failure; real browser recovery remains unverified.
   source, share link, Copy, Refresh Link, and Viewer list.
 - Stop closes media and the Portal session. The current link remains valid and
   returns Viewers to waiting. A later Start reuses it.
-- Refresh Link creates a new token without restarting capture, closes every old
-  Viewer stream, clears Viewer history, and makes every old token route return
-  the same `404`. Refresh is immediate with no Viewers and requires confirmation
-  when any Viewer is connected.
+- Refresh Link is available while waiting or sharing. It creates a new token
+  without restarting capture, closes every old Viewer stream, clears Viewer
+  history, and makes every old token route return the same `404`. Refresh is
+  immediate with no Viewers and requires confirmation when any Viewer is
+  connected.
 - Process exit is the other operation that invalidates the current token.
 
 ### Viewer management

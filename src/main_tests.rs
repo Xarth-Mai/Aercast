@@ -248,6 +248,8 @@ fn ui_commands_follow_the_host_lifecycle() {
         )),
     ));
     assert_eq!(app.phase, Phase::Waiting);
+    drop(update(&mut app, Message::Refresh));
+    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
     drop(update(&mut app, Message::Settings(true)));
     assert!(app.settings_open);
     drop(update(&mut app, Message::Settings(false)));
@@ -577,6 +579,38 @@ async fn occupied_startup_bind_recovers_without_rotating_the_token() {
     stop_server(new_server.task, new_server.shutdown)
         .await
         .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn waiting_refresh_rotates_only_the_token() {
+    let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let settings = settings::Settings::default()
+        .with_network("127.0.0.1", &address.port().to_string(), "")
+        .unwrap();
+    let (events, mut incoming) = iced::futures::channel::mpsc::unbounded();
+    let (commands, receiver) = mpsc::channel(2);
+    let host = tokio::spawn(run_host(
+        Options {
+            exclusions: Vec::new(),
+        },
+        settings,
+        events,
+        receiver,
+    ));
+    let first = match incoming.next().await.unwrap() {
+        HostEvent::Waiting(link) => link,
+        event => panic!("expected waiting event, got {event:?}"),
+    };
+    commands.send(Command::Refresh(false)).await.unwrap();
+    let second = match incoming.next().await.unwrap() {
+        HostEvent::Waiting(link) => link,
+        event => panic!("expected refreshed waiting event, got {event:?}"),
+    };
+    assert_ne!(first, second);
+    commands.send(Command::Quit).await.unwrap();
+    host.await.unwrap().unwrap();
 }
 
 #[test]
