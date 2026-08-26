@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env, fs,
     fs::{File, OpenOptions},
     io,
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) system_audio: bool,
+    pub(crate) audio_exclusions: Vec<AudioExclusion>,
     pub(crate) notifications: bool,
     pub(crate) video: VideoSettings,
     pub(crate) listen_address: IpAddr,
@@ -24,6 +26,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             system_audio: true,
+            audio_exclusions: default_audio_exclusions(),
             notifications: true,
             video: VideoSettings::default(),
             listen_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -31,6 +34,28 @@ impl Default for Settings {
             share_base_url: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct AudioExclusion {
+    pub(crate) label: String,
+    pub(crate) identity: String,
+    pub(crate) enabled: bool,
+}
+
+fn default_audio_exclusions() -> Vec<AudioExclusion> {
+    [
+        ("Discord", "Discord"),
+        ("Vesktop", "vesktop"),
+        ("Steam Voice", "steam"),
+    ]
+    .into_iter()
+    .map(|(label, identity)| AudioExclusion {
+        label: label.to_owned(),
+        identity: identity.to_owned(),
+        enabled: true,
+    })
+    .collect()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -192,6 +217,16 @@ impl Settings {
 
     fn validate(self) -> io::Result<Self> {
         self.bind()?;
+        let mut identities = HashSet::new();
+        if self.audio_exclusions.iter().any(|exclusion| {
+            exclusion.label.is_empty()
+                || exclusion.identity.is_empty()
+                || !identities.insert(exclusion.identity.as_str())
+        }) {
+            return Err(invalid(
+                "Audio exclusions need non-empty labels and unique identities",
+            ));
+        }
         if let Some(base_url) = &self.share_base_url
             && parse_base_url(base_url)?.as_deref() != Some(base_url)
         {
@@ -280,11 +315,17 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let defaults = Settings::load_from(&path).unwrap();
         assert!(defaults.system_audio);
+        assert_eq!(defaults.audio_exclusions, default_audio_exclusions());
         assert!(defaults.notifications);
         assert_eq!(defaults.video, VideoSettings::default());
         assert_eq!(defaults.bind().unwrap(), "127.0.0.1:8877".parse().unwrap());
         Settings {
             system_audio: false,
+            audio_exclusions: vec![AudioExclusion {
+                label: "Chat".to_owned(),
+                identity: "org.example.Chat".to_owned(),
+                enabled: false,
+            }],
             notifications: false,
             video: VideoSettings {
                 width: 1920,
@@ -300,6 +341,8 @@ mod tests {
         .unwrap();
         let saved = Settings::load_from(&path).unwrap();
         assert!(!saved.system_audio);
+        assert_eq!(saved.audio_exclusions[0].identity, "org.example.Chat");
+        assert!(!saved.audio_exclusions[0].enabled);
         assert!(!saved.notifications);
         assert_eq!(saved.video.width, 1920);
         assert_eq!(saved.video.bitrate_mbps, None);
@@ -322,6 +365,15 @@ mod tests {
         )
         .unwrap();
         assert!(Settings::load_from(&path).unwrap().notifications);
+        assert_eq!(
+            Settings::load_from(&path).unwrap().audio_exclusions,
+            default_audio_exclusions()
+        );
+        let mut duplicate = Settings::default();
+        duplicate
+            .audio_exclusions
+            .push(duplicate.audio_exclusions[0].clone());
+        assert!(duplicate.validate().is_err());
         assert_eq!(
             Settings::load_from(&path).unwrap().video,
             VideoSettings::default()

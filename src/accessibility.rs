@@ -374,10 +374,10 @@ pub(super) fn button<'a>(
 pub(super) fn checkbox<'a>(
     control: Checkbox<'a, Message>,
     checked: bool,
-    on_toggle: Option<fn(bool) -> Message>,
+    on_toggle: Option<impl Fn(bool) -> Message + 'a>,
     ring: Border,
 ) -> Element<'a, Message> {
-    let message = on_toggle.map(|on_toggle| on_toggle(!checked));
+    let message = on_toggle.as_ref().map(|on_toggle| on_toggle(!checked));
     Control {
         content: container(
             control

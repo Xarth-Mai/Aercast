@@ -215,9 +215,8 @@ exclusions.
 
 ### Desktop implementation
 
-- The product has only a GUI. Existing exclusion command-line flags are
-  temporary development inputs and must be removed before Phase 5 is
-  accepted.
+- The product has only a GUI. Audio exclusions live only in internal settings;
+  there is no command-line control surface.
 - iced uses Wayland, Tokio, and the `wgpu` renderer. Phase 5 moves the lifecycle
   to `iced::daemon`; hidden means no mapped window while the process continues.
 - The supplied `assets/aercast-icon.png` is the single application and tray

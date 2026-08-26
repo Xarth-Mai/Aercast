@@ -14,6 +14,14 @@ fn test_viewers(count: usize, online: bool) -> Vec<web::Viewer> {
         .collect()
 }
 
+fn test_audio(enabled: bool) -> AudioSettings {
+    let settings = settings::Settings {
+        system_audio: enabled,
+        ..settings::Settings::default()
+    };
+    audio_settings(&settings)
+}
+
 #[test]
 #[ignore = "requires an isolated session bus"]
 fn a_later_instance_activates_the_primary() {
@@ -57,7 +65,7 @@ fn retry_policy_allows_exactly_three_media_recoveries() {
     assert!(!should_retry(&media_failure, MAX_MEDIA_RECOVERIES));
 
     for terminal in [
-        ShareStop::Apply(false),
+        ShareStop::Apply(test_audio(false)),
         ShareStop::End,
         ShareStop::Quit,
         ShareStop::PortalClosed,
@@ -115,7 +123,10 @@ async fn server_failure_is_terminal_control() {
 #[tokio::test(flavor = "current_thread")]
 async fn apply_requests_a_media_restart_without_reclassifying_control() {
     let (commands, mut receiver) = mpsc::channel(1);
-    commands.send(Command::Apply(false)).await.unwrap();
+    commands
+        .send(Command::Apply(test_audio(false)))
+        .await
+        .unwrap();
     let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
     let host = web::Host::new().unwrap();
     let (events, _) = iced::futures::channel::mpsc::unbounded();
@@ -129,7 +140,7 @@ async fn apply_requests_a_media_restart_without_reclassifying_control() {
             &events,
         )
         .await,
-        ShareStop::Apply(false)
+        ShareStop::Apply(audio) if audio == test_audio(false)
     ));
     server.abort();
 }
@@ -145,29 +156,15 @@ async fn quit_waits_for_a_full_control_queue() {
 }
 
 #[test]
-fn arguments_accept_repeated_exclusions() {
-    let empty = options(std::iter::empty()).unwrap();
-    assert!(empty.exclusions.is_empty());
-    assert_eq!(
-        options(
-            [
-                "--exclude".to_owned(),
-                "org.example.Chat".to_owned(),
-                "--exclude".to_owned(),
-                "game-bin".to_owned(),
-            ]
-            .into_iter()
-        )
-        .unwrap()
-        .exclusions,
-        ["org.example.Chat", "game-bin"]
-    );
-    assert!(options(["--bad".to_owned()].into_iter()).is_err());
-    assert!(options(["--monitor".to_owned()].into_iter()).is_err());
-    assert!(options(["--window".to_owned()].into_iter()).is_err());
-    assert!(options(["--bind".to_owned(), "127.0.0.1:9000".to_owned()].into_iter()).is_err());
-    assert!(options(["--exclude".to_owned()].into_iter()).is_err());
-    assert!(options(["--exclude".to_owned(), "--monitor".to_owned()].into_iter()).is_err());
+fn command_line_controls_are_rejected() {
+    assert!(validate_arguments(std::iter::empty()).is_ok());
+    for arguments in [
+        vec!["--exclude".to_owned(), "Discord".to_owned()],
+        vec!["--monitor".to_owned()],
+        vec!["--bind".to_owned(), "127.0.0.1:9000".to_owned()],
+    ] {
+        assert!(validate_arguments(arguments.into_iter()).is_err());
+    }
 }
 
 #[test]
@@ -195,8 +192,8 @@ fn ui_commands_follow_the_host_lifecycle() {
         video_bitrate: "6".to_owned(),
         appearance: appearance::Appearance::default(),
         approved_source: None,
-        active_system_audio: None,
-        applying_system_audio: None,
+        active_audio: None,
+        applying_audio: None,
         network_address: "127.0.0.1".to_owned(),
         network_port: "8877".to_owned(),
         share_base_url: String::new(),
@@ -324,7 +321,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(
         receiver.try_recv().unwrap(),
         Command::Start(ShareSettings {
-            system_audio: false,
+            audio: test_audio(false),
             video: settings::VideoSettings::default(),
         })
     );
@@ -335,19 +332,33 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::ApplySystemAudio));
     assert!(receiver.try_recv().is_err());
 
-    drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
-    assert_eq!(app.active_system_audio, Some(false));
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Sharing(test_audio(false))),
+    ));
+    assert_eq!(app.active_audio, Some(test_audio(false)));
     assert_eq!(app.approved_source, Some("Window"));
+    app.settings.audio_exclusions[0].enabled = false;
+    let changed_audio = audio_settings(&app.settings);
     drop(update(&mut app, Message::ApplySystemAudio));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Apply(true));
-    assert_eq!(app.applying_system_audio, Some(true));
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        Command::Apply(changed_audio.clone())
+    );
+    assert_eq!(app.applying_audio, Some(changed_audio.clone()));
     drop(update(&mut app, Message::ApplySystemAudio));
     assert!(receiver.try_recv().is_err());
-    drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
-    assert_eq!(app.applying_system_audio, Some(true));
-    drop(update(&mut app, Message::Host(HostEvent::Sharing(true))));
-    assert_eq!(app.active_system_audio, Some(true));
-    assert_eq!(app.applying_system_audio, None);
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Sharing(test_audio(false))),
+    ));
+    assert_eq!(app.applying_audio, Some(changed_audio.clone()));
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Sharing(changed_audio.clone())),
+    ));
+    assert_eq!(app.active_audio, Some(changed_audio.clone()));
+    assert_eq!(app.applying_audio, None);
 
     assert_eq!(update(&mut app, Message::Close(window)).units(), 1);
     assert_eq!(app.window, None);
@@ -402,9 +413,12 @@ fn ui_commands_follow_the_host_lifecycle() {
     app.settings.system_audio = false;
     drop(update(&mut app, Message::ApplySystemAudio));
     assert!(receiver.try_recv().is_err());
-    drop(update(&mut app, Message::Host(HostEvent::Sharing(false))));
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Sharing(test_audio(false))),
+    ));
     assert_eq!(app.phase, Phase::Ending);
-    assert_eq!(app.active_system_audio, Some(true));
+    assert_eq!(app.active_audio, Some(changed_audio));
     let offline = test_viewers(1, false);
     drop(update(
         &mut app,
@@ -417,7 +431,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.phase, Phase::Waiting);
     assert_eq!(app.link, "http://127.0.0.1/s/token");
     assert!(app.approved_source.is_none());
-    assert_eq!(app.active_system_audio, None);
+    assert_eq!(app.active_audio, None);
     assert_eq!(app.viewers, offline);
     assert_eq!(format_duration(app.viewers[0].duration()), "1:05");
 
@@ -591,14 +605,7 @@ async fn waiting_refresh_rotates_only_the_token() {
         .unwrap();
     let (events, mut incoming) = iced::futures::channel::mpsc::unbounded();
     let (commands, receiver) = mpsc::channel(2);
-    let host = tokio::spawn(run_host(
-        Options {
-            exclusions: Vec::new(),
-        },
-        settings,
-        events,
-        receiver,
-    ));
+    let host = tokio::spawn(run_host(settings, events, receiver));
     let first = match incoming.next().await.unwrap() {
         HostEvent::Waiting(link) => link,
         event => panic!("expected waiting event, got {event:?}"),
