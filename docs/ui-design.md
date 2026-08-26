@@ -53,7 +53,8 @@ Base neutral tokens:
 2. Use the valid value as `accent-base`, or `#bd425a` when absent.
 3. `accent-bg` equals `accent-base`.
 4. `accent-fg` is whichever of `#ffffff` and `#1e1e1e` has the higher WCAG
-   contrast ratio against `accent-bg`.
+   contrast ratio against `accent-bg`. If neither reaches `4.5:1`, use
+   `#000000`.
 5. `accent-standalone` begins at `accent-base` and moves only toward white until
    it reaches at least `4.5:1` against `window-bg`.
 6. `accent-subtle` is a 15% alpha composite of `accent-base` over the current

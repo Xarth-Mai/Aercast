@@ -179,6 +179,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings: settings::Settings::default(),
         settings_open: false,
         settings_error: None,
+        appearance: appearance::Appearance::default(),
         active_system_audio: None,
         applying_system_audio: None,
         network_address: "127.0.0.1".to_owned(),

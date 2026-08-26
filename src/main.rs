@@ -32,6 +32,7 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
 };
 
+mod appearance;
 mod audio;
 mod notification;
 mod settings;
@@ -103,6 +104,7 @@ enum Message {
     SystemAudio(bool),
     Notifications(bool),
     Notified(Option<String>),
+    Appearance(std::result::Result<appearance::Appearance, String>),
     NetworkAddress(String),
     NetworkPort(String),
     ShareBaseUrl(String),
@@ -167,6 +169,7 @@ struct App {
     settings: settings::Settings,
     settings_open: bool,
     settings_error: Option<String>,
+    appearance: appearance::Appearance,
     active_system_audio: Option<bool>,
     applying_system_audio: Option<bool>,
     network_address: String,
@@ -210,7 +213,11 @@ fn main() -> Result<()> {
         view,
     )
     .title("Aercast")
-    .theme(Theme::Dark)
+    .settings(iced::Settings {
+        default_text_size: 13.0.into(),
+        ..iced::Settings::default()
+    })
+    .theme(|app: &App, _| app.appearance.theme.clone())
     .subscription(|app| {
         let tick = if app.window.is_some() && app.viewers.iter().any(web::Viewer::online) {
             iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)
@@ -253,6 +260,7 @@ fn boot(
         settings,
         settings_open: false,
         settings_error: None,
+        appearance: appearance::Appearance::default(),
         active_system_audio: None,
         applying_system_audio: None,
         network_address,
@@ -270,6 +278,7 @@ fn boot(
         Task::batch([
             Task::done(Message::Show),
             Task::run(activations, |message| message),
+            Task::run(appearance::watch(instance.clone()), Message::Appearance),
             Task::run(
                 notification::worker(instance.clone(), notification_requests),
                 |result| Message::Notified(result.err().map(|error| error.to_string())),
@@ -435,6 +444,11 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 eprintln!("Notification unavailable: {error}");
             }
         }
+        Message::Appearance(Ok(appearance)) if appearance != app.appearance => {
+            app.appearance = appearance;
+        }
+        Message::Appearance(Ok(_)) => {}
+        Message::Appearance(Err(error)) => eprintln!("Appearance Portal unavailable: {error}"),
         Message::NetworkAddress(address) => {
             app.network_address = address;
             app.settings_error = None;
@@ -653,8 +667,12 @@ fn share_view(app: &App) -> Element<'_, Message> {
         column![
             text("Refreshing disconnects every current Viewer."),
             row![
-                button("Cancel").on_press(Message::CancelRefresh),
-                button("Refresh Link").on_press(Message::ConfirmRefresh),
+                button("Cancel")
+                    .on_press(Message::CancelRefresh)
+                    .style(|_, status| app.appearance.neutral_button(status)),
+                button("Refresh Link")
+                    .on_press(Message::ConfirmRefresh)
+                    .style(|_, status| app.appearance.danger_button(status)),
             ]
             .spacing(12),
         ]
@@ -666,8 +684,12 @@ fn share_view(app: &App) -> Element<'_, Message> {
         column![
             text("Quit Aercast and stop the active share?"),
             row![
-                button("Cancel").on_press(Message::CancelQuit),
-                button("Quit Aercast").on_press(Message::ConfirmQuit),
+                button("Cancel")
+                    .on_press(Message::CancelQuit)
+                    .style(|_, status| app.appearance.neutral_button(status)),
+                button("Quit Aercast")
+                    .on_press(Message::ConfirmQuit)
+                    .style(|_, status| app.appearance.danger_button(status)),
             ]
             .spacing(12),
         ]
@@ -686,7 +708,10 @@ fn share_view(app: &App) -> Element<'_, Message> {
             let rows = if index == 0 {
                 rows
             } else {
-                rows.push(rule::horizontal(1))
+                rows.push(
+                    rule::horizontal(if app.appearance.high_contrast { 2 } else { 1 })
+                        .style(|_| app.appearance.separator()),
+                )
             };
             rows.push(
                 container(
@@ -694,9 +719,11 @@ fn share_view(app: &App) -> Element<'_, Message> {
                         row![
                             text(viewer.ip.to_string()).size(12),
                             space().width(Length::Fill),
-                            button("Disconnect").on_press_maybe(
-                                viewer.online().then_some(Message::Disconnect(viewer.key)),
-                            ),
+                            button("Disconnect")
+                                .on_press_maybe(
+                                    viewer.online().then_some(Message::Disconnect(viewer.key)),
+                                )
+                                .style(|_, status| app.appearance.neutral_button(status)),
                         ]
                         .spacing(8),
                         text(format!(
@@ -706,7 +733,8 @@ fn share_view(app: &App) -> Element<'_, Message> {
                             format_milliseconds(rtt),
                             format_milliseconds(playback_lag),
                         ))
-                        .size(12),
+                        .size(12)
+                        .color(app.appearance.muted_text()),
                     ]
                     .spacing(4),
                 )
@@ -726,25 +754,36 @@ fn share_view(app: &App) -> Element<'_, Message> {
                     ]
                     .spacing(8),
                 )
-                .on_press(Message::Settings(true)),
+                .on_press(Message::Settings(true))
+                .style(|_, status| app.appearance.neutral_button(status)),
             ],
             text(status),
-            text_input("Share link will appear here", &app.link),
+            text_input("Share link will appear here", &app.link)
+                .style(|_, status| app.appearance.text_input(status)),
             row![
-                button("Copy Link").on_press_maybe((!app.link.is_empty()).then_some(Message::Copy)),
-                button("Start Sharing").on_press_maybe(can_start.then_some(Message::Start)),
-                button(end_label).on_press_maybe(can_end.then_some(Message::End)),
+                button("Copy Link")
+                    .on_press_maybe((!app.link.is_empty()).then_some(Message::Copy))
+                    .style(|_, status| app.appearance.neutral_button(status)),
+                button("Start Sharing")
+                    .on_press_maybe(can_start.then_some(Message::Start))
+                    .style(|_, status| app.appearance.primary_button(status)),
+                button(end_label)
+                    .on_press_maybe(can_end.then_some(Message::End))
+                    .style(|_, status| app.appearance.neutral_button(status)),
             ]
             .spacing(12),
             button("Refresh Link")
-                .on_press_maybe((app.phase == Phase::Sharing).then_some(Message::Refresh)),
+                .on_press_maybe((app.phase == Phase::Sharing).then_some(Message::Refresh))
+                .style(|_, status| app.appearance.neutral_button(status)),
             refresh_confirmation,
             quit_confirmation,
             text(format!("Viewers: {online}/{}", app.viewers.len())),
             container(scrollable(viewer_rows).height(Length::Fixed(144.0)))
-                .style(container::bordered_box)
+                .style(|_| app.appearance.boxed_list())
                 .width(Length::Fill),
-            text("Trusted LAN only. Use an external HTTPS reverse proxy elsewhere.").size(12),
+            text("Trusted LAN only. Use an external HTTPS reverse proxy elsewhere.")
+                .size(12)
+                .color(app.appearance.muted_text()),
         ]
         .spacing(16)
         .max_width(432),
@@ -795,6 +834,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                 "Apply to Current Share"
             })
             .on_press_maybe((dirty && !applying).then_some(Message::ApplySystemAudio))
+            .style(|_, status| app.appearance.primary_button(status))
         ]
     } else {
         column![]
@@ -809,37 +849,47 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                 ]
                 .spacing(8),
             )
-            .on_press(Message::Settings(false)),
+            .on_press(Message::Settings(false))
+            .style(|_, status| app.appearance.neutral_button(status)),
             text("Settings").size(24),
             checkbox(app.settings.system_audio)
                 .label("System audio")
-                .on_toggle_maybe((!app.applying_network).then_some(Message::SystemAudio)),
-            text(hint).size(12),
+                .on_toggle_maybe((!app.applying_network).then_some(Message::SystemAudio))
+                .style(|_, status| app.appearance.checkbox(status)),
+            text(hint).size(12).color(app.appearance.muted_text()),
             apply,
             checkbox(app.settings.notifications)
                 .label("Desktop notifications")
-                .on_toggle_maybe((!app.applying_network).then_some(Message::Notifications)),
+                .on_toggle_maybe((!app.applying_network).then_some(Message::Notifications))
+                .style(|_, status| app.appearance.checkbox(status)),
             text("Network").size(15),
             row![
                 column![
-                    text("Listen address").size(12),
+                    text("Listen address")
+                        .size(12)
+                        .color(app.appearance.muted_text()),
                     text_input("127.0.0.1", &app.network_address)
-                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkAddress)),
+                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkAddress))
+                        .style(|_, status| app.appearance.text_input(status)),
                 ]
                 .spacing(4)
                 .width(Length::FillPortion(3)),
                 column![
-                    text("Port").size(12),
+                    text("Port").size(12).color(app.appearance.muted_text()),
                     text_input("8877", &app.network_port)
-                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkPort)),
+                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkPort))
+                        .style(|_, status| app.appearance.text_input(status)),
                 ]
                 .spacing(4)
                 .width(Length::FillPortion(1)),
             ]
             .spacing(12),
-            text("Share base URL (optional)").size(12),
+            text("Share base URL (optional)")
+                .size(12)
+                .color(app.appearance.muted_text()),
             text_input("https://host:port", &app.share_base_url)
-                .on_input_maybe((!app.applying_network).then_some(Message::ShareBaseUrl)),
+                .on_input_maybe((!app.applying_network).then_some(Message::ShareBaseUrl))
+                .style(|_, status| app.appearance.text_input(status)),
             button(if app.applying_network {
                 "Applying network…"
             } else {
@@ -850,9 +900,14 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                     || matches!(&app.phase, Phase::NetworkError(_)))
                     && !app.applying_network)
                     .then_some(Message::ApplyNetwork),
-            ),
-            text("Network changes apply only while stopped.").size(12),
-            text("Changing the listener may leave old waiting pages unable to recover.").size(12),
+            )
+            .style(|_, status| app.appearance.primary_button(status)),
+            text("Network changes apply only while stopped.")
+                .size(12)
+                .color(app.appearance.muted_text()),
+            text("Changing the listener may leave old waiting pages unable to recover.")
+                .size(12)
+                .color(app.appearance.muted_text()),
             text(app.settings_error.as_deref().unwrap_or_default()).size(12),
         ]
         .spacing(16)
