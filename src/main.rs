@@ -166,6 +166,9 @@ enum Message {
     SystemAudio(bool),
     AudioExclusion(String, bool),
     DeleteAudioExclusion(String),
+    RefreshAudioApplications,
+    AudioApplications(std::result::Result<Vec<audio::PlaybackApplication>, String>),
+    AddAudioExclusion(audio::PlaybackApplication),
     Notifications(bool),
     Notified(Option<String>),
     Appearance(std::result::Result<appearance::Appearance, String>),
@@ -241,6 +244,9 @@ struct App {
     settings: settings::Settings,
     settings_open: bool,
     settings_error: Option<String>,
+    audio_candidates: Vec<audio::PlaybackApplication>,
+    audio_scanning: bool,
+    audio_scan_error: Option<String>,
     video_error: Option<String>,
     video_edit_error: Option<String>,
     video_preset: Quality,
@@ -352,6 +358,9 @@ fn boot(
         settings,
         settings_open: false,
         settings_error: None,
+        audio_candidates: Vec::new(),
+        audio_scanning: false,
+        audio_scan_error: None,
         video_error,
         video_edit_error: None,
         video_preset: Quality::from_video(video),
@@ -560,10 +569,14 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             app.settings_open = open;
             app.settings_error = None;
             app.video_edit_error = None;
+            if open {
+                return scan_audio_applications(app);
+            }
         }
         Message::SystemAudio(_)
         | Message::AudioExclusion(..)
         | Message::DeleteAudioExclusion(_)
+        | Message::AddAudioExclusion(_)
         | Message::Notifications(_)
             if app.applying_network => {}
         Message::SystemAudio(system_audio) => {
@@ -586,6 +599,30 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                     .audio_exclusions
                     .retain(|exclusion| exclusion.identity != identity);
             });
+        }
+        Message::RefreshAudioApplications => return scan_audio_applications(app),
+        Message::AudioApplications(result) => {
+            app.audio_scanning = false;
+            match result {
+                Ok(applications) => app.audio_candidates = applications,
+                Err(error) => app.audio_scan_error = Some(error),
+            }
+        }
+        Message::AddAudioExclusion(application) => {
+            if !app
+                .settings
+                .audio_exclusions
+                .iter()
+                .any(|exclusion| exclusion.identity == application.identity)
+            {
+                save_settings(app, |settings| {
+                    settings.audio_exclusions.push(settings::AudioExclusion {
+                        label: application.label,
+                        identity: application.identity,
+                        enabled: true,
+                    });
+                });
+            }
         }
         Message::Notifications(notifications) => {
             save_settings(app, |settings| settings.notifications = notifications);
@@ -810,6 +847,16 @@ fn save_settings(app: &mut App, edit: impl FnOnce(&mut settings::Settings)) {
         }
         Err(error) => app.settings_error = Some(error.to_string()),
     }
+}
+
+fn scan_audio_applications(app: &mut App) -> Task<Message> {
+    if app.audio_scanning {
+        return Task::none();
+    }
+    app.audio_scanning = true;
+    app.audio_candidates.clear();
+    app.audio_scan_error = None;
+    Task::perform(audio::active_applications(), Message::AudioApplications)
 }
 
 fn audio_settings(settings: &settings::Settings) -> AudioSettings {
@@ -1314,6 +1361,71 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             },
         )
         .spacing(8);
+    let mut application_rows = column![
+        row![
+            text("Add from active applications").size(13),
+            space().width(Length::Fill),
+            accessibility::button(
+                button(if app.audio_scanning {
+                    "Scanning…"
+                } else {
+                    "Refresh"
+                })
+                .style(|_, status| app.appearance.neutral_button(status)),
+                (!app.audio_scanning).then_some(Message::RefreshAudioApplications),
+                focus_ring,
+            ),
+        ]
+        .align_y(iced::Alignment::Center)
+    ]
+    .spacing(8);
+    let mut has_application = false;
+    for application in app.audio_candidates.iter().filter(|application| {
+        !app.settings
+            .audio_exclusions
+            .iter()
+            .any(|exclusion| exclusion.identity == application.identity)
+    }) {
+        has_application = true;
+        application_rows = application_rows.push(
+            row![
+                column![
+                    text(&application.label)
+                        .width(Length::Fill)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    text(&application.identity)
+                        .size(11)
+                        .color(app.appearance.muted_text())
+                        .width(Length::Fill)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                accessibility::button(
+                    button("Add").style(|_, status| app.appearance.neutral_button(status)),
+                    (!app.applying_network)
+                        .then_some(Message::AddAudioExclusion(application.clone())),
+                    focus_ring,
+                ),
+            ]
+            .spacing(12)
+            .align_y(iced::Alignment::Center),
+        );
+    }
+    if let Some(error) = app.audio_scan_error.as_deref() {
+        application_rows = application_rows.push(
+            text(format!("⚠ {error}"))
+                .size(12)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        );
+    } else if !app.audio_scanning && !has_application {
+        application_rows = application_rows.push(
+            text("No other playback applications are active.")
+                .size(12)
+                .color(app.appearance.muted_text()),
+        );
+    }
     let audio = column![
         text("Audio").size(15),
         accessibility::checkbox(
@@ -1327,6 +1439,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         text(hint).size(12).color(app.appearance.muted_text()),
         text("Excluded applications").size(13),
         exclusion_rows,
+        application_rows,
     ]
     .spacing(12);
     let audio = if sharing && (dirty || applying) {

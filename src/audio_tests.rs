@@ -133,6 +133,9 @@ fn unsafe_stream_overrides_and_audio_policy_are_checked() {
     };
     let normal = playback_policy(properties.dict());
     assert_eq!(normal.identity.as_deref(), Some("org.example.Game"));
+    let application = playback_application(properties.dict()).unwrap();
+    assert_eq!(application.label, "Example Game");
+    assert_eq!(application.identity, "org.example.Game");
     properties.insert(*pw::keys::APP_PROCESS_ID, "9999");
     assert_eq!(normal, playback_policy(properties.dict()));
     let binary_fallback = pw::properties::properties! {
@@ -151,13 +154,14 @@ fn unsafe_stream_overrides_and_audio_policy_are_checked() {
         playback_identity(name_fallback.dict()).as_deref(),
         Some("Example Game")
     );
-    let communication = pw::properties::properties! {
+    let communication_properties = pw::properties::properties! {
         *pw::keys::APP_ID => "org.example.Game",
         *pw::keys::MEDIA_ROLE => "Communication",
         *pw::keys::APP_PROCESS_ID => "42",
     };
-    let communication = playback_policy(communication.dict());
+    let communication = playback_policy(communication_properties.dict());
     assert!(excluded(&communication, &[]));
+    assert!(playback_application(communication_properties.dict()).is_none());
     assert!(!excluded(&normal, &["Example Game".to_owned()]));
     assert!(excluded(&normal, &["org.example.Game".to_owned()]));
     assert!(!excluded(&normal, &[]));
@@ -171,4 +175,19 @@ fn unsafe_stream_overrides_and_audio_policy_are_checked() {
     assert!(vanished_object(42, -2));
     assert!(!vanished_object(pw::core::PW_ID_CORE, -2));
     assert!(!vanished_object(42, -13));
+
+    let applications = deduplicate_applications(vec![
+        PlaybackApplication {
+            label: "Later label".to_owned(),
+            identity: "org.example.Game".to_owned(),
+        },
+        PlaybackApplication {
+            label: "Chat".to_owned(),
+            identity: "org.example.Chat".to_owned(),
+        },
+        application,
+    ]);
+    assert_eq!(applications.len(), 2);
+    assert_eq!(applications[0].identity, "org.example.Chat");
+    assert_eq!(applications[1].label, "Example Game");
 }

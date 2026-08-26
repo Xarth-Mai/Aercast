@@ -183,6 +183,9 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings: settings::Settings::default(),
         settings_open: false,
         settings_error: None,
+        audio_candidates: Vec::new(),
+        audio_scanning: false,
+        audio_scan_error: None,
         video_error: None,
         video_edit_error: None,
         video_preset: Quality::P720,
@@ -249,6 +252,9 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
     drop(update(&mut app, Message::Settings(true)));
     assert!(app.settings_open);
+    assert!(app.audio_scanning);
+    drop(update(&mut app, Message::AudioApplications(Ok(Vec::new()))));
+    assert!(!app.audio_scanning);
     drop(update(&mut app, Message::Settings(false)));
     assert!(!app.settings_open);
 

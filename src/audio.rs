@@ -13,6 +13,18 @@ use tokio::sync::mpsc;
 
 const FRAME_BYTES: usize = 2 * size_of::<f32>();
 
+#[derive(Clone, Debug)]
+pub(crate) struct PlaybackApplication {
+    pub(crate) label: String,
+    pub(crate) identity: String,
+}
+
+pub(crate) async fn active_applications() -> Result<Vec<PlaybackApplication>, String> {
+    tokio::task::spawn_blocking(discover_active_applications)
+        .await
+        .map_err(|error| format!("active-application scan failed: {error}"))?
+}
+
 pub struct AudioCapture {
     stop: pw::channel::Sender<()>,
     finished: Receiver<()>,
@@ -108,6 +120,197 @@ struct Playback {
     _listener: pw::node::NodeListener,
     _proxy: pw::node::Node,
     policy: PlaybackPolicy,
+}
+
+struct Discovery {
+    mainloop: pw::main_loop::MainLoopRc,
+    core: pw::core::CoreRc,
+    registry: pw::registry::RegistryRc,
+    nodes: Vec<(u32, pw::node::NodeListener, pw::node::Node)>,
+    applications: HashMap<u32, PlaybackApplication>,
+    pending: AsyncSeq,
+    second_sync: bool,
+    failure: Option<String>,
+}
+
+impl Discovery {
+    fn global(
+        &mut self,
+        global: &pw::registry::GlobalObject<&spa::utils::dict::DictRef>,
+        weak: &Weak<RefCell<Self>>,
+    ) {
+        if global.type_ != pw::types::ObjectType::Node
+            || global
+                .props
+                .and_then(|props| props.get(*pw::keys::MEDIA_CLASS))
+                != Some("Stream/Output/Audio")
+        {
+            return;
+        }
+        let node = match self.registry.bind::<pw::node::Node, _>(global) {
+            Ok(node) => node,
+            Err(error) => {
+                self.fail(format!("failed to inspect playback application: {error}"));
+                return;
+            }
+        };
+        let id = global.id;
+        let weak = weak.clone();
+        let listener = node
+            .add_listener_local()
+            .info(move |info| {
+                if let Some(state) = weak.upgrade() {
+                    state.borrow_mut().node_info(id, info);
+                }
+            })
+            .register();
+        self.nodes.push((id, listener, node));
+    }
+
+    fn node_info(&mut self, id: u32, info: &pw::node::NodeInfoRef) {
+        if info.id() != id {
+            self.fail("PipeWire returned application properties for the wrong node".to_owned());
+        } else if info.change_mask().contains(pw::node::NodeChangeMask::PROPS) {
+            match info.props().and_then(playback_application) {
+                Some(application) => self.applications.insert(id, application),
+                None => self.applications.remove(&id),
+            };
+        }
+    }
+
+    fn done(&mut self, id: u32, seq: AsyncSeq) {
+        if id != pw::core::PW_ID_CORE || seq != self.pending {
+            return;
+        }
+        if self.second_sync {
+            self.mainloop.quit();
+        } else {
+            self.second_sync = true;
+            match self.core.sync(0) {
+                Ok(seq) => self.pending = seq,
+                Err(error) => self.fail(format!("failed to finish application scan: {error}")),
+            }
+        }
+    }
+
+    fn removed(&mut self, id: u32) {
+        self.applications.remove(&id);
+        self.nodes.retain(|(node, _, _)| *node != id);
+    }
+
+    fn fail(&mut self, error: String) {
+        self.failure.get_or_insert(error);
+        self.mainloop.quit();
+    }
+}
+
+fn discover_active_applications() -> Result<Vec<PlaybackApplication>, String> {
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
+        .map_err(|error| format!("failed to create PipeWire application scan: {error}"))?;
+    let context = pw::context::ContextRc::new(&mainloop, None)
+        .map_err(|error| format!("failed to create PipeWire application context: {error}"))?;
+    let core = context
+        .connect_rc(None)
+        .map_err(|error| format!("failed to connect to PipeWire: {error}"))?;
+    let registry = core
+        .get_registry_rc()
+        .map_err(|error| format!("failed to read the PipeWire registry: {error}"))?;
+    let pending = core
+        .sync(0)
+        .map_err(|error| format!("failed to start application scan: {error}"))?;
+    let state = Rc::new(RefCell::new(Discovery {
+        mainloop: mainloop.clone(),
+        core: core.clone(),
+        registry: registry.clone(),
+        nodes: Vec::new(),
+        applications: HashMap::new(),
+        pending,
+        second_sync: false,
+        failure: None,
+    }));
+    let weak = Rc::downgrade(&state);
+    let core_listener = core
+        .add_listener_local()
+        .done({
+            let weak = weak.clone();
+            move |id, seq| {
+                if let Some(state) = weak.upgrade() {
+                    state.borrow_mut().done(id, seq);
+                }
+            }
+        })
+        .error({
+            let weak = weak.clone();
+            move |id, _, result, message| {
+                if let Some(state) = weak.upgrade()
+                    && !vanished_object(id, result)
+                {
+                    state.borrow_mut().fail(format!(
+                        "PipeWire application scan error on object {id} ({result}): {message}"
+                    ));
+                }
+            }
+        })
+        .register();
+    let registry_listener = registry
+        .add_listener_local()
+        .global({
+            let weak = weak.clone();
+            move |global| {
+                if let Some(state) = weak.upgrade() {
+                    state.borrow_mut().global(global, &weak);
+                }
+            }
+        })
+        .global_remove({
+            let weak = weak.clone();
+            move |id| {
+                if let Some(state) = weak.upgrade() {
+                    state.borrow_mut().removed(id);
+                }
+            }
+        })
+        .register();
+    let timeout = mainloop.loop_().add_timer({
+        let weak = weak.clone();
+        move |_| {
+            if let Some(state) = weak.upgrade() {
+                state
+                    .borrow_mut()
+                    .fail("timed out while scanning active PipeWire applications".to_owned());
+            }
+        }
+    });
+    timeout
+        .update_timer(Some(Duration::from_secs(3)), None)
+        .into_result()
+        .map_err(|error| format!("failed to arm application-scan timeout: {error}"))?;
+    mainloop.run();
+    drop(timeout);
+    drop(registry_listener);
+    drop(core_listener);
+    let mut state = state.borrow_mut();
+    if let Some(error) = state.failure.take() {
+        return Err(error);
+    }
+    let applications = std::mem::take(&mut state.applications)
+        .into_values()
+        .collect();
+    Ok(deduplicate_applications(applications))
+}
+
+fn deduplicate_applications(
+    mut applications: Vec<PlaybackApplication>,
+) -> Vec<PlaybackApplication> {
+    applications.sort_unstable_by(|left, right| {
+        left.label
+            .cmp(&right.label)
+            .then_with(|| left.identity.cmp(&right.identity))
+    });
+    let mut identities = HashSet::new();
+    applications.retain(|application| identities.insert(application.identity.clone()));
+    applications
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -1167,6 +1370,20 @@ fn playback_policy(props: &spa::utils::dict::DictRef) -> PlaybackPolicy {
         identity: playback_identity(props),
         communication: props.get(*pw::keys::MEDIA_ROLE) == Some("Communication"),
     }
+}
+
+fn playback_application(props: &spa::utils::dict::DictRef) -> Option<PlaybackApplication> {
+    let policy = playback_policy(props);
+    if excluded(&policy, &[]) {
+        return None;
+    }
+    let identity = policy.identity?;
+    let label = props
+        .get(*pw::keys::APP_NAME)
+        .filter(|label| !label.is_empty())
+        .unwrap_or(&identity)
+        .to_owned();
+    Some(PlaybackApplication { label, identity })
 }
 
 fn excluded(policy: &PlaybackPolicy, exclusions: &[String]) -> bool {
