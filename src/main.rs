@@ -22,7 +22,8 @@ use iced::{
     Element, Length, Task, Theme, clipboard,
     futures::channel::mpsc::{Receiver, Sender, UnboundedSender},
     widget::{
-        button, checkbox, column, container, row, rule, scrollable, space, svg, text, text_input,
+        button, checkbox, column, container, pick_list, row, rule, scrollable, space, svg, text,
+        text_input,
     },
     window,
 };
@@ -65,6 +66,56 @@ enum Command {
 struct ShareSettings {
     system_audio: bool,
     video: settings::VideoSettings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Quality {
+    P720,
+    P1080,
+    P1440,
+    Custom,
+}
+
+const QUALITY_OPTIONS: [Quality; 4] = [
+    Quality::P720,
+    Quality::P1080,
+    Quality::P1440,
+    Quality::Custom,
+];
+
+impl Quality {
+    fn from_video(video: settings::VideoSettings) -> Self {
+        QUALITY_OPTIONS
+            .into_iter()
+            .find(|preset| preset.video() == Some(video))
+            .unwrap_or(Self::Custom)
+    }
+
+    fn video(self) -> Option<settings::VideoSettings> {
+        let (width, height, bitrate_mbps) = match self {
+            Self::P720 => (1280, 720, 6),
+            Self::P1080 => (1920, 1080, 12),
+            Self::P1440 => (2560, 1440, 24),
+            Self::Custom => return None,
+        };
+        Some(settings::VideoSettings {
+            width,
+            height,
+            fps: 60,
+            bitrate_mbps: Some(bitrate_mbps),
+        })
+    }
+}
+
+impl std::fmt::Display for Quality {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::P720 => "720p60 / 6 Mbps",
+            Self::P1080 => "1080p60 / 12 Mbps",
+            Self::P1440 => "1440p60 / 24 Mbps",
+            Self::Custom => "Custom",
+        })
+    }
 }
 
 enum ShareStop {
@@ -116,6 +167,12 @@ enum Message {
     NetworkPort(String),
     ShareBaseUrl(String),
     ApplyNetwork,
+    VideoPreset(Quality),
+    VideoWidth(String),
+    VideoHeight(String),
+    VideoFps(u32),
+    VideoBitrate(String),
+    SaveVideo,
     Tick,
     Close(window::Id),
     Closed(window::Id),
@@ -177,6 +234,12 @@ struct App {
     settings_open: bool,
     settings_error: Option<String>,
     video_error: Option<String>,
+    video_edit_error: Option<String>,
+    video_preset: Quality,
+    video_width: String,
+    video_height: String,
+    video_fps: u32,
+    video_bitrate: String,
     appearance: appearance::Appearance,
     approved_source: Option<&'static str>,
     active_system_audio: Option<bool>,
@@ -257,6 +320,7 @@ fn boot(
     let network_address = settings.listen_address.to_string();
     let network_port = settings.listen_port.to_string();
     let share_base_url = settings.share_base_url.clone().unwrap_or_default();
+    let video = settings.video;
     let video_error = video_plan(&settings.video)
         .err()
         .map(|error| format!("Video quality unavailable: {error}"));
@@ -273,6 +337,14 @@ fn boot(
         settings_open: false,
         settings_error: None,
         video_error,
+        video_edit_error: None,
+        video_preset: Quality::from_video(video),
+        video_width: video.width.to_string(),
+        video_height: video.height.to_string(),
+        video_fps: video.fps,
+        video_bitrate: video
+            .bitrate_mbps
+            .map_or_else(String::new, |bitrate| bitrate.to_string()),
         appearance: appearance::Appearance::default(),
         approved_source: None,
         active_system_audio: None,
@@ -450,6 +522,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
         Message::Settings(open) => {
             app.settings_open = open;
             app.settings_error = None;
+            app.video_edit_error = None;
         }
         Message::SystemAudio(_) | Message::Notifications(_) if app.applying_network => {}
         Message::SystemAudio(system_audio) => {
@@ -496,6 +569,65 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                         }
                     }
                     Err(error) => app.settings_error = Some(error.to_string()),
+                }
+            }
+        }
+        Message::VideoPreset(preset) => {
+            if let Some(video) = preset.video() {
+                set_video_draft(app, video);
+            } else if app.video_preset != Quality::Custom {
+                app.video_bitrate.clear();
+            }
+            app.video_preset = preset;
+            app.video_edit_error = None;
+        }
+        Message::VideoWidth(width) => {
+            app.video_preset = Quality::Custom;
+            app.video_width = width;
+            app.video_edit_error = None;
+        }
+        Message::VideoHeight(height) => {
+            app.video_preset = Quality::Custom;
+            app.video_height = height;
+            app.video_edit_error = None;
+        }
+        Message::VideoFps(fps) => {
+            app.video_preset = Quality::Custom;
+            app.video_fps = fps;
+            app.video_edit_error = None;
+        }
+        Message::VideoBitrate(bitrate) => {
+            app.video_preset = Quality::Custom;
+            app.video_bitrate = bitrate;
+            app.video_edit_error = None;
+        }
+        Message::SaveVideo if app.applying_network => {}
+        Message::SaveVideo => {
+            let result = app
+                .settings
+                .with_video(
+                    &app.video_width,
+                    &app.video_height,
+                    app.video_fps,
+                    &app.video_bitrate,
+                )
+                .map_err(Error::from)
+                .and_then(|settings| {
+                    video_plan(&settings.video)?;
+                    settings.save()?;
+                    Ok(settings)
+                });
+            match result {
+                Ok(settings) => {
+                    let video = settings.video;
+                    app.settings = settings;
+                    app.settings_error = None;
+                    app.video_error = None;
+                    app.video_edit_error = None;
+                    set_video_draft(app, video);
+                }
+                Err(error) => {
+                    app.video_edit_error = Some(format!("Video quality unchanged: {error}"));
                 }
             }
         }
@@ -621,6 +753,16 @@ fn save_settings(app: &mut App, edit: impl FnOnce(&mut settings::Settings)) {
         }
         Err(error) => app.settings_error = Some(error.to_string()),
     }
+}
+
+fn set_video_draft(app: &mut App, video: settings::VideoSettings) {
+    app.video_preset = Quality::from_video(video);
+    app.video_width = video.width.to_string();
+    app.video_height = video.height.to_string();
+    app.video_fps = video.fps;
+    app.video_bitrate = video
+        .bitrate_mbps
+        .map_or_else(String::new, |bitrate| bitrate.to_string());
 }
 
 fn begin_quit(app: &mut App) -> Task<Message> {
@@ -856,6 +998,15 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     let network_dirty = app.network_address != app.settings.listen_address.to_string()
         || app.network_port != app.settings.listen_port.to_string()
         || app.share_base_url != app.settings.share_base_url.as_deref().unwrap_or_default();
+    let video_dirty = match app.settings.with_video(
+        &app.video_width,
+        &app.video_height,
+        app.video_fps,
+        &app.video_bitrate,
+    ) {
+        Ok(settings) => settings.video != app.settings.video,
+        Err(_) => true,
+    };
     let hint = match &app.phase {
         Phase::Starting => "Starting Aercast…",
         Phase::NetworkError(error) => error,
@@ -867,97 +1018,219 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         Phase::Ending => "Ending share… The saved setting will be used next time.",
         Phase::Error(error) => error,
     };
-    let apply = if sharing && (dirty || applying) {
-        column![
+    let custom_quality = column![
+        row![
+            column![
+                text("Width").size(12).color(app.appearance.muted_text()),
+                text_input("1280", &app.video_width)
+                    .on_input(Message::VideoWidth)
+                    .style(|_, status| app.appearance.text_input(status)),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+            column![
+                text("Height").size(12).color(app.appearance.muted_text()),
+                text_input("720", &app.video_height)
+                    .on_input(Message::VideoHeight)
+                    .style(|_, status| app.appearance.text_input(status)),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+        ]
+        .spacing(12),
+        row![
+            column![
+                text("Frame rate")
+                    .size(12)
+                    .color(app.appearance.muted_text()),
+                pick_list([30_u32, 60, 120], Some(app.video_fps), Message::VideoFps)
+                    .width(Length::Fill)
+                    .style(|_, status| app.appearance.pick_list(status)),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+            column![
+                text("Bitrate (Mbps)")
+                    .size(12)
+                    .color(app.appearance.muted_text()),
+                text_input("Encoder default", &app.video_bitrate)
+                    .on_input(Message::VideoBitrate)
+                    .style(|_, status| app.appearance.text_input(status)),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+        ]
+        .spacing(12),
+    ]
+    .spacing(12);
+    let quality = column![
+        text("Quality").size(15),
+        pick_list(
+            QUALITY_OPTIONS,
+            Some(app.video_preset),
+            Message::VideoPreset,
+        )
+        .width(Length::Fill)
+        .style(|_, status| app.appearance.pick_list(status)),
+    ]
+    .spacing(12);
+    let quality = if app.video_preset == Quality::Custom {
+        quality.push(custom_quality)
+    } else {
+        quality
+    };
+    let quality = quality
+        .push(
+            button("Save quality")
+                .on_press_maybe(
+                    ((video_dirty || app.video_error.is_some()) && !app.applying_network)
+                        .then_some(Message::SaveVideo),
+                )
+                .style(|_, status| app.appearance.primary_button(status)),
+        )
+        .push(
+            text(if sharing {
+                "The active share keeps its starting quality. Saved changes are used after Stop and the next Start."
+            } else {
+                "Saved quality is used by the next Start."
+            })
+            .size(12)
+            .color(app.appearance.muted_text()),
+        );
+    let quality = if let Some(error) = app
+        .video_edit_error
+        .as_deref()
+        .or(app.video_error.as_deref())
+    {
+        quality.push(
+            text(format!("⚠ {error}"))
+                .size(12)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        )
+    } else {
+        quality
+    };
+    let audio = column![
+        text("Audio").size(15),
+        checkbox(app.settings.system_audio)
+            .label("System audio")
+            .on_toggle_maybe((!app.applying_network).then_some(Message::SystemAudio))
+            .style(|_, status| app.appearance.checkbox(status)),
+        text(hint).size(12).color(app.appearance.muted_text()),
+    ]
+    .spacing(12);
+    let audio = if sharing && (dirty || applying) {
+        audio.push(
             button(if applying {
                 "Applying…"
             } else {
                 "Apply to Current Share"
             })
             .on_press_maybe((dirty && !applying).then_some(Message::ApplySystemAudio))
-            .style(|_, status| app.appearance.primary_button(status))
-        ]
+            .style(|_, status| app.appearance.primary_button(status)),
+        )
     } else {
-        column![]
+        audio
     };
+    let network = column![
+        text("Network").size(15),
+        row![
+            column![
+                text("Listen address")
+                    .size(12)
+                    .color(app.appearance.muted_text()),
+                text_input("127.0.0.1", &app.network_address)
+                    .on_input_maybe((!app.applying_network).then_some(Message::NetworkAddress))
+                    .style(|_, status| app.appearance.text_input(status)),
+            ]
+            .spacing(4)
+            .width(Length::FillPortion(3)),
+            column![
+                text("Port").size(12).color(app.appearance.muted_text()),
+                text_input("8877", &app.network_port)
+                    .on_input_maybe((!app.applying_network).then_some(Message::NetworkPort))
+                    .style(|_, status| app.appearance.text_input(status)),
+            ]
+            .spacing(4)
+            .width(Length::FillPortion(1)),
+        ]
+        .spacing(12),
+        text("Share base URL (optional)")
+            .size(12)
+            .color(app.appearance.muted_text()),
+        text_input("https://host:port", &app.share_base_url)
+            .on_input_maybe((!app.applying_network).then_some(Message::ShareBaseUrl))
+            .style(|_, status| app.appearance.text_input(status)),
+        button(if app.applying_network {
+            "Applying network…"
+        } else {
+            "Apply Network"
+        })
+        .on_press_maybe(
+            (((app.phase == Phase::Waiting && network_dirty)
+                || matches!(&app.phase, Phase::NetworkError(_)))
+                && !app.applying_network)
+                .then_some(Message::ApplyNetwork),
+        )
+        .style(|_, status| app.appearance.primary_button(status)),
+        text("Network changes apply only while stopped.")
+            .size(12)
+            .color(app.appearance.muted_text()),
+        text("Changing the listener may leave old waiting pages unable to recover.")
+            .size(12)
+            .color(app.appearance.muted_text()),
+    ]
+    .spacing(12);
+    let notifications = column![
+        text("Notifications").size(15),
+        checkbox(app.settings.notifications)
+            .label("Desktop notifications")
+            .on_toggle_maybe((!app.applying_network).then_some(Message::Notifications))
+            .style(|_, status| app.appearance.checkbox(status)),
+    ]
+    .spacing(12);
+    let sections = column![quality, audio, network, notifications].spacing(24);
+    let body = if let Some(error) = app.settings_error.as_deref() {
+        column![
+            text(format!("⚠ {error}"))
+                .size(12)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            sections,
+        ]
+        .spacing(24)
+    } else {
+        column![sections]
+    }
+    .max_width(432);
 
     container(
         column![
-            button(
-                row![
-                    symbolic_icon(include_bytes!("../assets/back-symbolic.svg")),
-                    text("Back"),
-                ]
-                .spacing(8),
-            )
-            .on_press(Message::Settings(false))
-            .style(|_, status| app.appearance.neutral_button(status)),
-            text("Settings").size(24),
-            checkbox(app.settings.system_audio)
-                .label("System audio")
-                .on_toggle_maybe((!app.applying_network).then_some(Message::SystemAudio))
-                .style(|_, status| app.appearance.checkbox(status)),
-            text(hint).size(12).color(app.appearance.muted_text()),
-            apply,
-            checkbox(app.settings.notifications)
-                .label("Desktop notifications")
-                .on_toggle_maybe((!app.applying_network).then_some(Message::Notifications))
-                .style(|_, status| app.appearance.checkbox(status)),
-            text("Network").size(15),
             row![
-                column![
-                    text("Listen address")
-                        .size(12)
-                        .color(app.appearance.muted_text()),
-                    text_input("127.0.0.1", &app.network_address)
-                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkAddress))
-                        .style(|_, status| app.appearance.text_input(status)),
-                ]
-                .spacing(4)
-                .width(Length::FillPortion(3)),
-                column![
-                    text("Port").size(12).color(app.appearance.muted_text()),
-                    text_input("8877", &app.network_port)
-                        .on_input_maybe((!app.applying_network).then_some(Message::NetworkPort))
-                        .style(|_, status| app.appearance.text_input(status)),
-                ]
-                .spacing(4)
-                .width(Length::FillPortion(1)),
+                button(
+                    row![
+                        symbolic_icon(include_bytes!("../assets/back-symbolic.svg")),
+                        text("Back"),
+                    ]
+                    .spacing(8),
+                )
+                .on_press(Message::Settings(false))
+                .style(|_, status| app.appearance.neutral_button(status)),
+                text("Settings").size(24),
             ]
-            .spacing(12),
-            text("Share base URL (optional)")
-                .size(12)
-                .color(app.appearance.muted_text()),
-            text_input("https://host:port", &app.share_base_url)
-                .on_input_maybe((!app.applying_network).then_some(Message::ShareBaseUrl))
-                .style(|_, status| app.appearance.text_input(status)),
-            button(if app.applying_network {
-                "Applying network…"
-            } else {
-                "Apply Network"
-            })
-            .on_press_maybe(
-                (((app.phase == Phase::Waiting && network_dirty)
-                    || matches!(&app.phase, Phase::NetworkError(_)))
-                    && !app.applying_network)
-                    .then_some(Message::ApplyNetwork),
-            )
-            .style(|_, status| app.appearance.primary_button(status)),
-            text("Network changes apply only while stopped.")
-                .size(12)
-                .color(app.appearance.muted_text()),
-            text("Changing the listener may leave old waiting pages unable to recover.")
-                .size(12)
-                .color(app.appearance.muted_text()),
-            text(app.settings_error.as_deref().unwrap_or_default()).size(12),
-            text(app.video_error.as_deref().unwrap_or_default()).size(12),
+            .spacing(16)
+            .align_y(iced::Alignment::Center),
+            scrollable(body).width(Length::Fill).height(Length::Fill),
         ]
         .spacing(16)
-        .max_width(432),
+        .max_width(432)
+        .height(Length::Fill),
     )
     .padding(24)
+    .width(Length::Fill)
+    .height(Length::Fill)
     .center_x(Length::Fill)
-    .center_y(Length::Fill)
     .into()
 }
 

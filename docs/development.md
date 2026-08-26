@@ -104,7 +104,10 @@ cleanup failure; real browser recovery remains unverified.
 | Notifications | One switch, enabled by default |
 
 Unsupported saved quality reports the error and blocks Start; it is not repaired
-or silently downgraded. Audio-setting edits during sharing take effect only
+or silently downgraded. Quality edits are saved through **Save quality** and
+take effect on the next Start; an active share and its media-only recoveries
+retain the quality snapshot taken before its Portal picker opened.
+Audio-setting edits during sharing take effect only
 through **Apply to Current Share**, which performs one coordinated media restart.
 Network rebinding is allowed only while stopped and warns that old waiting pages
 may not recover. While the Host window is hidden, enabled desktop notifications

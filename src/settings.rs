@@ -59,8 +59,12 @@ impl VideoSettings {
             || self.height == 0
             || self.width > i32::MAX as u32
             || self.height > i32::MAX as u32
+            || !self.width.is_multiple_of(2)
+            || !self.height.is_multiple_of(2)
         {
-            return Err(invalid("Video width and height must be positive values"));
+            return Err(invalid(
+                "Video width and height must be positive even values",
+            ));
         }
         if !matches!(self.fps, 30 | 60 | 120) {
             return Err(invalid("Frame rate must be 30, 60, or 120 FPS"));
@@ -113,6 +117,38 @@ impl Settings {
         settings.listen_address = listen_address;
         settings.listen_port = listen_port;
         settings.share_base_url = parse_base_url(share_base_url)?;
+        Ok(settings)
+    }
+
+    pub(crate) fn with_video(
+        &self,
+        width: &str,
+        height: &str,
+        fps: u32,
+        bitrate_mbps: &str,
+    ) -> io::Result<Self> {
+        let video = VideoSettings {
+            width: width
+                .trim()
+                .parse()
+                .map_err(|_| invalid("Video width must be a positive number"))?,
+            height: height
+                .trim()
+                .parse()
+                .map_err(|_| invalid("Video height must be a positive number"))?,
+            fps,
+            bitrate_mbps: match bitrate_mbps.trim() {
+                "" => None,
+                bitrate => Some(
+                    bitrate
+                        .parse()
+                        .map_err(|_| invalid("Bitrate must be between 1 and 500 Mbps"))?,
+                ),
+            },
+        };
+        video.validate()?;
+        let mut settings = self.clone();
+        settings.video = video;
         Ok(settings)
     }
 
@@ -348,6 +384,10 @@ mod tests {
                 ..VideoSettings::default()
             },
             VideoSettings {
+                width: 1279,
+                ..VideoSettings::default()
+            },
+            VideoSettings {
                 fps: 24,
                 ..VideoSettings::default()
             },
@@ -361,6 +401,24 @@ mod tests {
             },
         ] {
             assert!(video.validate().is_err());
+        }
+
+        let custom = Settings::default()
+            .with_video(" 1920 ", "1080", 30, "")
+            .unwrap();
+        assert_eq!(custom.video.width, 1920);
+        assert_eq!(custom.video.bitrate_mbps, None);
+        for (width, height, fps, bitrate) in [
+            ("", "720", 60, "6"),
+            ("1280", "0", 60, "6"),
+            ("1280", "720", 24, "6"),
+            ("1280", "720", 60, "501"),
+        ] {
+            assert!(
+                Settings::default()
+                    .with_video(width, height, fps, bitrate)
+                    .is_err()
+            );
         }
     }
 }

@@ -187,6 +187,12 @@ fn ui_commands_follow_the_host_lifecycle() {
         settings_open: false,
         settings_error: None,
         video_error: None,
+        video_edit_error: None,
+        video_preset: Quality::P720,
+        video_width: "1280".to_owned(),
+        video_height: "720".to_owned(),
+        video_fps: 60,
+        video_bitrate: "6".to_owned(),
         appearance: appearance::Appearance::default(),
         approved_source: None,
         active_system_audio: None,
@@ -290,6 +296,21 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert!(!app.applying_network);
     assert_eq!(app.settings.listen_port, 9001);
     assert_eq!(app.share_base_url, "https://share.example:443");
+
+    drop(update(&mut app, Message::VideoPreset(Quality::P1080)));
+    assert_eq!(app.video_width, "1920");
+    assert_eq!(app.video_height, "1080");
+    assert_eq!(app.video_bitrate, "12");
+    assert_eq!(app.settings.video, settings::VideoSettings::default());
+    drop(update(&mut app, Message::VideoPreset(Quality::Custom)));
+    assert_eq!(app.video_preset, Quality::Custom);
+    assert!(app.video_bitrate.is_empty());
+    drop(update(&mut app, Message::VideoBitrate("9".to_owned())));
+    drop(update(&mut app, Message::VideoPreset(Quality::Custom)));
+    assert_eq!(app.video_bitrate, "9");
+    drop(update(&mut app, Message::VideoFps(30)));
+    assert_eq!(app.video_fps, 30);
+    set_video_draft(&mut app, settings::VideoSettings::default());
 
     app.settings.system_audio = false;
     app.video_error = Some("unsupported".to_owned());
