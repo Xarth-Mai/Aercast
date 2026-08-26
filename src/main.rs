@@ -428,6 +428,7 @@ async fn share_once(
         server,
     );
     tokio::pin!(control);
+    let mut capture_caps = None;
     let mut recoveries = 0;
     let result = loop {
         let remote = tokio::select! {
@@ -447,6 +448,7 @@ async fn share_once(
         let attempt = serve_video(
             node_id,
             remote.as_raw_fd(),
+            &mut capture_caps,
             options.exclusions.clone(),
             media.clone(),
             control.as_mut(),
@@ -599,6 +601,7 @@ fn cursor_mode(embedded: bool, hidden: bool) -> Option<CursorMode> {
 async fn serve_video(
     node_id: u32,
     remote_fd: i32,
+    capture_caps: &mut Option<gst::Caps>,
     exclusions: Vec<String>,
     media: web::MediaSession,
     mut control: Pin<&mut impl Future<Output = ShareStop>>,
@@ -615,6 +618,15 @@ async fn serve_video(
     let pipeline = gst::parse::launch(&pipeline_description(node_id, remote_fd))?
         .downcast::<gst::Pipeline>()
         .map_err(|_| io::Error::other("GStreamer did not create a pipeline"))?;
+    let portal_video = pipeline
+        .by_name("portal-video")
+        .ok_or_else(|| io::Error::other("GStreamer pipeline has no Portal video source"))?;
+    let portal_format = pipeline
+        .by_name("portal-format")
+        .ok_or_else(|| io::Error::other("GStreamer pipeline has no Portal video format"))?;
+    if let Some(caps) = capture_caps.as_ref() {
+        portal_format.set_property("caps", caps);
+    }
     let parser_pad = pipeline
         .by_name("h264")
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no H.264 parser"))?
@@ -733,6 +745,12 @@ async fn serve_video(
         },
     };
 
+    if let Some(caps) = portal_video
+        .static_pad("src")
+        .and_then(|pad| pad.current_caps())
+    {
+        *capture_caps = Some(caps);
+    }
     let stop_result = pipeline.set_state(gst::State::Null);
     if let Err(error) = &stop_result {
         eprintln!("Failed to stop GStreamer pipeline: {error}");
@@ -749,7 +767,7 @@ fn pipeline_description(node_id: u32, remote_fd: i32) -> String {
          audiomixer name=audio-mixer ignore-inactive-pads=true ! audioconvert ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0
          audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! queue ! audio-mixer.
          appsrc name=system-audio is-live=true format=time do-timestamp=true block=false max-bytes=384000 leaky-type=downstream ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! queue ! audio-mixer.
-         pipewiresrc fd={remote_fd} path={node_id} on-disconnect=error ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0"
+         pipewiresrc name=portal-video fd={remote_fd} path={node_id} on-disconnect=error ! capsfilter name=portal-format ! vapostproc disable-passthrough=true add-borders=true ! video/x-raw,format=I420,width=1280,height=720 ! imagefreeze is-live=true allow-replace=true ! video/x-raw,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0"
     )
 }
 
