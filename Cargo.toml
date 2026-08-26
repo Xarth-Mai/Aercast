@@ -11,7 +11,7 @@ axum = "0.8"
 futures-util = "0.3"
 gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25" }
-iced = { version = "0.14", default-features = false, features = ["wayland", "wgpu", "tokio", "svg"] }
+iced = { version = "0.14", default-features = false, features = ["advanced", "wayland", "wgpu", "tokio", "svg"] }
 ksni = "0.3.6"
 png = "0.17"
 pw = { package = "pipewire", version = "0.10" }

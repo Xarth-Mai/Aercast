@@ -185,7 +185,7 @@ The current Phase 4 therefore remains incomplete until a fresh real run proves:
   after a later Start;
 - Communication-role audio is excluded without PID matching.
 
-Phase 5 additionally lacks current evidence for the fixed `480×640` window,
+Phase 5 additionally lacks current evidence for the fixed `700×440` window,
 niri automatic floating, hide and tray restore, single-instance activation,
 fixed dark/accent/accessibility behavior, settings, Viewer telemetry and kick,
 explicit link refresh, notifications, and the final three-or-more-Viewer

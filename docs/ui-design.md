@@ -76,7 +76,7 @@ addition to color.
 - Shadows: at most one subtle compositor-independent shadow for an elevated
   transient surface; ordinary grouped content uses borders and luminance only.
 
-The main window content must fit `480×640` logical pixels without horizontal
+The main window content must fit `700×440` logical pixels without horizontal
 overflow. It is not resizable, but layout must tolerate normal font metrics and
 the compositor's server-side decoration size.
 

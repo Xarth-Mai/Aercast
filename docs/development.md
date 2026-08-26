@@ -41,7 +41,7 @@ cleanup failure; real browser recovery remains unverified.
 
 ### Window, tray, and application lifecycle
 
-- The Host has only a GUI. The main window is fixed at `480×640` logical pixels,
+- The Host has only a GUI. The main window is fixed at `700×440` logical pixels,
   is not resizable, and uses ordinary system decorations. Its fixed size lets
   niri's native heuristic float it without a user window rule.
 - iced runs with daemon lifetime. Closing the window always hides it, including
@@ -60,8 +60,9 @@ cleanup failure; real browser recovery remains unverified.
 - The share view has a settings icon at the top right; the settings view has a
   back icon. There is no Host video preview.
 - **Start Sharing** opens the Portal picker, which owns monitor/window choice
-  and pointer behavior. The active view shows the approved source, share link,
-  Copy, Refresh Link, Stop, and Viewer list.
+  and pointer behavior. The same stateful action becomes **Cancel** during
+  selection and **Stop Sharing** while active. The view also shows the approved
+  source, share link, Copy, Refresh Link, and Viewer list.
 - Stop closes media and the Portal session. The current link remains valid and
   returns Viewers to waiting. A later Start reuses it.
 - Refresh Link creates a new token without restarting capture, closes every old

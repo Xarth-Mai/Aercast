@@ -9,7 +9,7 @@ use iced::{
         Palette,
         palette::{Extended, Pair},
     },
-    widget::{button, checkbox, container, pick_list, rule, text_input},
+    widget::{button, checkbox, container, rule, text_input},
 };
 
 const WINDOW_BG: Color = iced::color!(0x242424);
@@ -75,6 +75,14 @@ impl Appearance {
 
     pub(super) fn muted_text(&self) -> Color {
         if self.high_contrast { TEXT } else { TEXT_MUTED }
+    }
+
+    pub(super) fn focus_ring(&self) -> Border {
+        Border {
+            color: self.theme.extended_palette().primary.strong.color,
+            width: if self.high_contrast { 3.0 } else { 2.0 },
+            radius: 8.0.into(),
+        }
     }
 
     fn border_color(&self, normal: Color) -> Color {
@@ -170,16 +178,17 @@ impl Appearance {
         let primary = self.theme.extended_palette().primary;
         let focused = matches!(status, text_input::Status::Focused { .. });
         let disabled = status == text_input::Status::Disabled;
+        let focus_ring = self.focus_ring();
         text_input::Style {
             background: Background::Color(SURFACE),
             border: Border {
                 color: if focused {
-                    primary.strong.color
+                    focus_ring.color
                 } else {
                     self.border_color(BORDER)
                 },
                 width: if focused {
-                    if self.high_contrast { 3.0 } else { 2.0 }
+                    focus_ring.width
                 } else if self.high_contrast {
                     2.0
                 } else {
@@ -195,30 +204,6 @@ impl Appearance {
             },
             value: if disabled { TEXT_DISABLED } else { TEXT },
             selection: primary.weak.color,
-        }
-    }
-
-    pub(super) fn pick_list(&self, status: pick_list::Status) -> pick_list::Style {
-        let opened = matches!(status, pick_list::Status::Opened { .. });
-        let hovered = status == pick_list::Status::Hovered;
-        pick_list::Style {
-            text_color: TEXT,
-            placeholder_color: self.muted_text(),
-            handle_color: self.muted_text(),
-            background: Background::Color(if hovered { SURFACE_RAISED } else { SURFACE }),
-            border: Border {
-                color: if opened {
-                    self.theme.extended_palette().primary.strong.color
-                } else {
-                    self.border_color(BORDER)
-                },
-                width: match (opened, self.high_contrast) {
-                    (true, true) => 3.0,
-                    (false, false) => 1.0,
-                    _ => 2.0,
-                },
-                radius: 8.0.into(),
-            },
         }
     }
 
@@ -413,13 +398,6 @@ mod tests {
             assert_eq!(
                 appearance
                     .text_input(text_input::Status::Focused { is_hovered: false })
-                    .border
-                    .width,
-                if high_contrast { 3.0 } else { 2.0 }
-            );
-            assert_eq!(
-                appearance
-                    .pick_list(pick_list::Status::Opened { is_hovered: false })
                     .border
                     .width,
                 if high_contrast { 3.0 } else { 2.0 }
