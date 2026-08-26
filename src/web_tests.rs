@@ -4,6 +4,10 @@ use gst::prelude::*;
 
 const VIDEO_TRACK: u32 = 37;
 
+fn viewers(host: &Host) -> Arc<ViewerGeneration> {
+    lock(&host.inner).unwrap().viewers.clone()
+}
+
 fn mp4_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(payload.len() + 8);
     bytes.extend_from_slice(&u32::try_from(payload.len() + 8).unwrap().to_be_bytes());
@@ -136,6 +140,7 @@ fn installed_mp4mux_output_builds_a_decodable_replay_boundary() {
         .downcast::<gst_app::AppSink>()
         .unwrap();
     let host = Host::new().unwrap();
+    let viewers = viewers(&host);
     let session = host.start().unwrap();
     session.set_mime("video/mp4".to_owned()).unwrap();
     pipeline.set_state(gst::State::Playing).unwrap();
@@ -144,7 +149,7 @@ fn installed_mp4mux_output_builds_a_decodable_replay_boundary() {
         let sample = sink.pull_sample().unwrap();
         let buffer = sample.buffer().unwrap().map_readable().unwrap();
         session.publish(buffer.as_slice()).unwrap();
-        if let Some(subscription) = session.hub.subscribe().unwrap() {
+        if let Some(subscription) = session.hub.subscribe(viewers.clone()).unwrap() {
             break subscription.replay.collect::<Vec<_>>();
         }
     };
@@ -157,6 +162,7 @@ fn installed_mp4mux_output_builds_a_decodable_replay_boundary() {
 #[test]
 fn three_subscribers_get_one_atomic_replay_then_live_media() {
     let host = Host::new().unwrap();
+    let generation = viewers(&host);
     let session = host.start().unwrap();
     session
         .set_mime("video/mp4; codecs=\"test\"".to_owned())
@@ -168,15 +174,15 @@ fn three_subscribers_get_one_atomic_replay_then_live_media() {
     session.publish(&key).unwrap();
     session.publish(&delta).unwrap();
     let mut viewers: Vec<_> = (0..3)
-        .map(|_| session.hub.subscribe().unwrap().unwrap())
+        .map(|_| session.hub.subscribe(generation.clone()).unwrap().unwrap())
         .collect();
-    let mut count = session.viewer_count();
+    let mut count = host.viewer_count().unwrap();
     assert_eq!(*count.borrow_and_update(), 3);
     let extras: Vec<_> = (3..MAX_VIEWERS)
-        .map(|_| session.hub.subscribe().unwrap().unwrap())
+        .map(|_| session.hub.subscribe(generation.clone()).unwrap().unwrap())
         .collect();
     assert!(matches!(
-        session.hub.subscribe(),
+        session.hub.subscribe(generation),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock
     ));
     drop(extras);
@@ -208,6 +214,7 @@ fn three_subscribers_get_one_atomic_replay_then_live_media() {
 #[test]
 fn oversized_gop_waits_for_the_next_keyframe() {
     let host = Host::new().unwrap();
+    let viewers = viewers(&host);
     let session = host.start().unwrap();
     session.set_mime("video/mp4".to_owned()).unwrap();
     session.publish(&init()).unwrap();
@@ -221,16 +228,17 @@ fn oversized_gop_waits_for_the_next_keyframe() {
     session
         .publish(&fragment(VIDEO_TRACK, 0x100c0, b"overflow"))
         .unwrap();
-    assert!(session.hub.subscribe().unwrap().is_none());
+    assert!(session.hub.subscribe(viewers.clone()).unwrap().is_none());
     session
         .publish(&fragment(VIDEO_TRACK, 0x40, b"recovered"))
         .unwrap();
-    assert!(session.hub.subscribe().unwrap().is_some());
+    assert!(session.hub.subscribe(viewers).unwrap().is_some());
 }
 
 #[test]
 fn lagged_viewer_does_not_harm_fast_viewers() {
     let host = Host::new().unwrap();
+    let generation = viewers(&host);
     let session = host.start().unwrap();
     session
         .set_mime("video/mp4; codecs=\"test\"".to_owned())
@@ -240,7 +248,7 @@ fn lagged_viewer_does_not_harm_fast_viewers() {
         .publish(&fragment(VIDEO_TRACK, 0x40, b"key"))
         .unwrap();
     let mut viewers: Vec<_> = (0..3)
-        .map(|_| session.hub.subscribe().unwrap().unwrap())
+        .map(|_| session.hub.subscribe(generation.clone()).unwrap().unwrap())
         .collect();
     for viewer in &mut viewers {
         viewer.replay.by_ref().for_each(drop);
@@ -319,7 +327,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     session
         .publish(&fragment(VIDEO_TRACK, 0x40, b"old-session"))
         .unwrap();
-    let mut count = session.viewer_count();
+    let mut count = host.viewer_count().unwrap();
     let response = media_stream(Path(token.clone()), State(host.clone())).await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body().into_data_stream().fuse();
@@ -358,4 +366,78 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     assert_eq!(next_body.next().await.unwrap().unwrap(), next_fragment);
     host.stop(&next).unwrap();
     assert!(next_body.next().await.is_none());
+}
+
+#[tokio::test]
+async fn refresh_revokes_old_viewers_without_restarting_media() {
+    let host = Host::new().unwrap();
+    let old_token = host.path().unwrap().trim_start_matches("/s/").to_owned();
+    let session = host.start().unwrap();
+    session
+        .set_mime("video/mp4; codecs=\"test\"".to_owned())
+        .unwrap();
+    let init = init();
+    let key = fragment(VIDEO_TRACK, 0x40, b"same-media-session");
+    session.publish(&init).unwrap();
+    session.publish(&key).unwrap();
+
+    let mut old_bodies = Vec::new();
+    for _ in 0..MAX_VIEWERS {
+        let response = media_stream(Path(old_token.clone()), State(host.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        old_bodies.push(response.into_body().into_data_stream());
+    }
+    assert_eq!(
+        media_stream(Path(old_token.clone()), State(host.clone()))
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(host.refresh(false).unwrap().is_none());
+    assert_eq!(host.path().unwrap(), format!("/s/{old_token}"));
+
+    let middle_token = host
+        .refresh(true)
+        .unwrap()
+        .unwrap()
+        .trim_start_matches("/s/")
+        .to_owned();
+    let token = host
+        .refresh(true)
+        .unwrap()
+        .unwrap()
+        .trim_start_matches("/s/")
+        .to_owned();
+    for revoked in [old_token, middle_token] {
+        assert_eq!(
+            viewer_page(Path(revoked.clone()), State(host.clone()))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            media_stream(Path(revoked.clone()), State(host.clone()))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            media_head(Path(revoked), State(host.clone())).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for mut body in old_bodies {
+        assert!(body.next().await.is_none());
+    }
+
+    let mut count = host.viewer_count().unwrap();
+    assert_eq!(*count.borrow_and_update(), 0);
+    let response = media_stream(Path(token), State(host.clone())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(*count.borrow_and_update(), 1);
+    let mut body = response.into_body().into_data_stream();
+    assert_eq!(body.next().await.unwrap().unwrap(), init);
+    assert_eq!(body.next().await.unwrap().unwrap(), key);
+    host.stop(&session).unwrap();
+    assert!(body.next().await.is_none());
 }

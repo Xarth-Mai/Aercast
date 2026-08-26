@@ -35,8 +35,18 @@ fn media_eos_is_recoverable() {
 async fn server_failure_is_terminal_control() {
     let (_commands, mut receiver) = mpsc::channel(1);
     let mut server = tokio::spawn(async { Err(io::Error::other("server failed")) });
+    let host = web::Host::new().unwrap();
+    let (events, _) = iced::futures::channel::mpsc::unbounded();
     assert!(matches!(
-        share_control(&mut receiver, std::future::pending(), &mut server).await,
+        share_control(
+            &mut receiver,
+            std::future::pending(),
+            &mut server,
+            &host,
+            "127.0.0.1:1".parse().unwrap(),
+            &events,
+        )
+        .await,
         ShareStop::Failed(_)
     ));
 }
@@ -88,6 +98,7 @@ fn ui_commands_follow_the_host_lifecycle() {
         viewers: 0,
         commands: Some(commands),
         closing: None,
+        confirm_refresh: false,
     };
 
     drop(update(
@@ -100,6 +111,27 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.phase, Phase::Selecting);
 
     drop(update(&mut app, Message::Host(HostEvent::Sharing)));
+    app.viewers = 2;
+    drop(update(&mut app, Message::Refresh));
+    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
+    assert!(!app.confirm_refresh);
+    drop(update(&mut app, Message::Host(HostEvent::ConfirmRefresh)));
+    assert!(app.confirm_refresh);
+    drop(update(&mut app, Message::CancelRefresh));
+    assert!(!app.confirm_refresh);
+    drop(update(&mut app, Message::Host(HostEvent::ConfirmRefresh)));
+    drop(update(&mut app, Message::ConfirmRefresh));
+    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(true));
+    assert!(!app.confirm_refresh);
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Link("http://127.0.0.1/s/replacement".to_owned())),
+    ));
+    assert_eq!(app.link, "http://127.0.0.1/s/replacement");
+    app.viewers = 0;
+    drop(update(&mut app, Message::Refresh));
+    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
+    assert!(!app.confirm_refresh);
     drop(update(&mut app, Message::End));
     assert_eq!(receiver.try_recv().unwrap(), Command::End);
     assert_eq!(app.phase, Phase::Ending);

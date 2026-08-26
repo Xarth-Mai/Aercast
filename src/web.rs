@@ -31,6 +31,7 @@ pub(crate) struct Host {
 
 struct HostState {
     token: String,
+    viewers: Arc<ViewerGeneration>,
     media: Option<Arc<MediaHub>>,
 }
 
@@ -41,7 +42,6 @@ pub(crate) struct MediaSession {
 
 struct MediaHub {
     inner: Mutex<HubState>,
-    viewers: watch::Sender<usize>,
     closed: watch::Sender<bool>,
 }
 
@@ -58,17 +58,23 @@ struct Subscription {
     replay: std::vec::IntoIter<Bytes>,
     receiver: broadcast::Receiver<Bytes>,
     closed: watch::Receiver<bool>,
+    revoked: watch::Receiver<bool>,
     _viewer: ViewerGuard,
 }
 
 struct ViewerGuard {
+    generation: Arc<ViewerGeneration>,
+}
+
+struct ViewerGeneration {
     viewers: watch::Sender<usize>,
+    revoked: watch::Sender<bool>,
 }
 
 enum Access {
     Invalid,
     Waiting,
-    Sharing(Arc<MediaHub>),
+    Sharing(Arc<MediaHub>, Arc<ViewerGeneration>),
 }
 
 #[derive(Default)]
@@ -92,6 +98,7 @@ impl Host {
         Ok(Self {
             inner: Arc::new(Mutex::new(HostState {
                 token: share_token()?,
+                viewers: Arc::new(ViewerGeneration::new()),
                 media: None,
             })),
         })
@@ -99,6 +106,21 @@ impl Host {
 
     pub(crate) fn path(&self) -> io::Result<String> {
         Ok(format!("/s/{}", lock(&self.inner)?.token))
+    }
+
+    pub(crate) fn refresh(&self, confirmed: bool) -> io::Result<Option<String>> {
+        let mut state = lock(&self.inner)?;
+        if *state.viewers.viewers.borrow() > 0 && !confirmed {
+            return Ok(None);
+        }
+        state.token = share_token()?;
+        state.viewers.revoked.send_replace(true);
+        state.viewers = Arc::new(ViewerGeneration::new());
+        Ok(Some(format!("/s/{}", state.token)))
+    }
+
+    pub(crate) fn viewer_count(&self) -> io::Result<watch::Receiver<usize>> {
+        Ok(lock(&self.inner)?.viewers.viewers.subscribe())
     }
 
     pub(crate) fn start(&self) -> io::Result<MediaSession> {
@@ -133,7 +155,7 @@ impl Host {
             return Ok(Access::Invalid);
         }
         Ok(match &state.media {
-            Some(media) => Access::Sharing(Arc::clone(media)),
+            Some(media) => Access::Sharing(Arc::clone(media), Arc::clone(&state.viewers)),
             None => Access::Waiting,
         })
     }
@@ -173,16 +195,11 @@ impl MediaSession {
         }
         Ok(published_fragment)
     }
-
-    pub(crate) fn viewer_count(&self) -> watch::Receiver<usize> {
-        self.hub.viewers.subscribe()
-    }
 }
 
 impl MediaHub {
     fn new() -> Self {
         let (sender, _) = broadcast::channel(32);
-        let (viewers, _) = watch::channel(0);
         let (closed, _) = watch::channel(false);
         Self {
             inner: Mutex::new(HubState {
@@ -192,19 +209,12 @@ impl MediaHub {
                 init: None,
                 gop: Vec::new(),
             }),
-            viewers,
             closed,
         }
     }
 
-    fn subscribe(&self) -> io::Result<Option<Subscription>> {
+    fn subscribe(&self, viewers: Arc<ViewerGeneration>) -> io::Result<Option<Subscription>> {
         let state = lock(&self.inner)?;
-        if *self.viewers.borrow() >= MAX_VIEWERS {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Viewer limit reached",
-            ));
-        }
         let Some(sender) = &state.sender else {
             return Ok(None);
         };
@@ -212,6 +222,8 @@ impl MediaHub {
         else {
             return Ok(None);
         };
+        let revoked = viewers.revoked.subscribe();
+        let viewer = ViewerGuard::new(viewers)?;
         let receiver = sender.subscribe();
         let mut replay = Vec::with_capacity(state.gop.len() + 1);
         replay.push(init.clone());
@@ -221,7 +233,8 @@ impl MediaHub {
             replay: replay.into_iter(),
             receiver,
             closed: self.closed.subscribe(),
-            _viewer: ViewerGuard::new(&self.viewers),
+            revoked,
+            _viewer: viewer,
         }))
     }
 
@@ -236,18 +249,40 @@ impl MediaHub {
 }
 
 impl ViewerGuard {
-    fn new(viewers: &watch::Sender<usize>) -> Self {
-        viewers.send_modify(|count| *count += 1);
-        Self {
-            viewers: viewers.clone(),
+    fn new(generation: Arc<ViewerGeneration>) -> io::Result<Self> {
+        if *generation.revoked.borrow() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
         }
+        if !generation.viewers.send_if_modified(|count| {
+            if *count >= MAX_VIEWERS {
+                false
+            } else {
+                *count += 1;
+                true
+            }
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Viewer limit reached",
+            ));
+        }
+        Ok(Self { generation })
     }
 }
 
 impl Drop for ViewerGuard {
     fn drop(&mut self) {
-        self.viewers
+        self.generation
+            .viewers
             .send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
+impl ViewerGeneration {
+    fn new() -> Self {
+        let (viewers, _) = watch::channel(0);
+        let (revoked, _) = watch::channel(false);
+        Self { viewers, revoked }
     }
 }
 
@@ -310,10 +345,7 @@ pub(crate) async fn serve(
         listener,
         Router::new()
             .route("/s/{token}", get(viewer_page))
-            .route(
-                "/s/{token}/stream",
-                get(media_stream).head(|| async { StatusCode::METHOD_NOT_ALLOWED }),
-            )
+            .route("/s/{token}/stream", get(media_stream).head(media_head))
             .with_state(host),
     )
     .with_graceful_shutdown(async {
@@ -326,7 +358,7 @@ async fn viewer_page(Path(token): Path<String>, State(host): State<Host>) -> Res
     match host.access(&token) {
         Ok(Access::Invalid) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        Ok(Access::Waiting | Access::Sharing(_)) => Response::builder()
+        Ok(Access::Waiting | Access::Sharing(..)) => Response::builder()
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
             .header(header::CACHE_CONTROL, "no-store")
             .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
@@ -341,15 +373,18 @@ async fn viewer_page(Path(token): Path<String>, State(host): State<Host>) -> Res
 }
 
 async fn media_stream(Path(token): Path<String>, State(host): State<Host>) -> Response {
-    let media = match host.access(&token) {
-        Ok(Access::Sharing(media)) => media,
+    let (media, viewers) = match host.access(&token) {
+        Ok(Access::Sharing(media, viewers)) => (media, viewers),
         Ok(Access::Waiting) => return waiting(),
         Ok(Access::Invalid) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let subscription = match media.subscribe() {
+    let subscription = match media.subscribe(viewers) {
         Ok(Some(subscription)) => subscription,
         Ok(None) => return waiting(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             return StatusCode::TOO_MANY_REQUESTS.into_response();
         }
@@ -359,7 +394,7 @@ async fn media_stream(Path(token): Path<String>, State(host): State<Host>) -> Re
     let body = Body::from_stream(stream::unfold(
         subscription,
         |mut subscription| async move {
-            if *subscription.closed.borrow() {
+            if *subscription.closed.borrow() || *subscription.revoked.borrow() {
                 return None;
             }
             if let Some(chunk) = subscription.replay.next() {
@@ -368,6 +403,7 @@ async fn media_stream(Path(token): Path<String>, State(host): State<Host>) -> Re
             tokio::select! {
                 biased;
                 _ = subscription.closed.changed() => None,
+                _ = subscription.revoked.changed() => None,
                 result = subscription.receiver.recv() => match result {
                     Ok(chunk) => Some((Ok(chunk), subscription)),
                     Err(error) => {
@@ -384,6 +420,14 @@ async fn media_stream(Path(token): Path<String>, State(host): State<Host>) -> Re
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .body(body)
         .expect("generated media headers are valid")
+}
+
+async fn media_head(Path(token): Path<String>, State(host): State<Host>) -> StatusCode {
+    match host.access(&token) {
+        Ok(Access::Invalid) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(Access::Waiting | Access::Sharing(..)) => StatusCode::METHOD_NOT_ALLOWED,
+    }
 }
 
 fn waiting() -> Response {

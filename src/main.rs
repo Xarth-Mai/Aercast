@@ -47,6 +47,7 @@ struct Options {
 enum Command {
     Start,
     End,
+    Refresh(bool),
     Quit,
 }
 
@@ -60,6 +61,8 @@ enum ShareStop {
 #[derive(Clone, Debug)]
 enum HostEvent {
     Waiting(String),
+    Link(String),
+    ConfirmRefresh,
     Sharing,
     Ending,
     Viewers(usize),
@@ -72,6 +75,9 @@ enum Message {
     Start,
     End,
     Copy,
+    Refresh,
+    ConfirmRefresh,
+    CancelRefresh,
     Close(window::Id),
 }
 
@@ -92,6 +98,7 @@ struct App {
     viewers: usize,
     commands: Option<mpsc::Sender<Command>>,
     closing: Option<window::Id>,
+    confirm_refresh: bool,
 }
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
@@ -123,6 +130,7 @@ fn boot(options: Options) -> (App, Task<Message>) {
             viewers: 0,
             commands: Some(commands),
             closing: None,
+            confirm_refresh: false,
         },
         Task::batch([
             Task::run(incoming, Message::Host),
@@ -143,15 +151,25 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::End => {
+            app.confirm_refresh = false;
             if send_command(app, Command::End) {
                 app.phase = Phase::Ending;
             }
         }
         Message::Copy => return clipboard::write(app.link.clone()),
+        Message::Refresh => {
+            let _ = send_command(app, Command::Refresh(false));
+        }
+        Message::ConfirmRefresh => {
+            app.confirm_refresh = false;
+            let _ = send_command(app, Command::Refresh(true));
+        }
+        Message::CancelRefresh => app.confirm_refresh = false,
         Message::Close(id) => {
             if app.commands.is_none() {
                 return window::close(id);
             }
+            app.confirm_refresh = false;
             app.closing = Some(id);
             let _ = send_command(app, Command::Quit);
             app.phase = Phase::Closing;
@@ -160,16 +178,29 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             HostEvent::Waiting(link) => {
                 app.link = link;
                 app.viewers = 0;
+                app.confirm_refresh = false;
                 if app.closing.is_none() {
                     app.phase = Phase::Waiting;
                 }
             }
+            HostEvent::Link(link) => {
+                app.link = link;
+                app.viewers = 0;
+                app.confirm_refresh = false;
+            }
+            HostEvent::ConfirmRefresh if app.phase == Phase::Sharing && app.closing.is_none() => {
+                app.confirm_refresh = true;
+            }
             HostEvent::Sharing if app.closing.is_none() => app.phase = Phase::Sharing,
-            HostEvent::Ending if app.closing.is_none() => app.phase = Phase::Ending,
+            HostEvent::Ending if app.closing.is_none() => {
+                app.confirm_refresh = false;
+                app.phase = Phase::Ending;
+            }
             HostEvent::Viewers(viewers) => app.viewers = viewers,
             HostEvent::Stopped(result) => {
                 app.commands = None;
                 app.viewers = 0;
+                app.confirm_refresh = false;
                 if let Some(id) = app.closing.take() {
                     return window::close(id);
                 }
@@ -178,7 +209,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     Err(error) => app.phase = Phase::Error(error),
                 }
             }
-            HostEvent::Sharing | HostEvent::Ending => {}
+            HostEvent::Sharing | HostEvent::Ending | HostEvent::ConfirmRefresh => {}
         },
     }
     Task::none()
@@ -192,6 +223,7 @@ fn send_command(app: &mut App, command: Command) -> bool {
     {
         true
     } else {
+        app.confirm_refresh = false;
         app.phase = Phase::Error("Host control is unavailable".to_owned());
         false
     }
@@ -214,6 +246,19 @@ fn view(app: &App) -> Element<'_, Message> {
     } else {
         "End Sharing"
     };
+    let refresh_confirmation = if app.confirm_refresh && app.phase == Phase::Sharing {
+        column![
+            text("Refreshing disconnects every current Viewer."),
+            row![
+                button("Cancel").on_press(Message::CancelRefresh),
+                button("Refresh Link").on_press(Message::ConfirmRefresh),
+            ]
+            .spacing(12),
+        ]
+        .spacing(8)
+    } else {
+        column![]
+    };
 
     container(
         column![
@@ -226,6 +271,9 @@ fn view(app: &App) -> Element<'_, Message> {
                 button(end_label).on_press_maybe(can_end.then_some(Message::End)),
             ]
             .spacing(12),
+            button("Refresh Link")
+                .on_press_maybe((app.phase == Phase::Sharing).then_some(Message::Refresh)),
+            refresh_confirmation,
             text(format!("Viewers: {}", app.viewers)),
             text("Trusted LAN only. Use an external HTTPS reverse proxy elsewhere.").size(12),
         ]
@@ -263,8 +311,15 @@ async fn run_host(
             };
             match command {
                 Command::Start => {
-                    match share_once(&options, &host, &mut command_receiver, &mut server, &events)
-                        .await?
+                    match share_once(
+                        &options,
+                        &host,
+                        address,
+                        &mut command_receiver,
+                        &mut server,
+                        &events,
+                    )
+                    .await?
                     {
                         ShareStop::End | ShareStop::PortalClosed => {}
                         ShareStop::Quit => break,
@@ -272,6 +327,7 @@ async fn run_host(
                     }
                 }
                 Command::End => {}
+                Command::Refresh(_) => {}
                 Command::Quit => break,
             }
         }
@@ -302,6 +358,7 @@ async fn run_host(
 async fn share_once(
     options: &Options,
     host: &web::Host,
+    address: SocketAddr,
     commands: &mut mpsc::Receiver<Command>,
     server: &mut Server,
     events: &Events,
@@ -377,6 +434,7 @@ async fn share_once(
             command = commands.recv() => match command.unwrap_or(Command::Quit) {
                 Command::Start => println!("Source selection is already open."),
                 Command::End => break Selection::Stop(false),
+                Command::Refresh(_) => println!("Source selection is still open."),
                 Command::Quit => break Selection::Stop(true),
             },
         }
@@ -426,6 +484,9 @@ async fn share_once(
             let _ = closed.next().await;
         },
         server,
+        host,
+        address,
+        events,
     );
     tokio::pin!(control);
     let mut capture_caps = None;
@@ -508,41 +569,67 @@ async fn share_control(
     commands: &mut mpsc::Receiver<Command>,
     session_closed: impl Future<Output = ()>,
     server: &mut Server,
+    host: &web::Host,
+    address: SocketAddr,
+    events: &Events,
 ) -> ShareStop {
+    let mut viewers = match host.viewer_count() {
+        Ok(viewers) => viewers,
+        Err(error) => return ShareStop::Failed(error.into()),
+    };
     tokio::pin!(session_closed);
-    tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            match signal {
+    loop {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => return match signal {
                 Ok(()) => {
                     println!("Stopping Aercast.");
                     ShareStop::Quit
                 }
                 Err(error) => ShareStop::Failed(error.into()),
+            },
+            command = commands.recv() => match command.unwrap_or(Command::Quit) {
+                Command::Start => println!("A share is already active."),
+                Command::End => {
+                    println!("Ending share.");
+                    return ShareStop::End;
+                }
+                Command::Refresh(confirmed) => match host.refresh(confirmed) {
+                    Ok(Some(path)) => {
+                        viewers = match host.viewer_count() {
+                            Ok(viewers) => viewers,
+                            Err(error) => return ShareStop::Failed(error.into()),
+                        };
+                        let _ = events.unbounded_send(HostEvent::Link(format!(
+                            "http://{address}{path}"
+                        )));
+                    }
+                    Ok(None) => {
+                        let _ = events.unbounded_send(HostEvent::ConfirmRefresh);
+                    }
+                    Err(error) => return ShareStop::Failed(error.into()),
+                },
+                Command::Quit => {
+                    println!("Stopping Aercast.");
+                    return ShareStop::Quit;
+                }
+            },
+            changed = viewers.changed() => {
+                if changed.is_err() {
+                    return ShareStop::Failed(io::Error::other(
+                        "Viewer count channel closed"
+                    ).into());
+                }
+                let _ = events.unbounded_send(HostEvent::Viewers(
+                    *viewers.borrow_and_update()
+                ));
+            },
+            _ = &mut session_closed => {
+                println!("Portal session closed; stopping stream.");
+                return ShareStop::PortalClosed;
             }
-        },
-        quit = stop_command(commands) => {
-            if quit {
-                println!("Stopping Aercast.");
-                ShareStop::Quit
-            } else {
-                println!("Ending share.");
-                ShareStop::End
-            }
-        },
-        _ = &mut session_closed => {
-            println!("Portal session closed; stopping stream.");
-            ShareStop::PortalClosed
-        }
-        result = &mut *server => server_outcome(result).unwrap_or_else(ShareStop::Failed),
-    }
-}
-
-async fn stop_command(commands: &mut mpsc::Receiver<Command>) -> bool {
-    loop {
-        match commands.recv().await.unwrap_or(Command::Quit) {
-            Command::Start => println!("A share is already active."),
-            Command::End => return false,
-            Command::Quit => return true,
+            result = &mut *server => {
+                return server_outcome(result).unwrap_or_else(ShareStop::Failed);
+            },
         }
     }
 }
@@ -701,32 +788,17 @@ async fn serve_video(
             Ok((audio, mut audio_errors)) => {
                 println!("Browser stream running.");
                 let _ = events.unbounded_send(HostEvent::Sharing);
-                let mut viewers = media.viewer_count();
-                let _ = events.unbounded_send(HostEvent::Viewers(*viewers.borrow_and_update()));
                 let mut audio_failure_reported = false;
-                let running = loop {
-                    let result = tokio::select! {
-                        biased;
-                        stop = control.as_mut() => Ok(stop),
-                        message = messages.next() => media_outcome(message),
-                        error = audio_errors.recv() => {
-                            audio_failure_reported = error.is_some();
-                            Err(io::Error::other(error.unwrap_or_else(||
-                                "selective-audio thread stopped unexpectedly".to_owned()
-                            )).into())
-                        },
-                        changed = viewers.changed() => {
-                            if changed.is_err() {
-                                Err(io::Error::other("Viewer count channel closed").into())
-                            } else {
-                                let _ = events.unbounded_send(HostEvent::Viewers(
-                                    *viewers.borrow_and_update()
-                                ));
-                                continue;
-                            }
-                        }
-                    };
-                    break result;
+                let running = tokio::select! {
+                    biased;
+                    stop = control.as_mut() => Ok(stop),
+                    message = messages.next() => media_outcome(message),
+                    error = audio_errors.recv() => {
+                        audio_failure_reported = error.is_some();
+                        Err(io::Error::other(error.unwrap_or_else(||
+                            "selective-audio thread stopped unexpectedly".to_owned()
+                        )).into())
+                    },
                 };
                 if running.is_ok() {
                     let _ = events.unbounded_send(HostEvent::Ending);
