@@ -221,13 +221,66 @@ audio nodes, HTTP listener, Host, and browser test processes. These are local
 component startup timings and lifecycle observations, not display-to-display
 or LAN latency measurements.
 
-## Current Phase 5 evidence gaps
+## Phase 5 desktop productization
 
-Current real evidence is still required for the fixed `700×440` window, niri
-automatic floating, hide and tray restore, single-instance activation, fixed
-dark/accent/accessibility behavior, settings boundaries, Viewer telemetry and
-disconnect/manual retry, explicit link refresh, notifications, and the final
-three-or-more-Viewer desktop workflow.
+**Revision:** `073169b`, 2026-08-27.
+
+**Desktop shell:** niri reported one fixed `700×440` logical window with
+`is_floating=true`. Closing it removed every mapped Aercast window while the
+same PID, loopback listener, owned `org.aercast.Aercast` name, and
+StatusNotifierItem remained. Calling the standard tray `Activate` method
+restored one floating window for the same PID. A second `cargo run` exited after
+activating that existing instance. The dynamic tray menu changed from
+`Status: Ready / Show / Start / Quit` to
+`Status: Sharing / Show / Copy Link / Stop / Quit`.
+
+Starting from the tray while the Host was hidden opened the real Portal and
+began sharing at 24 ms to the first encoded frame and 161 ms to the first
+fragment. The notification call contained only `Screen sharing started` and
+`Aercast is now sharing.`; it contained no URL or token. The current Appearance
+Portal values were dark color scheme 1, normal contrast, normal motion, and
+accent sRGB `(0.902, 0.176, 0.259)`, matching the rendered dark UI and accent
+focus/selection treatment. Unit checks cover the derived WCAG contrast,
+high-contrast/reduced-motion branches, keyboard focus wrap and scroll reveal,
+and notification visibility boundaries.
+
+**Settings:** real GUI interaction saved `1080p60 / 12 Mbps`, read it back from
+the replace-written JSON, and restored `720p60 / 6 Mbps`. The detected encoder
+choices were Auto, VA-API hardware, and Software (x264). System audio, the three
+default exclusion rules, active-application refresh, loopback address, port,
+optional share base URL, stopped-only warning, and notifications were all
+present. Notifications were toggled off, read back, and restored on. During an
+active share, changing the port draft to 8878 left **Apply Network** disabled
+and the listener on 8877. While stopped, the same control rebound the real
+listener from 8877 to 8878 and back to 8877, with the persisted value following
+each successful bind. A process restart retained 720p60, audio off,
+notifications on, and loopback 8877. Unit checks cover invalid quality/network
+input, failed replace preservation, audio apply-to-current-share restart, and
+the 100-record Viewer bound.
+
+**Viewer workflow:** Zen first reached `3/3` online Viewers with one Aercast
+process and one Portal video input; the visible row reported 2 ms RTT and
+1019 ms playback lag. Host Disconnect moved it to `2/3`; the affected page
+stopped automatic reconnect, displayed `Disconnected by the Host.` and a Retry
+button, then manual Retry returned the same history to `3/3`. Refresh Link with
+three online Viewers required confirmation, cleared history, kept the same
+Portal video input and encoder pipeline, and made a GET from an old Viewer URL
+return `404`.
+
+Chromium then reached `3/3` on the refreshed link; the visible row reported
+2 ms RTT and 576 ms lag. A fourth identity completed a real media request and
+then stopped reading. The bounded fan-out removed it within ten seconds, so the
+Host showed `3/4` while all three Chromium Viewers remained online and the graph
+still contained exactly one Aercast video input. Active-share tray Quit opened
+an in-window confirmation. Cancel preserved the original PID and listener;
+confirmed Quit printed `Stopping Aercast.` and removed the window, Portal,
+media graph, listener, StatusNotifierItem, owned bus name, and process.
+
+The canonical checks passed on the accepted tree: `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, 37 tests passed with five explicit
+environment-dependent ignores, and `git diff --check` passed. These are local
+functional and component observations, not a LAN latency or long-duration load
+claim.
 
 There is no current evidence for a packaged install, GNOME/KDE support, real
 stable Firefox rather than the Zen-family vehicle, official Google Chrome,

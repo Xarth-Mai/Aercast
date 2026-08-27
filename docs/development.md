@@ -7,11 +7,13 @@ does not own homepage copy, visual tokens, or raw test output.
 
 ## Status
 
-Aercast is pre-alpha. Phase 5, desktop productization, is active. Phase 4 is
-complete: current niri runs prove the same-page Zen-first and Chromium-second
-waiting, playback, bounded media recovery, Stop, and later Start lifecycle,
-while a real PipeWire graph proves Communication exclusion and PID-independent
-stable identity without changing the Host's sink routes.
+Aercast is pre-alpha. The planned product phases are complete for the current
+source build on the recorded niri host. Phase 5 qualification proves the fixed
+desktop and tray lifecycle, settings boundaries, Portal-derived appearance,
+notifications, Viewer management, link refresh, and one-encoder three-Viewer
+workflows in Zen first and Chromium second. There is no packaged release; the
+PipeWire 1.6.8 compatibility boundary below still prevents a publishable AUR
+package.
 
 ## Product commitments
 
@@ -244,47 +246,12 @@ exclusions.
   through bounded same-Portal media recovery, Stop, and later Start; real
   PipeWire policy excluded Communication streams across PID changes without
   disturbing local sink routes. [Evidence](verification.md#phase-4-lifecycle)
+- **Phase 5 — 2026-08-27:** The fixed niri desktop product, settings, tray,
+  notifications, Viewer controls, link refresh, and one-encoder three-Viewer
+  workflow completed current-source acceptance in Zen and Chromium.
+  [Evidence](verification.md#phase-5-desktop-productization)
 
 Git history retains the detailed old checklists.
-
-## Phase 5 — desktop productization
-
-### Phase 5 goal
-
-Turn the stable core into the fixed-size niri desktop product described in
-[Product behavior](#product-behavior): daemon window and tray lifecycle, single-instance
-activation, internal settings, Portal-derived accessible dark theme, Viewer
-management and link refresh, quality/network/audio controls, notifications,
-and a real three-or-more-Viewer one-encoder acceptance run. Performance work is
-limited to paths justified by measurement.
-
-### Acceptance
-
-- A real niri run proves the fixed automatically floating window, hide and tray
-  restore, single-instance activation, confirmed active-share Quit, and clean
-  removal of the window, tray item, listener, Portal, and media graph.
-- Real GUI use proves internal quality, encoder, audio exclusion, network, and
-  notification settings persist and obey their documented next-Start,
-  apply-to-current-share, validation, and stopped-only boundaries.
-- Portal-derived dark appearance and the documented keyboard, focus,
-  accessibility, and reduced-motion behavior pass a visual and interactive
-  check on the recorded host.
-- Viewer telemetry, Host disconnect/manual retry, Refresh Link `404` behavior,
-  and the 100-record bound pass their smallest checks and a real Viewer flow.
-- Three or more real Viewers share one encoder, continue after one stalled
-  reader is removed, and cleanly complete the desktop workflow in Zen first and
-  Chromium second.
-- Canonical static checks pass and current evidence replaces every superseded
-  Phase 5 blocker in [verification.md](verification.md).
-
-### Current blockers
-
-- Current real evidence is still required for desktop shell lifecycle,
-  settings boundaries, appearance and accessibility, notifications, Viewer
-  management, explicit link refresh, and final three-or-more-Viewer acceptance.
-- The PipeWire 1.6.8 passive-link opt-in remains a packaging compatibility
-  blocker; Aercast must continue to fail closed and must not edit or reload the
-  daemon-wide setting.
 
 ## Repository non-goals
 
