@@ -569,7 +569,8 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"if (policyMuted === video.muted)".as_slice(),
         b"localStorage.setItem(MUTED_KEY, String(preferredMuted))".as_slice(),
         b"await video.play()".as_slice(),
-        b"end - video.currentTime > 0.35".as_slice(),
+        b"else if (lag > 0.35)".as_slice(),
+        b"video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08)".as_slice(),
         b"seekTo(Math.max(start, end - 0.15))".as_slice(),
         b"video.controls = false;\n    video.src = attempt.source;".as_slice(),
         b"positioned = true;\n          setMutedByPolicy(preferredMuted);\n          video.controls = true;\n          await playAutomatically(attempt);".as_slice(),
@@ -583,6 +584,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"crypto.getRandomValues(new Uint8Array(16))".as_slice(),
         b"localStorage.getItem(\"aercast-viewer-id\")".as_slice(),
         b"new BroadcastChannel(\"aercast-viewer-session\")".as_slice(),
+        b"viewerId = tabId".as_slice(),
         b"data?.type === \"claim\" && data.tabId !== tabId".as_slice(),
         b"Playback transferred to another tab; press Play to resume here.".as_slice(),
         b"\"Aercast-Viewer-ID\": viewerId".as_slice(),
@@ -610,6 +612,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"textContent".as_slice(),
         b"video.src = attempt.source;\n    void playAutomatically(attempt);".as_slice(),
         b"<video playsinline controls>".as_slice(),
+        b"heldSource".as_slice(),
     ] {
         assert!(!html.windows(removed.len()).any(|window| window == removed));
     }

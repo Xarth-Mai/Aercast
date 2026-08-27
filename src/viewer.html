@@ -21,7 +21,6 @@
   let blockedByHost = false;
   let automaticPlay = false;
   let currentAttempt = null;
-  let heldSource = null;
   let permittedSeek = null;
   const setMutedByPolicy = muted => {
     if (video.muted === muted) return;
@@ -65,9 +64,16 @@
   } catch (_) {}
 
   function claimSession() {
+    if (!sessionChannel) {
+      viewerId = tabId;
+      return;
+    }
     try {
-      sessionChannel?.postMessage({ type: "claim", tabId });
-    } catch (_) {}
+      sessionChannel.postMessage({ type: "claim", tabId });
+    } catch (_) {
+      sessionChannel = null;
+      viewerId = tabId;
+    }
   }
 
   function showError(error) {
@@ -196,16 +202,6 @@
     }
   }
 
-  function releaseHeldSource() {
-    if (!heldSource) return;
-    if (video.src === heldSource) {
-      video.removeAttribute("src");
-      video.load();
-    }
-    URL.revokeObjectURL(heldSource);
-    heldSource = null;
-  }
-
   async function stopAttempt(attempt) {
     attempt.controller.abort();
     try {
@@ -213,16 +209,11 @@
       else if (attempt.response?.body) await attempt.response.body.cancel();
     } catch (_) {}
     if (currentAttempt === attempt) currentAttempt = null;
-    if (blockedByHost && video.src === attempt.source) {
-      video.pause();
-      heldSource = attempt.source;
-    } else {
-      if (video.src === attempt.source) {
-        video.removeAttribute("src");
-        video.load();
-      }
-      URL.revokeObjectURL(attempt.source);
+    if (video.src === attempt.source) {
+      video.removeAttribute("src");
+      video.load();
     }
+    URL.revokeObjectURL(attempt.source);
   }
 
   async function nextResponse(attempt) {
