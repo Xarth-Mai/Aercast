@@ -23,8 +23,8 @@ use iced::{
     Element, Length, Task, Theme, clipboard,
     futures::channel::mpsc::{Receiver, Sender, UnboundedSender},
     widget::{
-        button, checkbox, column, container, row, rule, scrollable, space, svg, text, text_input,
-        tooltip,
+        button, checkbox, column, container, row, rule, scrollable, space, stack, svg, text,
+        text_input, tooltip,
     },
     window,
 };
@@ -50,6 +50,10 @@ const INSTANCE_PATH: &str = "/org/aercast/Aercast";
 const VIEWERS_SCROLL_ID: &str = "viewers";
 const SETTINGS_SCROLL_ID: &str = "settings";
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_millis(1_500);
+const BOLD_FONT: iced::Font = iced::Font {
+    weight: iced::font::Weight::Bold,
+    ..iced::Font::DEFAULT
+};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Command {
@@ -65,6 +69,7 @@ enum Command {
 #[derive(Clone, Debug, PartialEq)]
 struct AudioSettings {
     enabled: bool,
+    exclude_communication: bool,
     exclusions: Vec<String>,
 }
 
@@ -189,6 +194,7 @@ enum Message {
     ApplySystemAudio,
     Page(Page),
     SystemAudio(bool),
+    CommunicationAudio(bool),
     AudioExclusion(String, bool),
     DeleteAudioExclusion(String),
     RefreshAudioApplications,
@@ -328,7 +334,7 @@ fn main() -> Result<()> {
     )
     .title("Aercast")
     .settings(iced::Settings {
-        default_text_size: 13.0.into(),
+        default_text_size: 14.0.into(),
         ..iced::Settings::default()
     })
     .theme(|app: &App, _| app.appearance.theme.clone())
@@ -625,6 +631,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::SystemAudio(_)
+        | Message::CommunicationAudio(_)
         | Message::AudioExclusion(..)
         | Message::DeleteAudioExclusion(_)
         | Message::AddAudioExclusion(_)
@@ -632,6 +639,11 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             if app.applying_network => {}
         Message::SystemAudio(system_audio) => {
             save_settings(app, |settings| settings.system_audio = system_audio);
+        }
+        Message::CommunicationAudio(enabled) => {
+            save_settings(app, |settings| {
+                settings.exclude_communication_audio = enabled;
+            });
         }
         Message::AudioExclusion(identity, enabled) => {
             save_settings(app, |settings| {
@@ -914,7 +926,6 @@ fn scan_audio_applications(app: &mut App) -> Task<Message> {
         return Task::none();
     }
     app.audio_scanning = true;
-    app.audio_candidates.clear();
     app.audio_scan_error = None;
     Task::perform(audio::active_applications(), Message::AudioApplications)
 }
@@ -922,6 +933,7 @@ fn scan_audio_applications(app: &mut App) -> Task<Message> {
 fn audio_settings(settings: &settings::Settings) -> AudioSettings {
     AudioSettings {
         enabled: settings.system_audio,
+        exclude_communication: settings.exclude_communication_audio,
         exclusions: settings
             .audio_exclusions
             .iter()
@@ -973,7 +985,7 @@ fn show_window(app: &mut App) -> Task<Message> {
         return window::gain_focus(id);
     }
     let (id, open) = window::open(window::Settings {
-        size: iced::Size::new(700.0, 440.0),
+        size: iced::Size::new(920.0, 520.0),
         resizable: false,
         exit_on_close_request: false,
         ..window::Settings::default()
@@ -982,12 +994,56 @@ fn show_window(app: &mut App) -> Task<Message> {
     open.then(window::gain_focus)
 }
 
-fn view(app: &App, _: window::Id) -> Element<'_, Message> {
-    match app.page {
+fn view(app: &App, id: window::Id) -> Element<'_, Message> {
+    let sidebar = sidebar(app);
+    let content = match app.page {
         Page::Main => share_view(app),
         Page::Viewers => viewers_view(app),
         Page::Settings => settings_view(app),
-    }
+    };
+    let close = tooltip(
+        accessibility::button(
+            centered_button(
+                container(symbolic_icon(include_bytes!(
+                    "../assets/close-symbolic.svg"
+                )))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center(Length::Fill),
+            )
+            .width(appearance::CONTROL_HEIGHT)
+            .padding(0)
+            .style(|_, status| app.appearance.neutral_button(status)),
+            Some(Message::Close(id)),
+            app.appearance.focus_ring(),
+        ),
+        text("Close"),
+        tooltip::Position::Bottom,
+    )
+    .gap(8)
+    .padding(8)
+    .delay(Duration::from_millis(400));
+    let content = stack![
+        content,
+        container(close)
+            .width(Length::Fill)
+            .padding(12)
+            .align_x(iced::alignment::Horizontal::Right),
+    ];
+    row![sidebar, content]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn centered_button<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Button<'a, Message> {
+    button(
+        container(content)
+            .height(Length::Fill)
+            .align_y(iced::alignment::Vertical::Center),
+    )
 }
 
 fn share_view(app: &App) -> Element<'_, Message> {
@@ -1008,47 +1064,49 @@ fn share_view(app: &App) -> Element<'_, Message> {
     };
     let can_start =
         app.phase == Phase::Waiting && !app.applying_network && app.video_error.is_none();
-    let can_end = matches!(app.phase, Phase::Selecting | Phase::Sharing);
     let (share_label, share_message) = match app.phase {
         Phase::Selecting => ("Cancel", Some(Message::End)),
         Phase::Sharing => ("Stop Sharing", Some(Message::End)),
         Phase::Ending => ("Stopping…", None),
         _ => ("Start Sharing", can_start.then_some(Message::Start)),
     };
-    let refresh_confirmation = if app.confirm_refresh
-        && matches!(app.phase, Phase::Waiting | Phase::Sharing)
-    {
-        column![
-            text("Refreshing disconnects every current Viewer."),
-            row![
-                accessibility::button(
-                    button("Cancel").style(|_, status| app.appearance.neutral_button(status)),
-                    Some(Message::CancelRefresh),
-                    focus_ring,
-                ),
-                accessibility::button(
-                    button("Refresh Link").style(|_, status| app.appearance.danger_button(status)),
-                    Some(Message::ConfirmRefresh),
-                    focus_ring,
-                ),
+    let refresh_confirmation =
+        if app.confirm_refresh && matches!(app.phase, Phase::Waiting | Phase::Sharing) {
+            column![
+                text("Refreshing disconnects every current Viewer."),
+                row![
+                    accessibility::button(
+                        centered_button("Cancel")
+                            .style(|_, status| app.appearance.neutral_button(status)),
+                        Some(Message::CancelRefresh),
+                        focus_ring,
+                    ),
+                    accessibility::button(
+                        centered_button("Refresh Link")
+                            .style(|_, status| app.appearance.danger_button(status)),
+                        Some(Message::ConfirmRefresh),
+                        focus_ring,
+                    ),
+                ]
+                .spacing(12),
             ]
-            .spacing(12),
-        ]
-        .spacing(8)
-    } else {
-        column![]
-    };
+            .spacing(8)
+        } else {
+            column![]
+        };
     let quit_confirmation = if app.confirm_quit && app.phase == Phase::Sharing {
         column![
             text("Quit Aercast and stop the active share?"),
             row![
                 accessibility::button(
-                    button("Cancel").style(|_, status| app.appearance.neutral_button(status)),
+                    centered_button("Cancel")
+                        .style(|_, status| app.appearance.neutral_button(status)),
                     Some(Message::CancelQuit),
                     focus_ring,
                 ),
                 accessibility::button(
-                    button("Quit Aercast").style(|_, status| app.appearance.danger_button(status)),
+                    centered_button("Quit Aercast")
+                        .style(|_, status| app.appearance.danger_button(status)),
                     Some(Message::ConfirmQuit),
                     focus_ring,
                 ),
@@ -1062,20 +1120,20 @@ fn share_view(app: &App) -> Element<'_, Message> {
     let status_color = if app.phase == Phase::Sharing {
         app.appearance.theme.extended_palette().primary.strong.color
     } else {
-        app.appearance.muted_text()
+        app.appearance.secondary_text()
     };
-    let status = column![text(status)];
-    let status = if let Some(source) = app.approved_source {
-        status.push(
+    let status_row = column![text(status)];
+    let status_row = if let Some(source) = app.approved_source {
+        status_row.push(
             text(format!("Source: {source}"))
-                .size(12)
-                .color(app.appearance.muted_text()),
+                .size(13)
+                .color(app.appearance.secondary_text()),
         )
     } else {
-        status
+        status_row
     }
     .spacing(4);
-    let status = row![text("●").size(12).color(status_color), status]
+    let status_row = row![text("●").size(13).color(status_color), status_row]
         .spacing(8)
         .align_y(iced::Alignment::Start);
     let share_icon = if matches!(app.phase, Phase::Selecting | Phase::Sharing | Phase::Ending) {
@@ -1085,19 +1143,26 @@ fn share_view(app: &App) -> Element<'_, Message> {
     };
     let mut share_focus = focus_ring;
     share_focus.radius = 16.0.into();
+    let share_status = if share_message.is_some() {
+        button::Status::Active
+    } else {
+        button::Status::Disabled
+    };
+    let share_icon_color = app.appearance.primary_button(share_status).text_color;
     let share_action = accessibility::button(
-        button(
-            row![symbolic_icon(share_icon), text(share_label)]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
+        centered_button(
+            row![
+                symbolic_icon(share_icon).style(move |_, _| svg::Style {
+                    color: Some(share_icon_color)
+                }),
+                text(share_label).font(BOLD_FONT)
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
         )
         .padding([0, 20])
         .style(move |_, status| {
-            let mut style = if can_end {
-                app.appearance.neutral_button(status)
-            } else {
-                app.appearance.primary_button(status)
-            };
+            let mut style = app.appearance.primary_button(status);
             style.border.radius = 16.0.into();
             style
         }),
@@ -1112,12 +1177,12 @@ fn share_view(app: &App) -> Element<'_, Message> {
 
     let details = container(
         column![
-            status,
+            status_row,
             rule::horizontal(if app.appearance.high_contrast { 2 } else { 1 })
                 .style(|_| app.appearance.separator()),
             text("Share link")
-                .size(12)
-                .color(app.appearance.muted_text()),
+                .size(13)
+                .color(app.appearance.secondary_text()),
             row![
                 accessibility::text_input(
                     text_input("Share link will appear here", &app.link)
@@ -1150,12 +1215,14 @@ fn share_view(app: &App) -> Element<'_, Message> {
     )
     .padding(16)
     .width(Length::Fill)
-    .style(|_| app.appearance.boxed_list());
+    .style(|_| app.appearance.card());
 
     container(
         column![
-            navigation(app),
-            text("Share").size(24),
+            text("Share")
+                .size(16)
+                .font(BOLD_FONT)
+                .color(app.appearance.secondary_text()),
             details,
             space().height(Length::Fill),
             row![
@@ -1164,11 +1231,11 @@ fn share_view(app: &App) -> Element<'_, Message> {
                 space().width(Length::Fill),
             ],
             text("Trusted LAN only. Use an external HTTPS reverse proxy elsewhere.")
-                .size(12)
-                .color(app.appearance.muted_text()),
+                .size(13)
+                .color(app.appearance.secondary_text()),
         ]
         .spacing(12)
-        .max_width(652)
+        .max_width(700)
         .height(Length::Fill),
     )
     .padding(24)
@@ -1178,30 +1245,76 @@ fn share_view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn navigation(app: &App) -> Element<'_, Message> {
-    let tab = |page, label| {
+fn sidebar(app: &App) -> Element<'_, Message> {
+    let focus_ring = app.appearance.focus_ring();
+    let online = app.viewers.iter().filter(|viewer| viewer.online()).count();
+    let sidebar_item = |page: Page, label: String| {
+        let selected = app.page == page;
         accessibility::button(
-            button(text(label))
-                .width(Length::Fill)
-                .style(move |_, status| {
-                    if app.page == page {
-                        app.appearance.selected_button(status)
-                    } else {
-                        app.appearance.neutral_button(status)
-                    }
-                }),
+            centered_button(
+                row![
+                    container(space())
+                        .width(2)
+                        .height(18)
+                        .style(move |_| app.appearance.sidebar_indicator(selected)),
+                    text(label).size(14),
+                ]
+                .spacing(10)
+                .align_y(iced::Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding([6, 10])
+            .style(move |_, status| app.appearance.sidebar_item(selected, status)),
             Some(Message::Page(page)),
-            app.appearance.focus_ring(),
+            focus_ring,
         )
     };
-    let online = app.viewers.iter().filter(|viewer| viewer.online()).count();
-    row![
-        tab(Page::Main, "Main".to_owned()),
-        tab(Page::Viewers, format!("Viewers ({online})")),
-        tab(Page::Settings, "Settings".to_owned()),
-    ]
-    .spacing(8)
-    .width(Length::Fill)
+    let status_text = match &app.phase {
+        Phase::Starting => "Starting…",
+        Phase::NetworkError(_) => "Network error",
+        Phase::Waiting => "Ready",
+        Phase::Selecting => "Selecting…",
+        Phase::Sharing => "Sharing",
+        Phase::Ending => "Stopping…",
+        Phase::Error(_) => "Error",
+    };
+    let status_color = if app.phase == Phase::Sharing {
+        app.appearance.theme.extended_palette().primary.strong.color
+    } else {
+        app.appearance.secondary_text()
+    };
+    container(
+        column![
+            text("Aercast")
+                .size(14)
+                .color(app.appearance.secondary_text()),
+            column![
+                sidebar_item(Page::Main, "Share".to_owned()),
+                sidebar_item(Page::Viewers, format!("Viewers ({online})")),
+                sidebar_item(Page::Settings, "Settings".to_owned()),
+            ]
+            .spacing(2),
+            space().height(Length::Fill),
+            row![
+                text("●").size(11).color(status_color),
+                text(status_text)
+                    .size(12)
+                    .color(app.appearance.secondary_text()),
+                space().width(Length::Fill),
+                text(concat!("v", env!("CARGO_PKG_VERSION")))
+                    .size(12)
+                    .color(app.appearance.secondary_text()),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(16)
+        .height(Length::Fill),
+    )
+    .padding([16, 12])
+    .width(appearance::SIDEBAR_WIDTH)
+    .height(Length::Fill)
+    .style(|_| app.appearance.sidebar())
     .into()
 }
 
@@ -1214,10 +1327,15 @@ fn icon_button<'a>(
     let appearance = app.appearance.clone();
     tooltip(
         accessibility::button(
-            button(symbolic_icon(icon))
-                .width(36)
-                .padding(0)
-                .style(move |_, status| appearance.neutral_button(status)),
+            centered_button(
+                container(symbolic_icon(icon).width(14).height(14))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center(Length::Fill),
+            )
+            .width(appearance::CONTROL_HEIGHT)
+            .padding(0)
+            .style(move |_, status| appearance.neutral_button(status)),
             message,
             app.appearance.focus_ring(),
         ),
@@ -1251,7 +1369,7 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
             let state_color = if online {
                 app.appearance.theme.extended_palette().primary.strong.color
             } else {
-                app.appearance.muted_text()
+                app.appearance.secondary_text()
             };
             let (rtt, playback_lag) = viewer.telemetry(now);
             let total_for_ip = *ip_counts.get(&viewer.ip).unwrap_or(&1);
@@ -1274,14 +1392,14 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
                 container(
                     column![
                         row![
-                            text("●").size(12).color(state_color),
-                            text(ip_label).size(13),
+                            text("●").size(13).color(state_color),
+                            text(ip_label).size(14),
                             space().width(Length::Fill),
                             text(if online { "Online" } else { "Offline" })
-                                .size(12)
+                                .size(13)
                                 .color(state_color),
                             accessibility::button(
-                                button("Disconnect")
+                                centered_button("Disconnect")
                                     .style(|_, status| app.appearance.neutral_button(status)),
                                 online.then_some(Message::Disconnect(viewer.key)),
                                 focus_ring,
@@ -1295,8 +1413,8 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
                             format_milliseconds(rtt),
                             format_milliseconds(playback_lag),
                         ))
-                        .size(12)
-                        .color(app.appearance.muted_text()),
+                        .size(13)
+                        .color(app.appearance.secondary_text()),
                     ]
                     .spacing(4),
                 )
@@ -1307,8 +1425,8 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
         viewer_rows.push(
             container(
                 text("No Viewers have connected yet.")
-                    .size(12)
-                    .color(app.appearance.muted_text()),
+                    .size(13)
+                    .color(app.appearance.secondary_text()),
             )
             .padding(16),
         )
@@ -1318,26 +1436,32 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
 
     container(
         column![
-            navigation(app),
             row![
-                text("Viewers").size(24),
+                text("Viewers")
+                    .size(16)
+                    .font(BOLD_FONT)
+                    .color(app.appearance.secondary_text()),
+                container(text(format!("{online}/{} online", app.viewers.len())).size(13))
+                    .padding([4, 8])
+                    .style(|_| app.appearance.metric()),
                 space().width(Length::Fill),
-                text(format!("{online}/{} online", app.viewers.len()))
-                    .size(12)
-                    .color(app.appearance.muted_text()),
             ]
+            .spacing(8)
             .align_y(iced::Alignment::Center),
             container(
                 scrollable(viewer_rows)
                     .id(iced::widget::Id::new(VIEWERS_SCROLL_ID))
+                    .direction(scrollable::Direction::Vertical(
+                        scrollable::Scrollbar::hidden(),
+                    ))
                     .height(Length::Fill),
             )
-            .style(|_| app.appearance.boxed_list())
+            .style(|_| app.appearance.card())
             .height(Length::Fill)
             .width(Length::Fill),
         ]
-        .spacing(16)
-        .max_width(652)
+        .spacing(12)
+        .max_width(700)
         .height(Length::Fill),
     )
     .padding(24)
@@ -1371,7 +1495,7 @@ fn settings_option<'a>(
         label
     };
     accessibility::button(
-        button(text(label))
+        centered_button(text(label))
             .width(Length::Fill)
             .style(move |_, status| {
                 if selected {
@@ -1387,13 +1511,18 @@ fn settings_option<'a>(
 
 fn settings_section<'a>(
     app: &'a App,
+    title: &'a str,
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    container(content)
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_| app.appearance.boxed_list())
-        .into()
+    column![
+        text(title).size(14).color(app.appearance.secondary_text()),
+        container(content)
+            .padding(16)
+            .width(Length::Fill)
+            .style(|_| app.appearance.card()),
+    ]
+    .spacing(8)
+    .into()
 }
 
 fn video_encoder_label(encoder: settings::VideoEncoder) -> &'static str {
@@ -1456,7 +1585,9 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     let custom_quality = column![
         row![
             column![
-                text("Width").size(12).color(app.appearance.muted_text()),
+                text("Width")
+                    .size(13)
+                    .color(app.appearance.secondary_text()),
                 accessibility::text_input(
                     text_input("1280", &app.video_width)
                         .on_input(Message::VideoWidth)
@@ -1467,7 +1598,9 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             .spacing(4)
             .width(Length::Fill),
             column![
-                text("Height").size(12).color(app.appearance.muted_text()),
+                text("Height")
+                    .size(13)
+                    .color(app.appearance.secondary_text()),
                 accessibility::text_input(
                     text_input("720", &app.video_height)
                         .on_input(Message::VideoHeight)
@@ -1482,16 +1615,16 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         row![
             column![
                 text("Frame rate")
-                    .size(12)
-                    .color(app.appearance.muted_text()),
+                    .size(13)
+                    .color(app.appearance.secondary_text()),
                 fps_options.spacing(8),
             ]
             .spacing(4)
             .width(Length::Fill),
             column![
                 text("Bitrate (Mbps)")
-                    .size(12)
-                    .color(app.appearance.muted_text()),
+                    .size(13)
+                    .color(app.appearance.secondary_text()),
                 accessibility::text_input(
                     text_input("Encoder default", &app.video_bitrate)
                         .on_input(Message::VideoBitrate)
@@ -1523,7 +1656,6 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         .spacing(8)
     };
     let quality = column![
-        text("Quality").size(15),
         preset_row(Quality::P720, Quality::P1080),
         preset_row(Quality::P1440, Quality::Custom),
     ]
@@ -1549,11 +1681,11 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         ))
     });
     let quality = quality
-        .push(text("Encoder").size(13))
+        .push(text("Encoder").size(14))
         .push(encoder_options.spacing(8))
         .push(
             accessibility::button(
-                button("Save quality")
+                centered_button("Save quality")
                     .style(|_, status| app.appearance.primary_button(status)),
                 ((video_dirty || app.video_error.is_some()) && !app.applying_network)
                     .then_some(Message::SaveVideo),
@@ -1566,8 +1698,8 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             } else {
                 "Saved quality is used by the next Start."
             })
-            .size(12)
-            .color(app.appearance.muted_text()),
+            .size(13)
+            .color(app.appearance.secondary_text()),
         );
     let quality = if let Some(error) = app
         .video_edit_error
@@ -1576,7 +1708,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     {
         quality.push(
             text(format!("⚠ {error}"))
-                .size(12)
+                .size(13)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         )
@@ -1588,16 +1720,15 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         .audio_exclusions
         .iter()
         .fold(
-            column![
-                row![
-                    text("Communication audio"),
-                    space().width(Length::Fill),
-                    text("Always excluded")
-                        .size(12)
-                        .color(app.appearance.muted_text()),
-                ]
-                .align_y(iced::Alignment::Center)
-            ],
+            column![accessibility::checkbox(
+                checkbox(app.settings.exclude_communication_audio)
+                    .label("Communication audio")
+                    .style(|_, status| app.appearance.checkbox(status)),
+                app.settings.exclude_communication_audio,
+                (!app.applying_network)
+                    .then_some(Message::CommunicationAudio as fn(bool) -> Message),
+                focus_ring,
+            )],
             |rows, exclusion| {
                 let identity = exclusion.identity.clone();
                 let toggle_identity = identity.clone();
@@ -1614,7 +1745,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                             focus_ring,
                         ),
                         accessibility::button(
-                            button("Delete")
+                            centered_button("Delete")
                                 .style(|_, status| app.appearance.neutral_button(status)),
                             (!app.applying_network)
                                 .then_some(Message::DeleteAudioExclusion(identity)),
@@ -1629,10 +1760,10 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         .spacing(8);
     let mut application_rows = column![
         row![
-            text("Add from active applications").size(13),
+            text("Add from active applications").size(14),
             space().width(Length::Fill),
             accessibility::button(
-                button(if app.audio_scanning {
+                centered_button(if app.audio_scanning {
                     "Scanning…"
                 } else {
                     "Refresh"
@@ -1660,15 +1791,15 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                         .width(Length::Fill)
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                     text(&application.identity)
-                        .size(11)
-                        .color(app.appearance.muted_text())
+                        .size(12)
+                        .color(app.appearance.secondary_text())
                         .width(Length::Fill)
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 ]
                 .spacing(4)
                 .width(Length::Fill),
                 accessibility::button(
-                    button("Add").style(|_, status| app.appearance.neutral_button(status)),
+                    centered_button("Add").style(|_, status| app.appearance.neutral_button(status)),
                     (!app.applying_network)
                         .then_some(Message::AddAudioExclusion(application.clone())),
                     focus_ring,
@@ -1681,19 +1812,18 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     if let Some(error) = app.audio_scan_error.as_deref() {
         application_rows = application_rows.push(
             text(format!("⚠ {error}"))
-                .size(12)
+                .size(13)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         );
     } else if !app.audio_scanning && !has_application {
         application_rows = application_rows.push(
             text("No other playback applications are active.")
-                .size(12)
-                .color(app.appearance.muted_text()),
+                .size(13)
+                .color(app.appearance.secondary_text()),
         );
     }
     let audio = column![
-        text("Audio").size(15),
         accessibility::checkbox(
             checkbox(app.settings.system_audio)
                 .label("System audio")
@@ -1702,15 +1832,15 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             (!app.applying_network).then_some(Message::SystemAudio as fn(bool) -> Message),
             focus_ring,
         ),
-        text(hint).size(12).color(app.appearance.muted_text()),
-        text("Excluded applications").size(13),
+        text(hint).size(13).color(app.appearance.secondary_text()),
+        text("Excluded applications").size(14),
         exclusion_rows,
         application_rows,
     ]
     .spacing(12);
     let audio = if sharing && (dirty || applying) {
         audio.push(accessibility::button(
-            button(if applying {
+            centered_button(if applying {
                 "Applying…"
             } else {
                 "Apply to Current Share"
@@ -1723,12 +1853,11 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         audio
     };
     let network = column![
-        text("Network").size(15),
         row![
             column![
                 text("Listen address")
-                    .size(12)
-                    .color(app.appearance.muted_text()),
+                    .size(13)
+                    .color(app.appearance.secondary_text()),
                 accessibility::text_input(
                     text_input("127.0.0.1", &app.network_address)
                         .on_input_maybe((!app.applying_network).then_some(Message::NetworkAddress))
@@ -1739,7 +1868,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             .spacing(4)
             .width(Length::FillPortion(3)),
             column![
-                text("Port").size(12).color(app.appearance.muted_text()),
+                text("Port").size(13).color(app.appearance.secondary_text()),
                 accessibility::text_input(
                     text_input("8877", &app.network_port)
                         .on_input_maybe((!app.applying_network).then_some(Message::NetworkPort))
@@ -1752,8 +1881,8 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         ]
         .spacing(12),
         text("Share base URL (optional)")
-            .size(12)
-            .color(app.appearance.muted_text()),
+            .size(13)
+            .color(app.appearance.secondary_text()),
         accessibility::text_input(
             text_input("https://host:port", &app.share_base_url)
                 .on_input_maybe((!app.applying_network).then_some(Message::ShareBaseUrl))
@@ -1761,7 +1890,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             !app.applying_network,
         ),
         accessibility::button(
-            button(if app.applying_network {
+            centered_button(if app.applying_network {
                 "Applying network…"
             } else {
                 "Apply Network"
@@ -1774,36 +1903,33 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             focus_ring,
         ),
         text("Network changes apply only while stopped.")
-            .size(12)
-            .color(app.appearance.muted_text()),
+            .size(13)
+            .color(app.appearance.secondary_text()),
         text("Changing the listener may leave old waiting pages unable to recover.")
-            .size(12)
-            .color(app.appearance.muted_text()),
+            .size(13)
+            .color(app.appearance.secondary_text()),
     ]
     .spacing(12);
-    let notifications = column![
-        text("Notifications").size(15),
-        accessibility::checkbox(
-            checkbox(app.settings.notifications)
-                .label("Desktop notifications")
-                .style(|_, status| app.appearance.checkbox(status)),
-            app.settings.notifications,
-            (!app.applying_network).then_some(Message::Notifications as fn(bool) -> Message),
-            focus_ring,
-        ),
-    ]
+    let notifications = column![accessibility::checkbox(
+        checkbox(app.settings.notifications)
+            .label("Desktop notifications")
+            .style(|_, status| app.appearance.checkbox(status)),
+        app.settings.notifications,
+        (!app.applying_network).then_some(Message::Notifications as fn(bool) -> Message),
+        focus_ring,
+    ),]
     .spacing(12);
     let sections = column![
-        settings_section(app, quality),
-        settings_section(app, audio),
-        settings_section(app, network),
-        settings_section(app, notifications),
+        settings_section(app, "Quality", quality),
+        settings_section(app, "Audio", audio),
+        settings_section(app, "Network", network),
+        settings_section(app, "Notifications", notifications),
     ]
-    .spacing(16);
+    .spacing(24);
     let body = if let Some(error) = app.settings_error.as_deref() {
         column![
             text(format!("⚠ {error}"))
-                .size(12)
+                .size(13)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             sections,
@@ -1812,19 +1938,24 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     } else {
         column![sections]
     }
-    .max_width(632);
+    .max_width(700);
 
     container(
         column![
-            navigation(app),
-            text("Settings").size(24),
+            text("Settings")
+                .size(16)
+                .font(BOLD_FONT)
+                .color(app.appearance.secondary_text()),
             scrollable(body)
                 .id(iced::widget::Id::new(SETTINGS_SCROLL_ID))
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::hidden(),
+                ))
                 .width(Length::Fill)
                 .height(Length::Fill),
         ]
-        .spacing(16)
-        .max_width(652)
+        .spacing(12)
+        .max_width(700)
         .height(Length::Fill),
     )
     .padding(24)
@@ -1834,7 +1965,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn symbolic_icon(bytes: &'static [u8]) -> iced::widget::Svg<'static> {
+fn symbolic_icon<'a>(bytes: &'static [u8]) -> iced::widget::Svg<'a> {
     svg(svg::Handle::from_memory(bytes))
         .width(16)
         .height(16)
@@ -2484,7 +2615,7 @@ async fn serve_video(
     let outcome: Result<ShareStop> = match pipeline.set_state(gst::State::Playing) {
         Err(error) => Err(error.into()),
         Ok(_) => match audio_exclusions
-            .map(|exclusions| audio::start(audio_source, exclusions))
+            .map(|exclusions| audio::start(audio_source, audio.exclude_communication, exclusions))
             .transpose()
         {
             Err(error) => Err(error.into()),

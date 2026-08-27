@@ -52,6 +52,7 @@ impl From<String> for AudioFailure {
 
 pub fn start(
     appsrc: gst_app::AppSrc,
+    exclude_communication: bool,
     exclusions: Vec<String>,
 ) -> io::Result<(AudioCapture, mpsc::UnboundedReceiver<String>)> {
     let (stop, receiver) = pw::channel::channel();
@@ -60,7 +61,7 @@ pub fn start(
     let thread = thread::Builder::new()
         .name("aercast-audio".to_owned())
         .spawn(move || {
-            let result = run(appsrc, exclusions, receiver);
+            let result = run(appsrc, exclude_communication, exclusions, receiver);
             if let Err(error) = &result {
                 let _ = errors.send(error.message().to_owned());
             }
@@ -369,6 +370,7 @@ struct State {
     core: pw::core::CoreRc,
     registry: pw::registry::RegistryRc,
     stream: pw::stream::StreamRc,
+    exclude_communication: bool,
     exclusions: Vec<String>,
     capture: Option<(pw::node::NodeListener, pw::node::Node)>,
     capture_passive: bool,
@@ -776,7 +778,11 @@ impl State {
         }
         let mut links = Vec::new();
         for (&output_node, playback) in &self.playback {
-            if excluded(&playback.policy, &self.exclusions) {
+            if excluded(
+                &playback.policy,
+                self.exclude_communication,
+                &self.exclusions,
+            ) {
                 continue;
             }
             let Some(identity) = playback.policy.identity.as_deref() else {
@@ -1029,6 +1035,7 @@ fn link_matches(expected: Endpoints, observed: ObservedLink) -> bool {
 
 fn run(
     appsrc: gst_app::AppSrc,
+    exclude_communication: bool,
     exclusions: Vec<String>,
     stop: pw::channel::Receiver<()>,
 ) -> Result<(), AudioFailure> {
@@ -1049,6 +1056,7 @@ fn run(
         core: core.clone(),
         registry: registry.clone(),
         stream: stream.clone(),
+        exclude_communication,
         exclusions,
         capture: None,
         capture_passive: false,
@@ -1409,7 +1417,7 @@ fn playback_policy(props: &spa::utils::dict::DictRef) -> PlaybackPolicy {
 
 fn playback_application(props: &spa::utils::dict::DictRef) -> Option<PlaybackApplication> {
     let policy = playback_policy(props);
-    if excluded(&policy, &[]) {
+    if excluded(&policy, true, &[]) {
         return None;
     }
     let identity = policy.identity?;
@@ -1421,8 +1429,8 @@ fn playback_application(props: &spa::utils::dict::DictRef) -> Option<PlaybackApp
     Some(PlaybackApplication { label, identity })
 }
 
-fn excluded(policy: &PlaybackPolicy, exclusions: &[String]) -> bool {
-    policy.communication
+fn excluded(policy: &PlaybackPolicy, exclude_communication: bool, exclusions: &[String]) -> bool {
+    (exclude_communication && policy.communication)
         || policy.identity.as_deref().is_some_and(|identity| {
             identity == "org.aercast.Aercast"
                 || exclusions.iter().any(|excluded| excluded == identity)

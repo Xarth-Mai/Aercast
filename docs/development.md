@@ -43,9 +43,11 @@ passive-link override.
 
 ### Window, tray, and application lifecycle
 
-- The Host has only a GUI. The main window is fixed at `700×440` logical pixels,
+- The Host has only a GUI. The main window is fixed at `920×520` logical pixels,
   is not resizable, and uses ordinary system decorations. Its fixed size lets
   niri's native heuristic float it without a user window rule.
+- The in-content close button and the compositor close action both hide the
+  window without stopping an active share.
 - iced runs with daemon lifetime. Closing the window always hides it, including
   when no tray watcher exists; it does not stop sharing or exit Aercast.
 - Only one process instance may run. A later launch displays and activates the
@@ -123,7 +125,7 @@ passive-link override.
 | Bitrate | Presets use their listed bitrate; Custom uses the encoder default until manually set; manual range `1–500 Mbps` |
 | Encoder | Auto prefers detected hardware and falls back to software; allow a detected implementation to be selected; never expose codec choice |
 | System audio | One switch, enabled by default; no microphone |
-| Audio exclusions | Communication rule plus enabled defaults for Discord, Vesktop, and Steam Voice; ordinary rules can be toggled, deleted, or added from active PipeWire applications |
+| Audio exclusions | Communication rule is enabled by default and can be toggled but not deleted; enabled defaults for Discord, Vesktop, and Steam Voice can be toggled or deleted, and ordinary rules can be added from active PipeWire applications |
 | Network | Loopback and `8877/TCP` by default; configurable listen address, port, and optional `scheme://host:port` share base URL |
 | Notifications | One switch, enabled by default |
 
@@ -204,9 +206,9 @@ regular PipeWire graph -> allowed playback taps -> audio mixer ----+->
   selected-applications-only mode.
 - Stable application identity is `application.id`, then process binary, then
   application name. PID is diagnostic data only and never affects policy.
-- PipeWire playback nodes with `media.role=Communication` are excluded by the
-  Phase 4 core rule. Phase 5 settings add editable default rules for Discord,
-  Vesktop, and Steam Voice.
+- PipeWire playback nodes with `media.role=Communication` are excluded by
+  default through a permanent, user-toggleable rule. Phase 5 settings add
+  editable default rules for Discord, Vesktop, and Steam Voice.
 - Each allowed stereo playback stream is tapped from its existing output ports
   into an Aercast capture node exported and read back with `node.passive=in`.
   Its input ports inherit that passive mode. Aercast does not request

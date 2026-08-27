@@ -1,3 +1,5 @@
+use std::{env, fs, path::PathBuf};
+
 use ashpd::desktop::settings::{
     ACCENT_COLOR_SCHEME_KEY, APPEARANCE_NAMESPACE, CONTRAST_KEY, Contrast, REDUCED_MOTION_KEY,
     ReducedMotion, Settings as PortalSettings,
@@ -12,15 +14,31 @@ use iced::{
     widget::{button, checkbox, container, rule, text_input},
 };
 
-const WINDOW_BG: Color = iced::color!(0x242424);
-const SURFACE: Color = iced::color!(0x2c2c2c);
-const SURFACE_RAISED: Color = iced::color!(0x343434);
-const BORDER: Color = iced::color!(0x484848);
-const TEXT: Color = iced::color!(0xf6f5f4);
-const TEXT_MUTED: Color = iced::color!(0xc0bfbc);
-const TEXT_DISABLED: Color = iced::color!(0x9a9996);
-const FALLBACK_ACCENT: Color = iced::color!(0xffb4a5);
+// --- Color tokens ---
+
+const BG: Color = iced::color!(0x0B0D10);
+const SURFACE_1: Color = iced::color!(0x11151A);
+const SURFACE_2: Color = iced::color!(0x171C22);
+const SURFACE_3: Color = iced::color!(0x20262E);
+const BORDER: Color = Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 0.07,
+};
+const TEXT: Color = iced::color!(0xF4F6F8);
+const TEXT_SECONDARY: Color = iced::color!(0x929BA7);
+const TEXT_MUTED: Color = iced::color!(0x5C646E);
+const FALLBACK_ACCENT: Color = iced::color!(0x4C9AFF);
+const DANGER: Color = iced::color!(0xE54D4D);
 const DARK_ACCENT_TEXT: Color = iced::color!(0x1e1e1e);
+
+// --- Geometry tokens ---
+
+pub(super) const RADIUS: f32 = 8.0;
+pub(super) const RADIUS_LG: f32 = 10.0;
+pub(super) const CONTROL_HEIGHT: f32 = 34.0;
+pub(super) const SIDEBAR_WIDTH: f32 = 220.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Appearance {
@@ -40,11 +58,11 @@ impl Appearance {
         let accent_bg = accent.unwrap_or(FALLBACK_ACCENT);
         let accent_fg = foreground(accent_bg);
         let accent_standalone = standalone(accent_bg);
-        let accent_subtle = mix(SURFACE, accent_bg, 0.15);
+        let accent_subtle = mix(SURFACE_1, accent_bg, 0.15);
         let theme = Theme::custom_with_fn(
             "Aercast",
             Palette {
-                background: WINDOW_BG,
+                background: BG,
                 text: TEXT,
                 primary: accent_bg,
                 ..Palette::DARK
@@ -73,21 +91,25 @@ impl Appearance {
         }
     }
 
-    pub(super) fn muted_text(&self) -> Color {
-        if self.high_contrast { TEXT } else { TEXT_MUTED }
+    pub(super) fn secondary_text(&self) -> Color {
+        if self.high_contrast {
+            TEXT
+        } else {
+            TEXT_SECONDARY
+        }
     }
 
     pub(super) fn focus_ring(&self) -> Border {
         Border {
             color: self.theme.extended_palette().primary.strong.color,
             width: if self.high_contrast { 3.0 } else { 2.0 },
-            radius: 12.0.into(),
+            radius: RADIUS.into(),
         }
     }
 
     fn border_color(&self, normal: Color) -> Color {
         if self.high_contrast {
-            TEXT_DISABLED
+            TEXT_SECONDARY
         } else {
             normal
         }
@@ -98,9 +120,9 @@ impl Appearance {
         self.button(
             status,
             primary.base.color,
-            mix(primary.base.color, Color::WHITE, 0.06),
+            mix(primary.base.color, Color::WHITE, 0.08),
             primary.base.text,
-            primary.strong.color,
+            primary.base.color,
         )
     }
 
@@ -116,17 +138,16 @@ impl Appearance {
     }
 
     pub(super) fn neutral_button(&self, status: button::Status) -> button::Style {
-        self.button(status, SURFACE, SURFACE_RAISED, TEXT, BORDER)
+        self.button(status, SURFACE_2, SURFACE_3, TEXT, BORDER)
     }
 
     pub(super) fn danger_button(&self, status: button::Status) -> button::Style {
-        let background = Palette::DARK.danger;
         self.button(
             status,
-            background,
-            mix(background, Color::WHITE, 0.06),
-            foreground(background),
-            background,
+            DANGER,
+            mix(DANGER, Color::WHITE, 0.08),
+            foreground(DANGER),
+            DANGER,
         )
     }
 
@@ -140,7 +161,7 @@ impl Appearance {
     ) -> button::Style {
         let (background, text_color, border) = match status {
             button::Status::Hovered | button::Status::Pressed => (hover, foreground(hover), border),
-            button::Status::Disabled => (SURFACE, TEXT_DISABLED, BORDER),
+            button::Status::Disabled => (SURFACE_2, TEXT_MUTED, BORDER),
             button::Status::Active => (background, text, border),
         };
         button::Style {
@@ -149,9 +170,41 @@ impl Appearance {
             border: Border {
                 color: self.border_color(border),
                 width: if self.high_contrast { 2.0 } else { 1.0 },
-                radius: 12.0.into(),
+                radius: RADIUS.into(),
             },
             ..button::Style::default()
+        }
+    }
+
+    pub(super) fn sidebar_item(&self, selected: bool, status: button::Status) -> button::Style {
+        let (bg, fg) = if selected {
+            (SURFACE_2, TEXT)
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => (SURFACE_2, TEXT),
+                _ => (Color::TRANSPARENT, TEXT_SECONDARY),
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: fg,
+            border: Border {
+                radius: RADIUS.into(),
+                ..Border::default()
+            },
+            ..button::Style::default()
+        }
+    }
+
+    pub(super) fn sidebar_indicator(&self, selected: bool) -> container::Style {
+        container::Style {
+            background: selected
+                .then(|| Background::Color(self.theme.extended_palette().primary.strong.color)),
+            border: Border {
+                radius: 1.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
         }
     }
 
@@ -165,9 +218,9 @@ impl Appearance {
         let background = if checked {
             primary.base.color
         } else if hovered {
-            SURFACE_RAISED
+            SURFACE_3
         } else {
-            SURFACE
+            SURFACE_2
         };
         checkbox::Style {
             background: Background::Color(background),
@@ -181,7 +234,7 @@ impl Appearance {
                 width: if self.high_contrast { 2.0 } else { 1.0 },
                 radius: 4.0.into(),
             },
-            text_color: Some(if disabled { TEXT_DISABLED } else { TEXT }),
+            text_color: Some(if disabled { TEXT_MUTED } else { TEXT }),
         }
     }
 
@@ -191,7 +244,7 @@ impl Appearance {
         let disabled = status == text_input::Status::Disabled;
         let focus_ring = self.focus_ring();
         text_input::Style {
-            background: Background::Color(SURFACE),
+            background: Background::Color(SURFACE_2),
             border: Border {
                 color: if focused {
                     focus_ring.color
@@ -205,28 +258,48 @@ impl Appearance {
                 } else {
                     1.0
                 },
-                radius: 12.0.into(),
+                radius: RADIUS.into(),
             },
-            icon: self.muted_text(),
+            icon: self.secondary_text(),
             placeholder: if disabled {
-                TEXT_DISABLED
+                TEXT_MUTED
             } else {
-                self.muted_text()
+                self.secondary_text()
             },
-            value: if disabled { TEXT_DISABLED } else { TEXT },
+            value: if disabled { TEXT_MUTED } else { TEXT },
             selection: primary.weak.color,
         }
     }
 
-    pub(super) fn boxed_list(&self) -> container::Style {
+    pub(super) fn card(&self) -> container::Style {
         container::Style {
-            background: Some(Background::Color(SURFACE)),
+            background: Some(Background::Color(SURFACE_1)),
             text_color: Some(TEXT),
             border: Border {
                 color: self.border_color(BORDER),
                 width: if self.high_contrast { 2.0 } else { 1.0 },
-                radius: 20.0.into(),
+                radius: RADIUS_LG.into(),
             },
+            ..container::Style::default()
+        }
+    }
+
+    pub(super) fn metric(&self) -> container::Style {
+        container::Style {
+            background: Some(Background::Color(SURFACE_2)),
+            text_color: Some(self.secondary_text()),
+            border: Border {
+                radius: RADIUS.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        }
+    }
+
+    pub(super) fn sidebar(&self) -> container::Style {
+        container::Style {
+            background: Some(Background::Color(SURFACE_1)),
+            text_color: Some(TEXT),
             ..container::Style::default()
         }
     }
@@ -251,14 +324,18 @@ pub(super) fn watch(
             .await
             .map_err(|error| error.to_string())?;
         let color = portal.accent_color().await.ok();
-        let mut accent = color.as_ref().and_then(valid_accent);
+        let mut portal_accent = color.as_ref().and_then(valid_accent);
         let mut high_contrast = matches!(portal.contrast().await, Ok(Contrast::High));
         let mut reduced_motion = matches!(
             portal.reduced_motion().await,
             Ok(ReducedMotion::ReducedMotion)
         );
         if updates
-            .send(Appearance::new(accent, high_contrast, reduced_motion))
+            .send(Appearance::new(
+                gtk_accent().or(portal_accent),
+                high_contrast,
+                reduced_motion,
+            ))
             .await
             .is_err()
         {
@@ -270,7 +347,7 @@ pub(super) fn watch(
             }
             match setting.key() {
                 ACCENT_COLOR_SCHEME_KEY => {
-                    accent = setting
+                    portal_accent = setting
                         .value()
                         .try_clone()
                         .ok()
@@ -292,7 +369,11 @@ pub(super) fn watch(
                 _ => continue,
             }
             if updates
-                .send(Appearance::new(accent, high_contrast, reduced_motion))
+                .send(Appearance::new(
+                    gtk_accent().or(portal_accent),
+                    high_contrast,
+                    reduced_motion,
+                ))
                 .await
                 .is_err()
             {
@@ -305,6 +386,45 @@ pub(super) fn watch(
 
 fn valid_accent(color: &ashpd::desktop::Color) -> Option<Color> {
     valid_channels((color.red(), color.green(), color.blue()))
+}
+
+fn gtk_accent() -> Option<Color> {
+    let config = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    let directory = config.join("gtk-4.0");
+    let css = fs::read_to_string(directory.join("gtk.css")).ok()?;
+    css_accent(&css).or_else(|| {
+        css.lines().find_map(|line| {
+            let import = line
+                .trim()
+                .strip_prefix("@import url(\"")?
+                .strip_suffix("\");")?;
+            fs::read_to_string(directory.join(import))
+                .ok()
+                .and_then(|css| css_accent(&css))
+        })
+    })
+}
+
+fn css_accent(css: &str) -> Option<Color> {
+    let hex = css.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("@define-color accent_bg_color")?
+            .trim()
+            .strip_prefix('#')?
+            .strip_suffix(';')
+    })?;
+    (hex.len() == 6)
+        .then(|| u32::from_str_radix(hex, 16).ok())
+        .flatten()
+        .map(|color| {
+            Color::from_rgb8(
+                ((color >> 16) & 0xff) as u8,
+                ((color >> 8) & 0xff) as u8,
+                (color & 0xff) as u8,
+            )
+        })
 }
 
 fn valid_channels((red, green, blue): (f64, f64, f64)) -> Option<Color> {
@@ -330,13 +450,13 @@ fn foreground(background: Color) -> Color {
 }
 
 fn standalone(base: Color) -> Color {
-    if base.relative_contrast(WINDOW_BG) >= 4.5 {
+    if base.relative_contrast(BG) >= 4.5 {
         return base;
     }
     let (mut low, mut high) = (0.0, 1.0);
     for _ in 0..12 {
         let middle = (low + high) / 2.0;
-        if mix(base, Color::WHITE, middle).relative_contrast(WINDOW_BG) >= 4.5 {
+        if mix(base, Color::WHITE, middle).relative_contrast(BG) >= 4.5 {
             high = middle;
         } else {
             low = middle;
@@ -401,11 +521,11 @@ mod tests {
         {
             let appearance = Appearance::new(None, high_contrast, reduced_motion);
             let primary = appearance.theme.extended_palette().primary;
-            assert_eq!(appearance.theme.palette().background, WINDOW_BG);
+            assert_eq!(appearance.theme.palette().background, BG);
             assert_eq!(primary.base.color, FALLBACK_ACCENT);
             assert_eq!(appearance.high_contrast, high_contrast);
             assert_eq!(appearance.reduced_motion, reduced_motion);
-            assert!(primary.strong.color.relative_contrast(WINDOW_BG) >= 4.5);
+            assert!(primary.strong.color.relative_contrast(BG) >= 4.5);
             let selected = appearance.selected_button(button::Status::Active);
             assert_eq!(
                 selected.background,
@@ -417,6 +537,13 @@ mod tests {
             );
             assert!(primary.weak.color.relative_contrast(selected.text_color) >= 4.5);
             assert_eq!(selected.border.width, if high_contrast { 2.0 } else { 1.0 });
+            assert_eq!(
+                appearance
+                    .sidebar_item(true, button::Status::Active)
+                    .text_color,
+                TEXT
+            );
+            assert!(appearance.sidebar_indicator(true).background.is_some());
             assert_eq!(
                 appearance
                     .text_input(text_input::Status::Focused { is_hovered: false })
@@ -436,7 +563,7 @@ mod tests {
         assert!(primary.strong.color.r >= accent.r);
         assert!(primary.strong.color.g >= accent.g);
         assert!(primary.strong.color.b >= accent.b);
-        assert!((primary.weak.color.r - (SURFACE.r * 0.85 + accent.r * 0.15)).abs() < 1e-6);
+        assert!((primary.weak.color.r - (SURFACE_1.r * 0.85 + accent.r * 0.15)).abs() < 1e-6);
         assert_eq!(
             Appearance::new(Some(Color::WHITE), false, false)
                 .theme
@@ -453,7 +580,7 @@ mod tests {
             appearance
                 .neutral_button(button::Status::Hovered)
                 .background,
-            Some(Background::Color(SURFACE_RAISED))
+            Some(Background::Color(SURFACE_3))
         );
         assert_eq!(
             appearance
@@ -462,6 +589,11 @@ mod tests {
                 .color,
             BORDER
         );
+        assert_eq!(
+            css_accent("@define-color accent_bg_color #9ecafc;"),
+            Some(Color::from_rgb8(0x9e, 0xca, 0xfc))
+        );
+        assert_eq!(css_accent("@define-color accent_bg_color @blue_3;"), None);
     }
 
     #[tokio::test]
@@ -481,7 +613,7 @@ mod tests {
         let initial = updates.next().await.unwrap().unwrap();
         assert_eq!(
             initial.theme.extended_palette().primary.base.color,
-            FALLBACK_ACCENT
+            gtk_accent().unwrap_or(FALLBACK_ACCENT)
         );
         assert!(!initial.high_contrast && !initial.reduced_motion);
 
@@ -501,7 +633,7 @@ mod tests {
         let accent = updates.next().await.unwrap().unwrap();
         assert_eq!(
             accent.theme.extended_palette().primary.base.color,
-            Color::from_rgb(0.2, 0.3, 0.4)
+            gtk_accent().unwrap_or(Color::from_rgb(0.2, 0.3, 0.4))
         );
 
         Settings::setting_changed(

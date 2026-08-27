@@ -252,9 +252,16 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.phase, Phase::Waiting);
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
+    let candidate = audio::PlaybackApplication {
+        label: "Player".to_owned(),
+        identity: "org.example.Player".to_owned(),
+    };
+    app.audio_candidates.push(candidate);
     drop(update(&mut app, Message::Page(Page::Settings)));
     assert_eq!(app.page, Page::Settings);
     assert!(app.audio_scanning);
+    assert_eq!(app.audio_candidates.len(), 1);
+    assert_eq!(app.audio_candidates[0].identity, "org.example.Player");
     drop(update(&mut app, Message::AudioApplications(Ok(Vec::new()))));
     assert!(!app.audio_scanning);
     drop(update(&mut app, Message::Page(Page::Viewers)));

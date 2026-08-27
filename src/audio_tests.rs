@@ -153,16 +153,18 @@ fn unsafe_stream_overrides_and_audio_policy_are_checked() {
         *pw::keys::APP_PROCESS_ID => "42",
     };
     let communication = playback_policy(communication_properties.dict());
-    assert!(excluded(&communication, &[]));
+    assert!(excluded(&communication, true, &[]));
+    assert!(!excluded(&communication, false, &[]));
     assert!(playback_application(communication_properties.dict()).is_none());
-    assert!(!excluded(&normal, &["Example Game".to_owned()]));
-    assert!(excluded(&normal, &["org.example.Game".to_owned()]));
-    assert!(!excluded(&normal, &[]));
+    assert!(!excluded(&normal, true, &["Example Game".to_owned()]));
+    assert!(excluded(&normal, true, &["org.example.Game".to_owned()]));
+    assert!(!excluded(&normal, true, &[]));
     assert!(excluded(
         &PlaybackPolicy {
             identity: Some("org.aercast.Aercast".to_owned()),
             communication: false,
         },
+        true,
         &[],
     ));
     assert!(vanished_object(-2));

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) system_audio: bool,
+    pub(crate) exclude_communication_audio: bool,
     pub(crate) audio_exclusions: Vec<AudioExclusion>,
     pub(crate) notifications: bool,
     pub(crate) video: VideoSettings,
@@ -26,6 +27,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             system_audio: true,
+            exclude_communication_audio: true,
             audio_exclusions: default_audio_exclusions(),
             notifications: true,
             video: VideoSettings::default(),
@@ -328,12 +330,14 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let defaults = Settings::load_from(&path).unwrap();
         assert!(defaults.system_audio);
+        assert!(defaults.exclude_communication_audio);
         assert_eq!(defaults.audio_exclusions, default_audio_exclusions());
         assert!(defaults.notifications);
         assert_eq!(defaults.video, VideoSettings::default());
         assert_eq!(defaults.bind().unwrap(), "127.0.0.1:8877".parse().unwrap());
         Settings {
             system_audio: false,
+            exclude_communication_audio: false,
             audio_exclusions: vec![AudioExclusion {
                 label: "Chat".to_owned(),
                 identity: "org.example.Chat".to_owned(),
@@ -355,6 +359,7 @@ mod tests {
         .unwrap();
         let saved = Settings::load_from(&path).unwrap();
         assert!(!saved.system_audio);
+        assert!(!saved.exclude_communication_audio);
         assert_eq!(saved.audio_exclusions[0].identity, "org.example.Chat");
         assert!(!saved.audio_exclusions[0].enabled);
         assert!(!saved.notifications);
@@ -380,6 +385,11 @@ mod tests {
         )
         .unwrap();
         assert!(Settings::load_from(&path).unwrap().notifications);
+        assert!(
+            Settings::load_from(&path)
+                .unwrap()
+                .exclude_communication_audio
+        );
         assert_eq!(
             Settings::load_from(&path).unwrap().audio_exclusions,
             default_audio_exclusions()

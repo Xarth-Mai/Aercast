@@ -15,6 +15,7 @@ use iced::{
 };
 
 use super::Message;
+use super::appearance::CONTROL_HEIGHT;
 
 enum Keys {
     None,
@@ -365,7 +366,10 @@ pub(super) fn button<'a>(
     ring: Border,
 ) -> Element<'a, Message> {
     Control {
-        content: control.height(36).on_press_maybe(message.clone()).into(),
+        content: control
+            .height(CONTROL_HEIGHT)
+            .on_press_maybe(message.clone())
+            .into(),
         keys: message.map_or(Keys::None, Keys::Button),
         ring,
     }
@@ -386,7 +390,7 @@ pub(super) fn checkbox<'a>(
                 .width(Length::Fill)
                 .on_toggle_maybe(on_toggle),
         )
-        .height(36)
+        .height(CONTROL_HEIGHT)
         .align_y(iced::alignment::Vertical::Center)
         .into(),
         keys: message.clone().map_or(Keys::None, Keys::Toggle),
@@ -399,7 +403,7 @@ pub(super) fn text_input<'a>(
     control: TextInput<'a, Message>,
     enabled: bool,
 ) -> Element<'a, Message> {
-    let content = control.size(13).line_height(Pixels(20.0)).padding([8, 12]);
+    let content = control.size(14).line_height(Pixels(20.0)).padding([7, 12]);
     if enabled {
         content.into()
     } else {
