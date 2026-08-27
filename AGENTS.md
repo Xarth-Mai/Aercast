@@ -11,7 +11,7 @@ Aercast maintains exactly four formal project documents. Do not add an
 architecture, roadmap, configuration, or documentation-index file.
 
 | Change | Authoritative document |
-|---|---|
+| --- | --- |
 | Project homepage: what Aercast is, why it exists, current usability, short data flow, support summary, and document links | `README.md` |
 | Product commitment, exact Host/Viewer behavior, settings, security boundary, engineering decision, active Phase, acceptance, risk, non-goal, or next-Phase entry condition | `docs/development.md` |
 | Compatibility, performance, or completion evidence from a real check | `docs/verification.md` |
