@@ -256,8 +256,19 @@
         const range = buffer.buffered.length - 1;
         const start = buffer.buffered.start(range);
         const end = buffer.buffered.end(range);
-        if (!positioned || end - video.currentTime > 0.35) {
+        if (!positioned) {
           seekTo(Math.max(start, end - 0.15));
+          video.playbackRate = 1.0;
+        } else {
+          const lag = end - video.currentTime;
+          if (lag > 2.0) {
+            seekTo(Math.max(start, end - 0.15));
+            video.playbackRate = 1.0;
+          } else if (lag > 0.35) {
+            video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08);
+          } else if (video.playbackRate !== 1.0) {
+            video.playbackRate = 1.0;
+          }
         }
         if (!positioned) {
           positioned = true;

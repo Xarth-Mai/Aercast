@@ -105,8 +105,10 @@ passive-link override.
   unmuted playback and retries muted when autoplay policy rejects sound. A
   user-selected native muted state is remembered locally, while that policy
   fallback is not stored as preference. Manual timeline seeking returns to the
-  live edge. Playback more than 350 ms behind the latest buffered media returns
-  to 150 ms behind that live edge. Automatic reconnect continues until the share
+  live edge. Playback between 350 ms and 2 s behind the latest buffered media
+  catches up by gradually increasing playback rate (up to 1.15×); playback more
+  than 2 s behind seeks to 150 ms behind the live edge. Automatic reconnect
+  continues until the share
   ends or the Host disconnects the Viewer.
   Connection and media diagnostics remain only in the console and document
   state attributes.
