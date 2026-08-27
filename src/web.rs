@@ -486,17 +486,6 @@ impl ViewerGeneration {
         Ok(())
     }
 
-    fn unblock(&self, id: [u8; 16]) -> io::Result<()> {
-        let mut state = lock(&self.inner)?;
-        if *self.revoked.borrow() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
-        }
-        if let Some(record) = state.records.iter_mut().find(|record| record.id == id) {
-            record.blocked = false;
-        }
-        Ok(())
-    }
-
     fn update_telemetry(&self, id: [u8; 16], telemetry: Telemetry, now: Instant) -> io::Result<()> {
         let mut state = lock(&self.inner)?;
         if *self.revoked.borrow() {
@@ -634,7 +623,6 @@ pub(crate) async fn serve(
             .route("/assets/aercast-icon.png", get(viewer_icon))
             .route("/s/{token}", get(viewer_page))
             .route("/s/{token}/stream", get(media_stream).head(media_head))
-            .route("/s/{token}/retry", post(viewer_retry))
             .route("/s/{token}/telemetry", post(viewer_telemetry))
             .with_state(host)
             .into_make_service_with_connect_info::<SocketAddr>(),
@@ -751,28 +739,6 @@ async fn media_head(Path(token): Path<String>, State(host): State<Host>) -> Stat
         Ok(Access::Invalid) => StatusCode::NOT_FOUND,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         Ok(Access::Waiting(_) | Access::Sharing(..)) => StatusCode::METHOD_NOT_ALLOWED,
-    }
-}
-
-async fn viewer_retry(
-    Path(token): Path<String>,
-    State(host): State<Host>,
-    headers: HeaderMap,
-) -> Response {
-    let (access, id) = match identified_access(&host, &token, &headers) {
-        Ok(access) => access,
-        Err(status) => return status.into_response(),
-    };
-    let viewers = match access {
-        Access::Waiting(viewers) | Access::Sharing(_, viewers) => viewers,
-        Access::Invalid => unreachable!("invalid access returned above"),
-    };
-    match viewers.unblock(id) {
-        Ok(()) => no_content(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            StatusCode::NOT_FOUND.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 

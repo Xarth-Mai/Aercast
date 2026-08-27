@@ -19,7 +19,6 @@
   let policyMuted = null;
   let running = true;
   let blockedByHost = false;
-  let retrying = false;
   let automaticPlay = false;
   let currentAttempt = null;
   let heldSource = null;
@@ -293,7 +292,7 @@
           running = false;
           blockedByHost = true;
           document.body.dataset.state = "blocked";
-          console.warn("Disconnected by the Host; use the native Play control to retry.");
+          console.warn("Disconnected by the Host.");
           return;
         }
         if (!response.ok || !response.body) {
@@ -329,47 +328,12 @@
     }
   }
 
-  async function retryBlocked() {
-    if (!blockedByHost || retrying) return;
-    retrying = true;
-    document.body.dataset.state = "retrying";
-    delete document.body.dataset.error;
-    try {
-      const response = await fetch(`${location.pathname}/retry`, {
-        method: "POST",
-        cache: "no-store",
-        headers: { "Aercast-Viewer-ID": viewerId }
-      });
-      if (response.status === 404) {
-        blockedByHost = false;
-        document.body.dataset.state = "ended";
-        console.warn("This share has ended or the link is invalid.");
-        releaseHeldSource();
-        return;
-      }
-      if (!response.ok) throw new Error(`Retry failed: HTTP ${response.status}`);
-      blockedByHost = false;
-      releaseHeldSource();
-      running = true;
-      void connect(beginAttempt());
-    } catch (error) {
-      showError(error);
-    } finally {
-      retrying = false;
-    }
-  }
-
   video.addEventListener("playing", () => {
     document.body.dataset.state = "playing";
     delete document.body.dataset.error;
   });
   video.addEventListener("play", () => {
-    if (automaticPlay || retrying) return;
-    if (blockedByHost) {
-      video.pause();
-      void retryBlocked();
-      return;
-    }
+    if (automaticPlay || blockedByHost) return;
     if (!running) {
       video.pause();
       running = true;

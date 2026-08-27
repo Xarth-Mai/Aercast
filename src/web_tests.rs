@@ -44,14 +44,6 @@ async fn request(host: &Host, token: &str, headers: HeaderMap, ip: Ipv4Addr) -> 
     .await
 }
 
-async fn retry(host: &Host, token: &str, id: u8) -> Response {
-    retry_request(host, token, viewer_headers(id)).await
-}
-
-async fn retry_request(host: &Host, token: &str, headers: HeaderMap) -> Response {
-    viewer_retry(Path(token.to_owned()), State(host.clone()), headers).await
-}
-
 async fn telemetry_request(
     host: &Host,
     token: &str,
@@ -584,7 +576,6 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"setMutedByPolicy(true)".as_slice(),
         b"void connect(beginAttempt())".as_slice(),
         b"video.addEventListener(\"play\"".as_slice(),
-        b"void retryBlocked()".as_slice(),
         b"video.addEventListener(\"seeking\"".as_slice(),
         b"seekTo(Math.max(start, end - 0.1))".as_slice(),
         b"console.log(\"Viewer media type:\", mime)".as_slice(),
@@ -597,7 +588,6 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"\"Aercast-Viewer-ID\": viewerId".as_slice(),
         b"response.status === 409".as_slice(),
         b"blockedByHost = true".as_slice(),
-        b"fetch(`${location.pathname}/retry`".as_slice(),
         b"fetch(`${location.pathname}/telemetry`".as_slice(),
         b"method: \"POST\"".as_slice(),
         b"await withAbort(delay(2000), signal)".as_slice(),
@@ -767,25 +757,9 @@ async fn refresh_revokes_old_viewers_without_restarting_media() {
 }
 
 #[tokio::test]
-async fn host_disconnect_stays_blocked_until_retry_and_old_keys_do_not_cross_refresh() {
+async fn host_disconnect_permanently_blocks_viewer_and_old_keys_do_not_cross_refresh() {
     let host = Host::new().unwrap();
     let token = host.path().unwrap().trim_start_matches("/s/").to_owned();
-    assert_eq!(
-        retry_request(&host, "invalid", HeaderMap::new())
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        retry_request(&host, &token, HeaderMap::new())
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        retry(&host, &token, 1).await.status(),
-        StatusCode::NO_CONTENT
-    );
     assert!(host.viewers().unwrap().is_empty());
     let session = host.start().unwrap();
     session.set_mime("video/mp4".to_owned()).unwrap();
@@ -797,14 +771,9 @@ async fn host_disconnect_stays_blocked_until_retry_and_old_keys_do_not_cross_ref
     let response = stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await;
     let mut blocked_body = response.into_body().into_data_stream();
     assert_eq!(blocked_body.next().await.unwrap().unwrap(), init);
-    assert_eq!(
-        retry(&host, &token, 1).await.status(),
-        StatusCode::NO_CONTENT
-    );
     let old_key = host.viewers().unwrap()[0].key;
     host.disconnect_viewer(old_key).unwrap();
     assert!(blocked_body.next().await.is_none());
-    let blocked_duration = host.viewers().unwrap()[0].duration;
 
     let mut other_bodies = Vec::new();
     for id in 2..=9 {
@@ -837,24 +806,14 @@ async fn host_disconnect_stays_blocked_until_retry_and_old_keys_do_not_cross_ref
     );
     host.stop(&unready).unwrap();
 
-    let response = retry(&host, &token, 1).await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-    assert_eq!(
-        stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await.status(),
-        StatusCode::TOO_EARLY
-    );
-
     let next = host.start().unwrap();
     next.set_mime("video/mp4".to_owned()).unwrap();
     next.publish(&init).unwrap();
     next.publish(&keyframe).unwrap();
-    let response = stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let viewer = host.viewers().unwrap().remove(0);
-    assert_eq!(viewer.key, old_key);
-    assert_eq!(viewer.duration, blocked_duration);
-    let mut old_body = response.into_body().into_data_stream();
+    assert_eq!(
+        stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await.status(),
+        StatusCode::CONFLICT
+    );
 
     let new_token = host
         .refresh(true)
@@ -862,11 +821,6 @@ async fn host_disconnect_stays_blocked_until_retry_and_old_keys_do_not_cross_ref
         .unwrap()
         .trim_start_matches("/s/")
         .to_owned();
-    assert_eq!(
-        retry(&host, &token, 1).await.status(),
-        StatusCode::NOT_FOUND
-    );
-    assert!(old_body.next().await.is_none());
     let response = stream(&host, &new_token, 1, Ipv4Addr::LOCALHOST).await;
     assert_eq!(response.status(), StatusCode::OK);
     let new_key = host.viewers().unwrap()[0].key;

@@ -93,10 +93,10 @@ passive-link override.
   written to ordinary logs.
 - A random browser-scoped Viewer ID merges automatic reconnects into one record.
   Opening or resuming playback in another tab of the same browser takes over the
-  active session. Host-disconnected pages stop automatic reconnect but expose manual
-  retry.
-- A Host disconnect remains in force through Stop, Later Start, and media-only
-  recovery until that page retries; Refresh Link clears it with Viewer history.
+  active session.
+- A Host disconnect permanently blocks that Viewer from reconnecting through
+  Stop, later Start, and media recoveries; Refresh Link and process exit clear it
+  with Viewer history.
 - Connection duration accumulates across reconnects of that browser from the Host's
   monotonic clock and freezes while its record is offline.
 - The Viewer fills the browser viewport with one square-cornered, `contain`-fit
@@ -106,8 +106,8 @@ passive-link override.
   user-selected native muted state is remembered locally, while that policy
   fallback is not stored as preference. Manual timeline seeking returns to the
   live edge. Playback more than 350 ms behind the latest buffered media returns
-  to 150 ms behind that live edge. Automatic reconnect continues except after a
-  Host disconnect, when the native Play action performs the explicit retry.
+  to 150 ms behind that live edge. Automatic reconnect continues until the share
+  ends or the Host disconnects the Viewer.
   Connection and media diagnostics remain only in the console and document
   state attributes.
 
