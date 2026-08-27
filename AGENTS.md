@@ -68,6 +68,9 @@ current failure reason in `docs/verification.md`.
 
 ## Before every commit
 
+Commit message must use conventional format: `type(scope): subject` (example:
+`docs(agents): allow agent Portal authorization confirmation via permissions`).
+
 1. Stage only the intended changes.
 2. Run `ponytail-review` against `git diff --cached`.
 3. Resolve every valid `delete`, `stdlib`, `native`, `yagni`, and `shrink`
