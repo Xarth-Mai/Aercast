@@ -7,13 +7,11 @@ does not own homepage copy, visual tokens, or raw test output.
 
 ## Status
 
-Aercast is pre-alpha. Phase 4, single-Viewer core stability, is active. The
-recorded pre-Phase-4 niri baseline proves Portal capture, selective PipeWire
-audio, H.264/AAC fMP4 playback, bounded one-encoder fan-out, and a basic iced
-window. Unit coverage now separates process-token ownership from
-replaceable media state and applies Communication-role audio policy. The code
-now bounds media recovery without reclassifying a reported audio failure as a
-cleanup failure; real browser recovery remains unverified.
+Aercast is pre-alpha. Phase 5, desktop productization, is active. Phase 4 is
+complete: current niri runs prove the same-page Zen-first and Chromium-second
+waiting, playback, bounded media recovery, Stop, and later Start lifecycle,
+while a real PipeWire graph proves Communication exclusion and PID-independent
+stable identity without changing the Host's sink routes.
 
 ## Product commitments
 
@@ -242,68 +240,12 @@ exclusions.
 - **Phase 3 — 2026-08-26:** Dynamic identity rematching, safe selective stereo
   audio, AAC-LC muxing, and live browser playback were proven on the recorded
   host. [Evidence](verification.md#selective-audio)
+- **Phase 4 — 2026-08-27:** Zen and Chromium completed the same-link lifecycle
+  through bounded same-Portal media recovery, Stop, and later Start; real
+  PipeWire policy excluded Communication streams across PID changes without
+  disturbing local sink routes. [Evidence](verification.md#phase-4-lifecycle)
 
 Git history retains the detailed old checklists.
-
-## Phase 4 — single-Viewer core stability
-
-### Phase 4 goal
-
-Finish the stable media and link lifecycle before adding desktop-shell and
-settings surface area:
-
-- Zen first and Chromium second must play one live Viewer through waiting,
-  playback, stream restart, Stop, and later Start states without a page reload.
-- Stop closes media and the Portal session, then the same token returns to the
-  waiting state. Only explicit refresh or process exit invalidates the link.
-- A media-only failure while its Portal session remains open restarts the
-  capture/audio/encode/mux attempt at most three times. Every attempt keeps the
-  token and replaces the media cache so the Viewer reconnects cleanly.
-- Portal closure, explicit Stop, explicit Quit, HTTP-server failure, or three
-  failed recoveries ends the retry loop. Cleanup runs once at the owning layer.
-- Selective audio follows stable identity and the PipeWire Communication role;
-  PID never selects or persists a rule.
-
-### Acceptance
-
-- Unit checks prove Stop preserves the token, closes the old body, returns the
-  stream to `425`, and lets the same token enter a later media session.
-- One retry-policy check proves exactly three retry attempts and proves that
-  Stop, Quit, Portal closure, and Host/server failures are not retried.
-- An audio-stop check proves a reported media failure remains retryable while
-  an unreported cleanup failure remains terminal.
-- Audio checks prove identity precedence, Communication exclusion, and the
-  irrelevance of a changed process ID.
-- A real niri Portal run in Zen, then Chromium, proves initial waiting,
-  playback, automatic recovery from an induced media-only failure, Stop to
-  waiting on the same URL, and playback after a later Start.
-- `cargo fmt --check` and `cargo test` pass; evidence replaces the superseded
-  lifecycle record in [verification.md](verification.md).
-
-### Current blockers
-
-- Stop token continuity and the three-recovery policy have unit coverage;
-  same-Portal-session recovery still needs real Zen and Chromium evidence.
-- Communication-role exclusion is unit-covered with PID-independent stable
-  identity, but still needs real PipeWire evidence.
-
-### Risks
-
-- Each recovery opens a fresh restricted PipeWire remote; repeated access to
-  the same Portal session must be verified on the real compositor.
-- PipeWire 1.6.8 removes client-supplied `link.passive=true` unless the Host has
-  deliberately enabled passive client links in its link factory. Aercast must
-  fail closed and must never write or reload that daemon-wide setting.
-- Browser MSE may expose a recovery failure that component tests cannot model;
-  real Zen and Chromium playback are required.
-
-### Non-goals for Phase 4
-
-- daemon window hiding, tray, single-instance activation, settings, theming,
-  notifications, Viewer history/telemetry/kick, and link-refresh UI
-- multi-Viewer product acceptance, network rebinding, quality selection,
-  hardware encoding, DMA-BUF optimization, or performance claims
-- release packaging, GNOME/KDE validation, or public-network deployment
 
 ## Phase 5 — desktop productization
 
@@ -316,10 +258,33 @@ management and link refresh, quality/network/audio controls, notifications,
 and a real three-or-more-Viewer one-encoder acceptance run. Performance work is
 limited to paths justified by measurement.
 
-### Entry condition
+### Acceptance
 
-Phase 5 starts only after every Phase 4 acceptance item has current niri, Zen,
-and Chromium evidence and no open token, recovery, or audio-safety blocker.
+- A real niri run proves the fixed automatically floating window, hide and tray
+  restore, single-instance activation, confirmed active-share Quit, and clean
+  removal of the window, tray item, listener, Portal, and media graph.
+- Real GUI use proves internal quality, encoder, audio exclusion, network, and
+  notification settings persist and obey their documented next-Start,
+  apply-to-current-share, validation, and stopped-only boundaries.
+- Portal-derived dark appearance and the documented keyboard, focus,
+  accessibility, and reduced-motion behavior pass a visual and interactive
+  check on the recorded host.
+- Viewer telemetry, Host disconnect/manual retry, Refresh Link `404` behavior,
+  and the 100-record bound pass their smallest checks and a real Viewer flow.
+- Three or more real Viewers share one encoder, continue after one stalled
+  reader is removed, and cleanly complete the desktop workflow in Zen first and
+  Chromium second.
+- Canonical static checks pass and current evidence replaces every superseded
+  Phase 5 blocker in [verification.md](verification.md).
+
+### Current blockers
+
+- Current real evidence is still required for desktop shell lifecycle,
+  settings boundaries, appearance and accessibility, notifications, Viewer
+  management, explicit link refresh, and final three-or-more-Viewer acceptance.
+- The PipeWire 1.6.8 passive-link opt-in remains a packaging compatibility
+  blocker; Aercast must continue to fail closed and must not edit or reload the
+  daemon-wide setting.
 
 ## Repository non-goals
 

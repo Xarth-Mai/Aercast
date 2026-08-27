@@ -124,32 +124,43 @@ not assumed to be MP4 box boundaries.
 
 ## Selective audio
 
-**Scenario:** two low-volume 48 kHz stereo playback streams represented Game
-at 440 Hz and Discord at 880 Hz. Both retained active links to sink 59 while
-Aercast used exact passive capture links. Discord and the Host-local Zen
-identity were excluded; the integrated Portal stream played in Zen.
+**Current policy run:** revision `e54f1b2`, 2026-08-27. Two real 48 kHz stereo
+PipeWire playback streams were started at zero stream volume before Aercast:
 
-**Result:**
+```sh
+pw-cat --playback --raw --rate 48000 --channels 2 --format s16 --volume 0 \
+  --media-role Music \
+  -P '{ application.id = "org.aercast.AllowedTest" application.name = "Aercast Allowed Test" node.name = "aercast-test-allowed" }' \
+  /dev/zero
+pw-cat --playback --raw --rate 48000 --channels 2 --format s16 --volume 0 \
+  --media-role Communication \
+  -P '{ application.id = "org.aercast.CommunicationTest" application.name = "Aercast Communication Test" node.name = "aercast-test-communication" }' \
+  /dev/zero
+env XDG_CONFIG_HOME=/tmp/aercast-audio-smoke cargo run
+```
 
-- The sink volume remained `0.46` during the isolated observation and both
-  applications retained their local stereo routes.
-- Captured PCM measured peak `0.001`, RMS `0.000707107`, a 440 Hz magnitude near
-  `24`, and only numerical-noise 880 Hz magnitude near `5.1e-16`.
-- The browser analyser measured the allowed 440 Hz bin at `-87.68 dB` and the
-  excluded 880 Hz bin at `-180.41 dB`, about `92.7 dB` apart. H.264/AAC playback
-  advanced 2.528 seconds without a media error.
-- Removing one Game speaker channel removed Aercast's Game capture links while
-  Discord kept the sink active. Restoring the full stereo route resumed Game
-  capture.
-- Restarting Game with the same `application.id` and different PID/node/port
-  IDs rematched it without restarting Aercast.
-- Cleanup left no Aercast or test link in the graph; PipeWire, PipeWire Pulse,
-  and WirePlumber remained active.
+The default settings enabled system audio. A real Portal share reported
+`Selective audio active: 1 playback stream(s), 2 verified passive links.` The
+Music node had two `link.passive=true`, active links to
+`aercast-selective-audio`; the Communication node had none. Both nodes retained
+their two non-passive, active links to the same local USB sink. The four
+pre-existing sink link IDs were unchanged when Aercast first activated.
 
-This is routing and signal evidence, not a human listening result or an A/V
-synchronization measurement. The synthetic source-creation commands were not
-retained, so this historical manual evidence is not independently reproducible
-and must be replaced by the current-HEAD Phase 4 run.
+Restarting the Music process changed its PipeWire client PID from `496082` to
+`497883` while retaining `application.id=org.aercast.AllowedTest`; Aercast
+rematched it and again reported one stream and two verified passive links.
+Restarting Communication changed its PID from `496138` to `498251` while
+retaining its stable identity and role; it still had only its two active sink
+links and no Aercast link. The default sink remained `0.49 [MUTED]`. Normal Stop
+and process cleanup left no Aercast or test node, link, listener, or process.
+
+This current run proves real graph policy, PID-independent identity rematching,
+Communication exclusion, passive-link verification, and preservation of the
+Host's local route. Because both test streams were silent, it is not a new
+signal-level or human-listening measurement. The latest signal-level baseline
+remains the recorded Phase 3 run: an allowed 440 Hz source survived capture and
+AAC playback while an excluded 880 Hz source measured about 92.7 dB lower in
+the browser analyser.
 
 ### PipeWire 1.6.8 prerequisite
 
@@ -159,37 +170,64 @@ factory has deliberately enabled passive client links with
 setting. It fails closed when exact passive readback, active local sink routes,
 expected endpoints, active status, and real data are not all present.
 
-This prerequisite remains a packaging and compatibility blocker. No evidence
-yet covers the requested automatic `media.role=Communication` exclusion.
+This prerequisite remains a packaging and compatibility blocker. The current
+run proves automatic `media.role=Communication` exclusion only with this
+deliberate host opt-in present.
 
-## Current lifecycle evidence and blockers
+## Phase 4 lifecycle
 
-The 2026-08-26 real niri run proved that revision `ffc70b5` could provide a
-waiting page, start a Portal share, survive two Start/Cancel cycles, serve one
-and three Viewers, isolate a stalled response, and cleanly remove its Portal
-session, media pipeline, audio graph objects, listener, and process.
+**Revision:** `e54f1b2`, 2026-08-27.
 
-That run also confirmed behavior superseded by the current product contract:
+**Scenario:** real niri Portal monitor capture was exercised in Zen first and
+Chromium second. Each browser used one existing page through waiting, playback,
+media replacement, Stop, and later Start. The Host used an isolated settings
+directory with system audio off for browser lifecycle isolation:
 
-- the mapped window was `560×320`, resizable, and tiled;
-- closing the window exited the process;
-- Stop rotated the token, made the old link `404`, and generated a new waiting
-  link.
+```sh
+env XDG_CONFIG_HOME=/tmp/aercast-real-smoke \
+  NIRI_SOCKET=/run/user/1000/niri.wayland-1.1409.sock \
+  WAYLAND_DISPLAY=wayland-1 DISPLAY=:0 cargo run
+zen-browser --new-window about:blank
+chromium --user-data-dir=/tmp/aercast-chromium-profile \
+  --ozone-platform=wayland --new-window about:blank
+pw-dump | jq '.[] | select(.info.props["node.name"] == "aercast")'
+pw-cli destroy AERCAST_INPUT_NODE_ID
+curl -H "Aercast-Viewer-ID: $VIEWER_ID" \
+  -o /dev/null -w '%{http_code}\n' "$SHARE_URL/stream"
+```
 
-The current Phase 4 therefore remains incomplete until a fresh real run proves:
+**Zen result:** an induced destruction of only Aercast's video input preserved
+Portal source node 92. The same Portal session and page recovered exactly three
+times. Recovery first-frame timings were 17, 24, and 21 ms; complete fragment
+timings were 158, 159, and 159 ms. Destroying the fourth replacement input
+entered the explicit terminal media error and did not log or create a fourth
+recovery. A separate uninterrupted run used Portal node 97 for initial playback
+(24 ms first frame, 160 ms first fragment), Stop returned the same page to
+waiting, and a later Portal authorization on node 90 resumed playback in that
+unchanged page (25 ms and 161 ms). No reload or navigation occurred between
+those states.
 
-- Stop returns the same token to `425` waiting;
-- a media-only failure recovers automatically on the same Portal session and
-  token, with no more than three retries;
-- Zen first and Chromium second recover in the existing page and play again
-  after a later Start;
-- Communication-role audio is excluded without PID matching.
+**Chromium result:** Portal source node 92 produced initial playback at 23 ms
+and 159 ms. Destroying Aercast input node 82 logged recovery 1/3, kept Portal
+node 92 alive, created replacement input node 99, and resumed the same page at
+21 ms and 159 ms. Stop returned that page to waiting. A request carrying the
+same 64-hex token and existing 32-hex Viewer identity returned `425`; a later
+Portal authorization on node 88 resumed the unchanged page at 20 ms and
+159 ms. Zen's same-token Stop boundary was independently checked with the same
+identity-aware request and also returned `425`.
 
-Phase 5 additionally lacks current evidence for the fixed `700×440` window,
-niri automatic floating, hide and tray restore, single-instance activation,
-fixed dark/accent/accessibility behavior, settings, Viewer telemetry and kick,
-explicit link refresh, notifications, and the final three-or-more-Viewer
-desktop workflow.
+Normal final Stop and process exit removed the Portal source, Aercast media and
+audio nodes, HTTP listener, Host, and browser test processes. These are local
+component startup timings and lifecycle observations, not display-to-display
+or LAN latency measurements.
+
+## Current Phase 5 evidence gaps
+
+Current real evidence is still required for the fixed `700×440` window, niri
+automatic floating, hide and tray restore, single-instance activation, fixed
+dark/accent/accessibility behavior, settings boundaries, Viewer telemetry and
+disconnect/manual retry, explicit link refresh, notifications, and the final
+three-or-more-Viewer desktop workflow.
 
 There is no current evidence for a packaged install, GNOME/KDE support, real
 stable Firefox rather than the Zen-family vehicle, official Google Chrome,
