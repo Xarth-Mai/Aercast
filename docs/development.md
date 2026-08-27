@@ -83,18 +83,21 @@ passive-link override.
   disconnect action. The displayed IP prefers a reverse proxy's `X-Real-IP`,
   then the first `X-Forwarded-For` address, and otherwise uses the TCP peer.
   These headers affect display only; the proxy must replace client-supplied
-  values. Online Viewers sort before offline history.
+  values. When multiple Viewers share the same IP, sequential indices disambiguate
+  them. Online Viewers sort before offline history.
 - The Viewer reports the previous successful telemetry request's round-trip time
   and buffered media end minus playback position every two seconds. Offline
   telemetry, or telemetry at least six seconds old, displays as unavailable.
 - Each token retains at most 100 in-memory Viewer records. Refresh Link and
   process exit clear them. IP addresses and telemetry are never persisted or
   written to ordinary logs.
-- A random tab-scoped Viewer ID merges automatic reconnects into one record.
-  Host-disconnected pages stop automatic reconnect but expose manual retry.
+- A random browser-scoped Viewer ID merges automatic reconnects into one record.
+  Opening or resuming playback in another tab of the same browser takes over the
+  active session. Host-disconnected pages stop automatic reconnect but expose manual
+  retry.
 - A Host disconnect remains in force through Stop, Later Start, and media-only
   recovery until that page retries; Refresh Link clears it with Viewer history.
-- Connection duration accumulates across reconnects of that tab from the Host's
+- Connection duration accumulates across reconnects of that browser from the Host's
   monotonic clock and freezes while its record is offline.
 - The Viewer fills the browser viewport with one square-cornered, `contain`-fit
   video and only the browser's native playback, volume, and fullscreen controls;

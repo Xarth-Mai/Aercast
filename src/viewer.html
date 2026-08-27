@@ -39,26 +39,36 @@
   ).join("");
   let viewerId = createViewerId();
   try {
-    const stored = sessionStorage.getItem("aercast-viewer-id");
+    const stored = localStorage.getItem("aercast-viewer-id");
     if (/^[0-9a-f]{32}$/.test(stored ?? "")) viewerId = stored;
-    else sessionStorage.setItem("aercast-viewer-id", viewerId);
-    const nonce = createViewerId();
-    const channel = new BroadcastChannel("aercast-viewer-id");
-    const probe = () => channel.postMessage({ type: "probe", id: viewerId, nonce });
-    channel.onmessage = ({ data }) => {
-      if (data?.id !== viewerId) return;
-      if (data.type === "probe" && data.nonce !== nonce) {
-        channel.postMessage({ type: "owned", id: viewerId, nonce: data.nonce });
-      } else if (data.type === "owned" && data.nonce === nonce) {
-        viewerId = createViewerId();
-        try { sessionStorage.setItem("aercast-viewer-id", viewerId); } catch (_) {}
-        currentAttempt?.controller.abort(new Error("Viewer identity changed"));
-        probe();
-      }
-    };
-    probe();
+    else localStorage.setItem("aercast-viewer-id", viewerId);
   } catch (_) {
     viewerId = createViewerId();
+  }
+
+  const tabId = createViewerId();
+  let sessionChannel = null;
+  try {
+    sessionChannel = new BroadcastChannel("aercast-viewer-session");
+    sessionChannel.onmessage = ({ data }) => {
+      if (data?.type === "claim" && data.tabId !== tabId) {
+        if (running) {
+          running = false;
+          document.body.dataset.state = "inactive";
+          video.pause();
+          if (currentAttempt) {
+            void stopAttempt(currentAttempt);
+          }
+          console.info("Playback transferred to another tab; press Play to resume here.");
+        }
+      }
+    };
+  } catch (_) {}
+
+  function claimSession() {
+    try {
+      sessionChannel?.postMessage({ type: "claim", tabId });
+    } catch (_) {}
   }
 
   function showError(error) {
@@ -262,6 +272,7 @@
   }
 
   async function connect(attempt) {
+    claimSession();
     while (running) {
       document.body.dataset.state = "connecting";
       delete document.body.dataset.error;
@@ -353,9 +364,17 @@
     delete document.body.dataset.error;
   });
   video.addEventListener("play", () => {
-    if (!blockedByHost || automaticPlay || retrying) return;
-    video.pause();
-    void retryBlocked();
+    if (automaticPlay || retrying) return;
+    if (blockedByHost) {
+      video.pause();
+      void retryBlocked();
+      return;
+    }
+    if (!running) {
+      video.pause();
+      running = true;
+      void connect(beginAttempt());
+    }
   });
   video.addEventListener("volumechange", () => {
     if (policyMuted === video.muted) {

@@ -760,3 +760,74 @@ fn host_video_encoders_are_available() {
     assert_eq!(encoder.property::<u32>("bitrate"), 6_000);
     assert_eq!(encoder.property::<u32>("key-int-max"), 60);
 }
+
+#[test]
+fn viewers_view_disambiguates_identical_ips() {
+    let (notifications, _notification_requests) = iced::futures::channel::mpsc::unbounded();
+    let app = App {
+        phase: Phase::Starting,
+        link: String::new(),
+        viewers: vec![
+            web::Viewer {
+                key: 1,
+                ip: "192.0.2.1".parse().unwrap(),
+                online_since: Some(Instant::now()),
+                duration: Duration::from_secs(10),
+                rtt: None,
+                playback_lag: None,
+                telemetry_at: None,
+            },
+            web::Viewer {
+                key: 2,
+                ip: "192.0.2.1".parse().unwrap(),
+                online_since: None,
+                duration: Duration::from_secs(5),
+                rtt: None,
+                playback_lag: None,
+                telemetry_at: None,
+            },
+            web::Viewer {
+                key: 3,
+                ip: "192.0.2.2".parse().unwrap(),
+                online_since: Some(Instant::now()),
+                duration: Duration::from_secs(20),
+                rtt: None,
+                playback_lag: None,
+                telemetry_at: None,
+            },
+        ],
+        commands: None,
+        window: None,
+        confirm_refresh: false,
+        confirm_quit: false,
+        settings: settings::Settings::default(),
+        page: Page::Viewers,
+        copied_at: None,
+        settings_error: None,
+        audio_candidates: Vec::new(),
+        audio_scanning: false,
+        audio_scan_error: None,
+        video_error: None,
+        video_edit_error: None,
+        video_preset: Quality::P720,
+        video_width: "1280".to_owned(),
+        video_height: "720".to_owned(),
+        video_fps: 60,
+        video_bitrate: "6".to_owned(),
+        video_encoder: settings::VideoEncoder::Auto,
+        appearance: appearance::Appearance::default(),
+        approved_source: None,
+        active_audio: None,
+        applying_audio: None,
+        network_address: "127.0.0.1".to_owned(),
+        network_port: "8877".to_owned(),
+        share_base_url: String::new(),
+        applying_network: false,
+        notifications,
+        tray_updates: None,
+        tray_stopped: true,
+        host_stopped: false,
+        quitting: false,
+    };
+    let _ = viewers_view(&app);
+}

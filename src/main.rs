@@ -1,8 +1,9 @@
 use std::{
     cell::Cell,
+    collections::HashMap,
     future::Future,
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     os::fd::AsRawFd,
     pin::Pin,
     time::{Duration, Instant},
@@ -1233,6 +1234,14 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
     let focus_ring = app.appearance.focus_ring();
     let now = Instant::now();
     let online = app.viewers.iter().filter(|viewer| viewer.online()).count();
+    let ip_counts =
+        app.viewers
+            .iter()
+            .fold(HashMap::<IpAddr, usize>::new(), |mut counts, viewer| {
+                *counts.entry(viewer.ip).or_default() += 1;
+                counts
+            });
+    let mut ip_seen = HashMap::<IpAddr, usize>::new();
     let viewer_rows = app
         .viewers
         .iter()
@@ -1245,6 +1254,14 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
                 app.appearance.muted_text()
             };
             let (rtt, playback_lag) = viewer.telemetry(now);
+            let total_for_ip = *ip_counts.get(&viewer.ip).unwrap_or(&1);
+            let ip_label = if total_for_ip > 1 {
+                let count = ip_seen.entry(viewer.ip).or_insert(0);
+                *count += 1;
+                format!("{} #{}", viewer.ip, *count)
+            } else {
+                viewer.ip.to_string()
+            };
             let rows = if index == 0 {
                 rows
             } else {
@@ -1258,7 +1275,7 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
                     column![
                         row![
                             text("●").size(12).color(state_color),
-                            text(viewer.ip.to_string()).size(13),
+                            text(ip_label).size(13),
                             space().width(Length::Fill),
                             text(if online { "Online" } else { "Offline" })
                                 .size(12)
