@@ -60,7 +60,8 @@ git diff --check
 ```
 
 A real capture smoke starts the GUI with `cargo run`, selects **Start Sharing**,
-and requires an interactive Portal source choice. Never simulate Portal consent.
+and requires an interactive Portal source choice. Never simulate Portal consent;
+Agent may use permissions to confirm Portal authorization popups.
 Use Zen as the local Firefox-family vehicle first, then Chromium. Record only
 the reproducible command, environment, scenario, result, measurement, and
 current failure reason in `docs/verification.md`.
