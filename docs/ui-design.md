@@ -6,11 +6,11 @@ business, development progress, or backend behavior.
 
 ## Visual language
 
-Aercast follows the **Compact GNOME / Dark / System Accent / Native Linux**
+Aercast follows the **Compact GNOME / Dark / Blush Default / Native Linux**
 visual language. It does not attempt to reproduce Libadwaita. It uses the same
-restrained visual language: neutral dark surfaces, rounded controls, symbolic
-icons, clear type hierarchy, boxed lists, and accent color only where it
-communicates focus, selection, status, or the primary action.
+restrained visual language: neutral dark surfaces, generously rounded controls,
+symbolic icons, clear type hierarchy, boxed lists, and accent color only where
+it communicates focus, selection, status, or the primary action.
 
 Use the compositor's ordinary system title bar. Do not draw a custom header
 bar. Do not use gradients, glow, large fields of brand color, glass effects, or
@@ -18,9 +18,10 @@ stacked shadows.
 
 ## Brand image and icons
 
-- `assets/aercast-icon.png` is the canonical application and tray image. Scale
-  it from the supplied RGBA source; do not redraw, recolor, duplicate, or add a
-  second brand asset.
+- `assets/aercast-icon.png` is the canonical application, tray, and Viewer
+  favicon image. Its RGBA source uses a tight square canvas so the visible mark
+  fills the available surface when scaled; do not redraw, recolor, duplicate,
+  or add a second brand asset.
 - UI actions use a bundled minimal symbolic SVG set so behavior does not depend
   on the installed icon theme. Symbolic icons use the current foreground color
   and remain recognizable at the control's rendered size.
@@ -50,7 +51,8 @@ Base neutral tokens:
 1. Read `org.freedesktop.appearance` / `accent-color` as one sRGB `(r, g, b)`
    tuple. Every channel must be finite and within `[0, 1]`; otherwise treat the
    setting as absent.
-2. Use the valid value as `accent-base`, or `#bd425a` when absent.
+2. Use the valid value as `accent-base`, or the blush default `#ffb4a5` when
+   absent.
 3. `accent-bg` equals `accent-base`.
 4. `accent-fg` is whichever of `#ffffff` and `#1e1e1e` has the higher WCAG
    contrast ratio against `accent-bg`. If neither reaches `4.5:1`, use
@@ -69,8 +71,9 @@ addition to color.
 
 - Spacing scale: `4 / 8 / 12 / 16 / 24` logical pixels.
 - Interactive control height: `34–36` logical pixels.
-- Control corner radius: about `8` logical pixels.
-- Grouped surface corner radius: about `12` logical pixels.
+- Control corner radius: about `14` logical pixels.
+- Grouped surface corner radius: about `20` logical pixels.
+- The centered main Share action uses an `18px` pill radius.
 - Borders: one logical pixel normally; never create hierarchy with multiple
   nested outlines.
 - Shadows: at most one subtle compositor-independent shadow for an elevated
@@ -102,14 +105,17 @@ may use tabular figures when the active system font provides them.
   wording appear in confirmation or active destructive state.
 - **Icon button:** square control matching standard height, symbolic icon,
   tooltip, and accessible name.
+- **Top navigation:** three equal-width buttons switch between Main, Viewers,
+  and Settings; the active page uses the accent treatment.
 - **Text input:** `surface`, one-pixel border, two-pixel accent focus ring;
   invalid input adds an icon and message.
 - **Boxed list:** one grouped surface with single separators between rows. Do
   not wrap every row in another card.
 - **Status:** compact text and symbolic icon. Reserve accent for the small
   portion that benefits from emphasis.
-- The Viewer's initial Play action is centered over the video surface. After
-  activation, use the browser's native playback, volume, and fullscreen controls.
+- The Viewer has no custom controls, overlay, or visible status text. Its
+  square-cornered video fills the browser viewport with `contain` fitting and
+  uses only the browser's native playback, volume, and fullscreen controls.
 
 Focus is always visible and uses a ring at least `2px` thick with sufficient
 contrast against both the control and its surrounding surface.

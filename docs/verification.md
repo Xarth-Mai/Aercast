@@ -27,6 +27,14 @@ This baseline proves only the recorded scenarios. It does not qualify current
 HEAD or establish support on another compositor, GPU, encoder, distribution, or
 browser build.
 
+## Current unqualified changes
+
+The post-Phase 5 Host layout, tray and favicon scaling, Viewer-control polish,
+and PipeWire missing-resource recovery have only automated checks. At the
+user's request, no real GUI, Portal, PipeWire graph, Zen, or Chromium acceptance
+was run for these changes. The Phase 5 record below remains the latest valid
+real evidence and does not qualify them.
+
 ## Current idle smoke
 
 **Revision:** `478f129`.

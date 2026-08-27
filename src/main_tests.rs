@@ -181,7 +181,8 @@ fn ui_commands_follow_the_host_lifecycle() {
         confirm_refresh: false,
         confirm_quit: false,
         settings: settings::Settings::default(),
-        settings_open: false,
+        page: Page::Main,
+        copied_at: None,
         settings_error: None,
         audio_candidates: Vec::new(),
         audio_scanning: false,
@@ -251,13 +252,13 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.phase, Phase::Waiting);
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
-    drop(update(&mut app, Message::Settings(true)));
-    assert!(app.settings_open);
+    drop(update(&mut app, Message::Page(Page::Settings)));
+    assert_eq!(app.page, Page::Settings);
     assert!(app.audio_scanning);
     drop(update(&mut app, Message::AudioApplications(Ok(Vec::new()))));
     assert!(!app.audio_scanning);
-    drop(update(&mut app, Message::Settings(false)));
-    assert!(!app.settings_open);
+    drop(update(&mut app, Message::Page(Page::Viewers)));
+    assert_eq!(app.page, Page::Viewers);
 
     app.network_address = "0.0.0.0".to_owned();
     drop(update(&mut app, Message::ApplyNetwork));
@@ -403,6 +404,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert!(!app.confirm_refresh);
     drop(update(&mut app, Message::Host(HostEvent::ConfirmRefresh)));
     assert!(app.confirm_refresh);
+    assert_eq!(app.page, Page::Main);
     drop(update(&mut app, Message::CancelRefresh));
     assert!(!app.confirm_refresh);
     drop(update(&mut app, Message::Host(HostEvent::ConfirmRefresh)));
@@ -447,6 +449,14 @@ fn ui_commands_follow_the_host_lifecycle() {
     ));
     assert_eq!(app.phase, Phase::Waiting);
     assert_eq!(app.link, "http://127.0.0.1/s/token");
+    drop(update(&mut app, Message::Copy));
+    let first_copy = app.copied_at.unwrap();
+    let latest_copy = first_copy + Duration::from_millis(1);
+    app.copied_at = Some(latest_copy);
+    drop(update(&mut app, Message::CopyFeedbackExpired(first_copy)));
+    assert_eq!(app.copied_at, Some(latest_copy));
+    drop(update(&mut app, Message::CopyFeedbackExpired(latest_copy)));
+    assert_eq!(app.copied_at, None);
     assert!(app.approved_source.is_none());
     assert_eq!(app.active_audio, None);
     assert_eq!(app.viewers, offline);
@@ -476,7 +486,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     app.phase = Phase::Sharing;
     app.approved_source = Some("Screen");
     app.viewers = test_viewers(3, true);
-    app.settings_open = true;
+    app.page = Page::Settings;
     assert_eq!(
         update(
             &mut app,
@@ -504,7 +514,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert!(app.confirm_quit);
     assert!(!app.quitting);
     assert!(app.commands.is_some());
-    assert!(!app.settings_open);
+    assert_eq!(app.page, Page::Main);
     drop(update(&mut app, Message::CancelQuit));
     assert!(!app.confirm_quit);
     drop(update(&mut app, Message::Quit));

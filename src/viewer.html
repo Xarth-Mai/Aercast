@@ -2,32 +2,37 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/assets/aercast-icon.png">
 <title>Aercast</title>
 <style>
-  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101114; color: #f4f4f5; }
-  main { width: min(96vw, 1280px); text-align: center; }
-  #player { position: relative; aspect-ratio: 16 / 9; }
-  video { display: block; width: 100%; height: 100%; background: #000; border-radius: 10px; }
-  button { padding: 10px 20px; font: inherit; cursor: pointer; }
-  #play { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
-  #play:disabled { display: none; }
-  #status { color: #a1a1aa; }
+  :root { color-scheme: dark; }
+  html, body, video { width: 100%; height: 100%; }
+  body { margin: 0; overflow: hidden; background: #000; }
+  video { display: block; object-fit: contain; background: #000; }
 </style>
-<main>
-  <div id="player">
-    <video muted playsinline></video>
-    <button id="play" type="button">Play / Enable Audio</button>
-  </div>
-  <p id="status" role="status">Ready to connect.</p>
-</main>
+<video playsinline controls></video>
 <script>
   const video = document.querySelector("video");
-  const button = document.querySelector("#play");
-  const status = document.querySelector("#status");
-  let running = false;
+  const MUTED_KEY = "aercast-viewer-muted";
+  let preferredMuted = false;
+  try { preferredMuted = localStorage.getItem(MUTED_KEY) === "true"; } catch (_) {}
+  let policyMuted = null;
+  let running = true;
   let blockedByHost = false;
+  let retrying = false;
+  let automaticPlay = false;
   let currentAttempt = null;
+  let heldSource = null;
+  let permittedSeek = null;
+  const setMutedByPolicy = muted => {
+    if (video.muted === muted) return;
+    policyMuted = muted;
+    video.muted = muted;
+  };
+  const seekTo = time => {
+    permittedSeek = time;
+    video.currentTime = time;
+  };
   const createViewerId = () => Array.from(
     crypto.getRandomValues(new Uint8Array(16)),
     byte => byte.toString(16).padStart(2, "0")
@@ -57,10 +62,9 @@
   }
 
   function showError(error) {
-    button.disabled = false;
-    status.textContent = error.message;
+    console.error("Viewer error:", error);
     document.body.dataset.state = "error";
-    document.body.dataset.error = error.message;
+    document.body.dataset.error = error.message ?? String(error);
   }
 
   function mutate(buffer, action) {
@@ -157,10 +161,40 @@
     };
     currentAttempt = attempt;
     video.src = attempt.source;
-    void video.play().catch(error => {
-      if (!controller.signal.aborted) showError(error);
-    });
     return attempt;
+  }
+
+  async function playAutomatically(attempt) {
+    automaticPlay = true;
+    setMutedByPolicy(preferredMuted);
+    try {
+      await video.play();
+    } catch (error) {
+      if (attempt.controller.signal.aborted) return;
+      if (!video.muted) {
+        console.info("Unmuted autoplay was blocked; retrying muted.");
+        setMutedByPolicy(true);
+        try {
+          await video.play();
+          return;
+        } catch (mutedError) {
+          error = mutedError;
+        }
+      }
+      showError(error);
+    } finally {
+      automaticPlay = false;
+    }
+  }
+
+  function releaseHeldSource() {
+    if (!heldSource) return;
+    if (video.src === heldSource) {
+      video.removeAttribute("src");
+      video.load();
+    }
+    URL.revokeObjectURL(heldSource);
+    heldSource = null;
   }
 
   async function stopAttempt(attempt) {
@@ -170,11 +204,16 @@
       else if (attempt.response?.body) await attempt.response.body.cancel();
     } catch (_) {}
     if (currentAttempt === attempt) currentAttempt = null;
-    if (video.src === attempt.source) {
-      video.removeAttribute("src");
-      video.load();
+    if (blockedByHost && video.src === attempt.source) {
+      video.pause();
+      heldSource = attempt.source;
+    } else {
+      if (video.src === attempt.source) {
+        video.removeAttribute("src");
+        video.load();
+      }
+      URL.revokeObjectURL(attempt.source);
     }
-    URL.revokeObjectURL(attempt.source);
   }
 
   async function nextResponse(attempt) {
@@ -187,7 +226,6 @@
       if (response.status !== 425) return response;
       if (response.body) await response.body.cancel();
       document.body.dataset.state = "waiting";
-      status.textContent = "Waiting for the Host to start sharing…";
       await delay(500);
     }
     throw new Error("Share stopped");
@@ -205,10 +243,17 @@
       const { done, value } = await withAbort(reader.read(), attempt.controller.signal);
       if (done) break;
       await withAbort(append(buffer, value), attempt.controller.signal);
-      if (!positioned && buffer.buffered.length) {
-        const start = buffer.buffered.start(0);
-        if (video.currentTime < start) video.currentTime = start;
-        positioned = true;
+      if (buffer.buffered.length) {
+        const range = buffer.buffered.length - 1;
+        const start = buffer.buffered.start(range);
+        const end = buffer.buffered.end(range);
+        if (!positioned || end - video.currentTime > 0.35) {
+          seekTo(Math.max(start, end - 0.15));
+        }
+        if (!positioned) {
+          positioned = true;
+          await playAutomatically(attempt);
+        }
       }
     }
     if (attempt.media.readyState === "open" && !buffer.updating) attempt.media.endOfStream();
@@ -218,7 +263,6 @@
     while (running) {
       document.body.dataset.state = "connecting";
       delete document.body.dataset.error;
-      status.textContent = "Connecting…";
       try {
         const response = await nextResponse(attempt);
         attempt.response = response;
@@ -226,9 +270,8 @@
           if (response.body) await response.body.cancel();
           attempt.response = null;
           running = false;
-          button.disabled = true;
-          status.textContent = "This share has ended or the link is invalid.";
           document.body.dataset.state = "ended";
+          console.warn("This share has ended or the link is invalid.");
           return;
         }
         if (response.status === 409) {
@@ -236,10 +279,8 @@
           attempt.response = null;
           running = false;
           blockedByHost = true;
-          button.textContent = "Retry";
-          button.disabled = false;
-          status.textContent = "Disconnected by the Host.";
           document.body.dataset.state = "blocked";
+          console.warn("Disconnected by the Host; use the native Play control to retry.");
           return;
         }
         if (!response.ok || !response.body) {
@@ -248,14 +289,14 @@
         const mime = response.headers.get("content-type");
         if (!mime || !MediaSource.isTypeSupported(mime)) {
           running = false;
-          throw new Error(`Unsupported media type: ${mime ?? "missing"}`);
+          console.error("Unsupported Viewer media type:", mime ?? "missing");
+          throw new Error("This browser cannot play the shared media.");
         }
-        document.body.dataset.mime = mime;
-        status.textContent = mime;
+        console.log("Viewer media type:", mime);
         await consume(attempt, response, mime);
         if (running) {
           document.body.dataset.state = "reconnecting";
-          status.textContent = "Reconnecting… Stream ended";
+          console.warn("Viewer stream ended; reconnecting.");
         }
       } catch (error) {
         const cause = attempt.error ?? error;
@@ -264,7 +305,8 @@
           return;
         }
         document.body.dataset.state = "reconnecting";
-        status.textContent = `Reconnecting… ${cause.message}`;
+        document.body.dataset.error = cause.message;
+        console.warn("Viewer reconnecting:", cause);
       } finally {
         await stopAttempt(attempt);
       }
@@ -274,43 +316,64 @@
     }
   }
 
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    video.controls = true;
-    video.muted = false;
-    if (blockedByHost) {
-      try {
-        const response = await fetch(`${location.pathname}/retry`, {
-          method: "POST",
-          cache: "no-store",
-          headers: { "Aercast-Viewer-ID": viewerId }
-        });
-        if (response.status === 404) {
-          blockedByHost = false;
-          status.textContent = "This share has ended or the link is invalid.";
-          document.body.dataset.state = "ended";
-          return;
-        }
-        if (!response.ok) throw new Error(`Retry failed: HTTP ${response.status}`);
+  async function retryBlocked() {
+    if (!blockedByHost || retrying) return;
+    retrying = true;
+    document.body.dataset.state = "retrying";
+    delete document.body.dataset.error;
+    try {
+      const response = await fetch(`${location.pathname}/retry`, {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Aercast-Viewer-ID": viewerId }
+      });
+      if (response.status === 404) {
         blockedByHost = false;
-        button.textContent = "Play / Enable Audio";
-      } catch (error) {
-        showError(error);
+        document.body.dataset.state = "ended";
+        console.warn("This share has ended or the link is invalid.");
+        releaseHeldSource();
         return;
       }
+      if (!response.ok) throw new Error(`Retry failed: HTTP ${response.status}`);
+      blockedByHost = false;
+      releaseHeldSource();
+      running = true;
+      void connect(beginAttempt());
+    } catch (error) {
+      showError(error);
+    } finally {
+      retrying = false;
     }
-    if (running) {
-      try { await video.play(); } catch (error) { showError(error); }
-      return;
-    }
-    running = true;
-    void connect(beginAttempt());
-  });
+  }
 
   video.addEventListener("playing", () => {
     document.body.dataset.state = "playing";
     delete document.body.dataset.error;
-    status.textContent = document.body.dataset.mime ?? "Playing.";
+  });
+  video.addEventListener("play", () => {
+    if (!blockedByHost || automaticPlay || retrying) return;
+    video.pause();
+    void retryBlocked();
+  });
+  video.addEventListener("volumechange", () => {
+    if (policyMuted === video.muted) {
+      policyMuted = null;
+      return;
+    }
+    policyMuted = null;
+    preferredMuted = video.muted;
+    try { localStorage.setItem(MUTED_KEY, String(preferredMuted)); } catch (_) {}
+  });
+  video.addEventListener("seeking", () => {
+    if (permittedSeek !== null && Math.abs(video.currentTime - permittedSeek) < 0.05) {
+      permittedSeek = null;
+      return;
+    }
+    if (!video.buffered.length) return;
+    const range = video.buffered.length - 1;
+    const start = video.buffered.start(range);
+    const end = video.buffered.end(range);
+    seekTo(Math.max(start, end - 0.1));
   });
   video.addEventListener("error", () => {
     const attempt = currentAttempt;
@@ -318,8 +381,9 @@
     const message = video.error?.message ?? "Video playback failed";
     attempt.error = new Error(message);
     document.body.dataset.error = message;
-    status.textContent = message;
+    console.error("Viewer playback error:", attempt.error);
     attempt.controller.abort(attempt.error);
   });
+  void connect(beginAttempt());
 </script>
 </html>

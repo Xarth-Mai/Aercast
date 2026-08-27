@@ -445,7 +445,7 @@ fn history_caps_at_100_and_evicts_only_the_oldest_offline_record() {
 }
 
 #[tokio::test]
-async fn stream_identity_is_canonical_and_uses_only_the_tcp_peer_ip() {
+async fn stream_identity_is_canonical_and_uses_reverse_proxy_ip() {
     let host = Host::new().unwrap();
     let token = host.path().unwrap().trim_start_matches("/s/").to_owned();
     assert_eq!(
@@ -498,10 +498,29 @@ async fn stream_identity_is_canonical_and_uses_only_the_tcp_peer_ip() {
         .unwrap();
     let actual = Ipv4Addr::new(203, 0, 113, 7);
     let mut headers = viewer_headers(1);
-    headers.insert("x-forwarded-for", "198.51.100.8".parse().unwrap());
+    let forwarded = Ipv4Addr::new(198, 51, 100, 8);
+    headers.insert(
+        "x-forwarded-for",
+        format!("{forwarded}, 192.0.2.1").parse().unwrap(),
+    );
     let response = request(&host, &token, headers, actual).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(host.viewers().unwrap()[0].ip, IpAddr::V4(actual));
+    assert_eq!(host.viewers().unwrap()[0].ip, IpAddr::V4(forwarded));
+
+    let mut headers = viewer_headers(2);
+    let real = Ipv4Addr::new(192, 0, 2, 8);
+    headers.insert("x-real-ip", real.to_string().parse().unwrap());
+    headers.insert("x-forwarded-for", forwarded.to_string().parse().unwrap());
+    assert_eq!(
+        request(&host, &token, headers, actual).await.status(),
+        StatusCode::OK
+    );
+    assert!(
+        host.viewers()
+            .unwrap()
+            .iter()
+            .any(|viewer| viewer.ip == real)
+    );
 }
 
 #[tokio::test]
@@ -535,6 +554,12 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
     assert_eq!(page.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
     assert_eq!(page.headers()["referrer-policy"], "no-referrer");
+    assert!(
+        page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("img-src 'self'")
+    );
     let html = axum::body::to_bytes(page.into_body(), 100_000)
         .await
         .unwrap();
@@ -544,9 +569,25 @@ async fn token_routes_wait_between_isolated_media_sessions() {
             .any(|window| window == token.as_bytes())
     );
     for required in [
-        b"id=\"player\"".as_slice(),
-        b"#play { position: absolute;".as_slice(),
-        b"video.controls = true;".as_slice(),
+        b"href=\"/assets/aercast-icon.png\"".as_slice(),
+        b"html, body, video { width: 100%; height: 100%; }".as_slice(),
+        b"<video playsinline controls></video>".as_slice(),
+        b"localStorage.getItem(MUTED_KEY) === \"true\"".as_slice(),
+        b"video.addEventListener(\"volumechange\"".as_slice(),
+        b"if (policyMuted === video.muted)".as_slice(),
+        b"localStorage.setItem(MUTED_KEY, String(preferredMuted))".as_slice(),
+        b"await video.play()".as_slice(),
+        b"end - video.currentTime > 0.35".as_slice(),
+        b"seekTo(Math.max(start, end - 0.15))".as_slice(),
+        b"positioned = true;\n          await playAutomatically(attempt);".as_slice(),
+        b"setMutedByPolicy(true)".as_slice(),
+        b"void connect(beginAttempt())".as_slice(),
+        b"video.addEventListener(\"play\"".as_slice(),
+        b"void retryBlocked()".as_slice(),
+        b"video.addEventListener(\"seeking\"".as_slice(),
+        b"seekTo(Math.max(start, end - 0.1))".as_slice(),
+        b"console.log(\"Viewer media type:\", mime)".as_slice(),
+        b"console.error(\"Unsupported Viewer media type:\", mime ?? \"missing\")".as_slice(),
         b"crypto.getRandomValues(new Uint8Array(16))".as_slice(),
         b"sessionStorage.getItem(\"aercast-viewer-id\")".as_slice(),
         b"new BroadcastChannel(\"aercast-viewer-id\")".as_slice(),
@@ -561,13 +602,36 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"await withAbort(delay(2000), signal)".as_slice(),
         b"buffer.buffered.end(buffer.buffered.length - 1) - video.currentTime".as_slice(),
         b"performance.now() - started".as_slice(),
-        b"button.textContent = \"Retry\"".as_slice(),
     ] {
         assert!(
             html.windows(required.len())
                 .any(|window| window == required)
         );
     }
+    for removed in [
+        b"border-radius: 10px".as_slice(),
+        b"status.textContent = mime".as_slice(),
+        b"document.body.dataset.mime".as_slice(),
+        b"button.textContent".as_slice(),
+        b"Unsupported media type: ${mime".as_slice(),
+        b"<button".as_slice(),
+        b"id=\"status\"".as_slice(),
+        b"textContent".as_slice(),
+        b"video.src = attempt.source;\n    void playAutomatically(attempt);".as_slice(),
+    ] {
+        assert!(!html.windows(removed.len()).any(|window| window == removed));
+    }
+
+    let icon = viewer_icon().await;
+    assert_eq!(icon.status(), StatusCode::OK);
+    assert_eq!(icon.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(icon.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(
+        axum::body::to_bytes(icon.into_body(), VIEWER_ICON.len())
+            .await
+            .unwrap(),
+        VIEWER_ICON
+    );
     assert_eq!(
         stream(&host, &token, 1, Ipv4Addr::LOCALHOST).await.status(),
         StatusCode::TOO_EARLY

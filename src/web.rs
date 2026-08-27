@@ -23,6 +23,7 @@ use tokio::{
 };
 
 const VIEWER_HTML: &str = include_str!("viewer.html");
+const VIEWER_ICON: &[u8] = include_bytes!("../assets/aercast-icon.png");
 const MAX_BOX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED_GOP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VIEWERS: usize = 8;
@@ -630,6 +631,7 @@ pub(crate) async fn serve(
     axum::serve(
         listener,
         Router::new()
+            .route("/assets/aercast-icon.png", get(viewer_icon))
             .route("/s/{token}", get(viewer_page))
             .route("/s/{token}/stream", get(media_stream).head(media_head))
             .route("/s/{token}/retry", post(viewer_retry))
@@ -643,6 +645,15 @@ pub(crate) async fn serve(
     .await
 }
 
+async fn viewer_icon() -> Response {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Body::from(VIEWER_ICON))
+        .expect("static icon headers are valid")
+}
+
 async fn viewer_page(Path(token): Path<String>, State(host): State<Host>) -> Response {
     match host.access(&token) {
         Ok(Access::Invalid) => StatusCode::NOT_FOUND.into_response(),
@@ -654,7 +665,7 @@ async fn viewer_page(Path(token): Path<String>, State(host): State<Host>) -> Res
             .header("referrer-policy", "no-referrer")
             .header(
                 "content-security-policy",
-                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
             )
             .body(Body::from(VIEWER_HTML))
             .expect("static Viewer headers are valid"),
@@ -687,7 +698,7 @@ async fn media_stream(
     let Some(media) = media else {
         return waiting();
     };
-    let subscription = match media.subscribe(viewers, id, peer.ip()) {
+    let subscription = match media.subscribe(viewers, id, viewer_ip(&headers, peer.ip())) {
         Ok(Some(subscription)) => subscription,
         Ok(None) => return waiting(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -834,6 +845,21 @@ fn identified_access(
             .map_err(|_| StatusCode::BAD_REQUEST),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+fn viewer_ip(headers: &HeaderMap, peer: IpAddr) -> IpAddr {
+    headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .or_else(|| {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(',').next())
+                .and_then(|value| value.trim().parse().ok())
+        })
+        .unwrap_or(peer)
 }
 
 fn viewer_id(headers: &HeaderMap) -> io::Result<[u8; 16]> {

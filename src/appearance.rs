@@ -19,7 +19,7 @@ const BORDER: Color = iced::color!(0x484848);
 const TEXT: Color = iced::color!(0xf6f5f4);
 const TEXT_MUTED: Color = iced::color!(0xc0bfbc);
 const TEXT_DISABLED: Color = iced::color!(0x9a9996);
-const FALLBACK_ACCENT: Color = iced::color!(0xbd425a);
+const FALLBACK_ACCENT: Color = iced::color!(0xffb4a5);
 const DARK_ACCENT_TEXT: Color = iced::color!(0x1e1e1e);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,7 +81,7 @@ impl Appearance {
         Border {
             color: self.theme.extended_palette().primary.strong.color,
             width: if self.high_contrast { 3.0 } else { 2.0 },
-            radius: 8.0.into(),
+            radius: 14.0.into(),
         }
     }
 
@@ -138,7 +138,7 @@ impl Appearance {
             border: Border {
                 color: self.border_color(border),
                 width: if self.high_contrast { 2.0 } else { 1.0 },
-                radius: 8.0.into(),
+                radius: 14.0.into(),
             },
             ..button::Style::default()
         }
@@ -194,7 +194,7 @@ impl Appearance {
                 } else {
                     1.0
                 },
-                radius: 8.0.into(),
+                radius: 14.0.into(),
             },
             icon: self.muted_text(),
             placeholder: if disabled {
@@ -214,7 +214,7 @@ impl Appearance {
             border: Border {
                 color: self.border_color(BORDER),
                 width: if self.high_contrast { 2.0 } else { 1.0 },
-                radius: 12.0.into(),
+                radius: 20.0.into(),
             },
             ..container::Style::default()
         }

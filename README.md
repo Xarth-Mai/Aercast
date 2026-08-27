@@ -16,11 +16,13 @@ a small group of browser viewers. It is built for gamers, not meetings.
 ## Status
 
 Aercast is **pre-alpha**, with no packaged release or supported installation
-procedure yet. The current source build has completed its niri end-to-end
-qualification: Portal capture, selective audio, same-link recovery, desktop
-and tray lifecycle, settings, Viewer management, and one-encoder three-Viewer
-playback were exercised in Zen Browser first and Chromium second.
-[See the evidence.](docs/verification.md)
+procedure yet. Its Phase 5 niri baseline completed end-to-end qualification:
+Portal capture, selective audio, same-link recovery, desktop and tray lifecycle,
+settings, Viewer management, and one-encoder three-Viewer playback were
+exercised in Zen Browser first and Chromium second. The latest interface polish
+and PipeWire graph-race fix have automated coverage but have not repeated that
+real Host and browser check.
+[See the evidence and current gap.](docs/verification.md)
 
 GNOME, KDE, packaged installation, hardware encoding, 1080p60, and trusted-LAN
 latency targets are not yet verified.

@@ -143,6 +143,15 @@ mod tests {
     fn menu_tracks_phase_and_uses_the_bundled_icon() {
         let icon = tray_icon();
         assert_eq!((icon.width, icon.height, icon.data.len()), (64, 64, 16_384));
+        assert!(
+            icon.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] != 0)
+                .count()
+                > 700
+        );
         let (messages, mut received) = iced::futures::channel::mpsc::unbounded();
         let (updates, state) = watch::channel(Phase::Waiting);
         let mut tray = AercastTray { messages, state };

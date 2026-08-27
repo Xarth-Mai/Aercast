@@ -7,13 +7,15 @@ does not own homepage copy, visual tokens, or raw test output.
 
 ## Status
 
-Aercast is pre-alpha. The planned product phases are complete for the current
-source build on the recorded niri host. Phase 5 qualification proves the fixed
-desktop and tray lifecycle, settings boundaries, Portal-derived appearance,
-notifications, Viewer management, link refresh, and one-encoder three-Viewer
-workflows in Zen first and Chromium second. There is no packaged release; the
-current source now passes selective-audio graph and lifecycle verification on
-PipeWire 1.6.8 without a daemon-wide passive-link override.
+Aercast is pre-alpha. The planned product phases are complete on the recorded
+niri baseline. Phase 5 qualification proves the fixed desktop and tray
+lifecycle, settings boundaries, Portal-derived appearance, notifications,
+Viewer management, link refresh, and one-encoder three-Viewer workflows in Zen
+first and Chromium second. The current interface polish and PipeWire graph-race
+fix have automated coverage but have not repeated that real Host and Viewer
+qualification. There is no packaged release; the last real selective-audio
+graph and lifecycle verification passed on PipeWire 1.6.8 without a daemon-wide
+passive-link override.
 
 ## Product commitments
 
@@ -57,12 +59,14 @@ PipeWire 1.6.8 without a daemon-wide passive-link override.
 
 ### Host share controls
 
-- The share view has a settings icon at the top right; the settings view has a
-  back icon. There is no Host video preview.
+- The top navigation switches between **Main**, **Viewers**, and **Settings**.
+  There is no Host video preview.
 - **Start Sharing** opens the Portal picker, which owns monitor/window choice
   and pointer behavior. The same stateful action becomes **Cancel** during
-  selection and **Stop Sharing** while active. The view also shows the approved
-  source, share link, Copy, Refresh Link, and Viewer list.
+  selection and **Stop Sharing** while active. This primary action is centered
+  at the bottom of the Share view. The view also shows the approved source and
+  share link. Copy and Refresh Link are icon buttons; successful Copy briefly
+  replaces its icon with a check mark.
 - Stop closes media and the Portal session. The current link remains valid and
   returns Viewers to waiting. A later Start reuses it.
 - Refresh Link is available while waiting or sharing. It creates a new token
@@ -74,8 +78,12 @@ PipeWire 1.6.8 without a daemon-wide passive-link override.
 
 ### Viewer management
 
+- The dedicated Viewers page shows the online/total count and Viewer list.
 - Each row shows IP address, connection duration, RTT, playback lag, and one
-  disconnect action. Online Viewers sort before offline history.
+  disconnect action. The displayed IP prefers a reverse proxy's `X-Real-IP`,
+  then the first `X-Forwarded-For` address, and otherwise uses the TCP peer.
+  These headers affect display only; the proxy must replace client-supplied
+  values. Online Viewers sort before offline history.
 - The Viewer reports the previous successful telemetry request's round-trip time
   and buffered media end minus playback position every two seconds. Offline
   telemetry, or telemetry at least six seconds old, displays as unavailable.
@@ -88,8 +96,17 @@ PipeWire 1.6.8 without a daemon-wide passive-link override.
   recovery until that page retries; Refresh Link clears it with Viewer history.
 - Connection duration accumulates across reconnects of that tab from the Host's
   monotonic clock and freezes while its record is offline.
-- The Viewer page contains only playback, volume, fullscreen, connection state,
-  automatic reconnect, and manual retry controls.
+- The Viewer fills the browser viewport with one square-cornered, `contain`-fit
+  video and only the browser's native playback, volume, and fullscreen controls;
+  it has no Aercast overlay or visible status text. Page load first attempts
+  unmuted playback and retries muted when autoplay policy rejects sound. A
+  user-selected native muted state is remembered locally, while that policy
+  fallback is not stored as preference. Manual timeline seeking returns to the
+  live edge. Playback more than 350 ms behind the latest buffered media returns
+  to 150 ms behind that live edge. Automatic reconnect continues except after a
+  Host disconnect, when the native Play action performs the explicit retry.
+  Connection and media diagnostics remain only in the console and document
+  state attributes.
 
 ### Settings contract
 
@@ -145,6 +162,9 @@ interface.
   PipeWire graph without moving or muting existing output links.
 - GStreamer owns capture conversion, clocks, H.264, AAC-LC, and fragmented MP4.
   Rust coordinates the lifecycle and fans out completed media fragments.
+- Development builds lightly optimize Aercast and fully optimize dependencies;
+  release builds use thin LTO, one codegen unit, and stripped symbols while
+  preserving unwind-based cleanup.
 - The installed `mp4mux` remains the muxer while real MSE and late-join checks
   pass. `isofmp4mux` requires a recorded failure before it is considered.
 - New Viewers receive only the latest initialization segment and current
@@ -203,15 +223,19 @@ passivity is the inherited input-port scheduling behavior. Whole-sink monitor
 capture remains invalid because it cannot preserve per-application and
 Communication exclusions.
 
+Dynamic graph teardown may report `ENOENT` through either the removed object or
+PipeWire core object `0`; both mean the resource already vanished and trigger
+the normal graph rebuild instead of ending the share.
+
 ### Desktop implementation
 
 - The product has only a GUI. Audio exclusions live only in internal settings;
   there is no command-line control surface.
 - iced uses Wayland, Tokio, and the `wgpu` renderer. Phase 5 moves the lifecycle
   to `iced::daemon`; hidden means no mapped window while the process continues.
-- The supplied `assets/aercast-icon.png` is the single application and tray
-  brand image. UI controls use the minimal bundled symbolic SVG set defined by
-  [ui-design.md](ui-design.md).
+- The supplied `assets/aercast-icon.png` is the single application, tray, and
+  Viewer favicon brand image. UI controls use the minimal bundled symbolic SVG
+  set defined by [ui-design.md](ui-design.md).
 - Phase 5 uses `ksni` for StatusNotifierItem, direct `zbus` for single-instance
   activation and notifications, the ashpd Settings Portal API for appearance
   preferences, and `serde`/`serde_json` for internal settings. No GTK,

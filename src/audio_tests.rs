@@ -165,9 +165,8 @@ fn unsafe_stream_overrides_and_audio_policy_are_checked() {
         },
         &[],
     ));
-    assert!(vanished_object(42, -2));
-    assert!(!vanished_object(pw::core::PW_ID_CORE, -2));
-    assert!(!vanished_object(42, -13));
+    assert!(vanished_object(-2));
+    assert!(!vanished_object(-13));
 
     let applications = deduplicate_applications(vec![
         PlaybackApplication {

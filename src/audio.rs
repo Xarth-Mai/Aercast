@@ -244,7 +244,7 @@ fn discover_active_applications() -> Result<Vec<PlaybackApplication>, String> {
             let weak = weak.clone();
             move |id, _, result, message| {
                 if let Some(state) = weak.upgrade()
-                    && !vanished_object(id, result)
+                    && !vanished_object(result)
                 {
                     state.borrow_mut().fail(format!(
                         "PipeWire application scan error on object {id} ({result}): {message}"
@@ -1082,7 +1082,7 @@ fn run(
             let weak = weak.clone();
             move |id, _, result, message| {
                 if let Some(state) = weak.upgrade() {
-                    if vanished_object(id, result) {
+                    if vanished_object(result) {
                         state.borrow_mut().changed();
                     } else {
                         state.borrow_mut().fail(format!(
@@ -1370,11 +1370,10 @@ fn u64_property(props: &spa::utils::dict::DictRef, key: &str) -> Option<u64> {
     props.get(key)?.parse().ok()
 }
 
-fn vanished_object(id: u32, result: i32) -> bool {
-    id != pw::core::PW_ID_CORE
-        && result.checked_neg().is_some_and(|errno| {
-            io::Error::from_raw_os_error(errno).kind() == io::ErrorKind::NotFound
-        })
+fn vanished_object(result: i32) -> bool {
+    result
+        .checked_neg()
+        .is_some_and(|errno| io::Error::from_raw_os_error(errno).kind() == io::ErrorKind::NotFound)
 }
 
 fn link_endpoints(props: &spa::utils::dict::DictRef) -> Option<Endpoints> {
