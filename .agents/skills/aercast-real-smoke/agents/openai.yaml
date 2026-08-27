@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aercast Real Smoke"
+  short_description: "Run real Portal and PipeWire audio checks"
+  default_prompt: "Use $aercast-real-smoke to verify Aercast capture and selective audio on this host."

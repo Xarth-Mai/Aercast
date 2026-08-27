@@ -29,14 +29,9 @@ latency targets are not yet verified.
 
 After installing a development build:
 
-1. On PipeWire 1.6.8, keep **System Audio** off unless you have manually
-   enabled the daemon-wide `allow.link.passive` compatibility option. It
-   applies to every permitted client of your user PipeWire daemon, not only
-   Aercast. Follow the
-   [compatibility note](docs/development.md#pipewire-168-compatibility).
-2. Open Aercast, select **Start Sharing**, then approve a screen or window in
+1. Open Aercast, select **Start Sharing**, then approve a screen or window in
    the system Portal.
-3. Send the displayed link to a trusted Viewer. **Stop** ends capture while
+2. Send the displayed link to a trusted Viewer. **Stop** ends capture while
    keeping that link ready for a later share.
 
 ## How it works

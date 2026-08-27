@@ -332,7 +332,6 @@ struct ObservedLink {
     id: u32,
     serial: Option<u64>,
     endpoints: Endpoints,
-    passive: Option<bool>,
     status: Option<LinkStatus>,
 }
 
@@ -371,6 +370,8 @@ struct State {
     registry: pw::registry::RegistryRc,
     stream: pw::stream::StreamRc,
     exclusions: Vec<String>,
+    capture: Option<(pw::node::NodeListener, pw::node::Node)>,
+    capture_passive: bool,
     playback: HashMap<u32, Playback>,
     sinks: HashSet<u32>,
     ports: HashMap<u32, Port>,
@@ -410,6 +411,25 @@ impl State {
                         self.fail(error);
                         return;
                     }
+                    let proxy = match self.registry.bind::<pw::node::Node, _>(global) {
+                        Ok(proxy) => proxy,
+                        Err(error) => {
+                            self.fail(format!("failed to inspect capture node: {error}"));
+                            return;
+                        }
+                    };
+                    let id = global.id;
+                    let weak = weak.clone();
+                    let listener = proxy
+                        .add_listener_local()
+                        .info(move |info| {
+                            if let Some(state) = weak.upgrade() {
+                                state.borrow_mut().capture_node_info(id, info);
+                            }
+                        })
+                        .register();
+                    self.capture = Some((listener, proxy));
+                    self.capture_passive = props.get(*pw::keys::NODE_PASSIVE) == Some("in");
                     true
                 } else if props.get(*pw::keys::MEDIA_CLASS) == Some("Stream/Output/Audio") {
                     let proxy = match self.registry.bind::<pw::node::Node, _>(global) {
@@ -529,6 +549,29 @@ impl State {
             }
         });
         if changed {
+            self.changed();
+        }
+    }
+
+    fn capture_node_info(&mut self, id: u32, info: &pw::node::NodeInfoRef) {
+        if info.id() != id {
+            self.fail("PipeWire returned capture properties for the wrong node".to_owned());
+            return;
+        }
+        if !info.change_mask().contains(pw::node::NodeChangeMask::PROPS) {
+            return;
+        }
+        let Some(props) = info.props() else {
+            self.fail("PipeWire exposed the capture node without properties".to_owned());
+            return;
+        };
+        if let Err(error) = validate_exported_node(props) {
+            self.fail(error);
+            return;
+        }
+        let passive = props.get(*pw::keys::NODE_PASSIVE) == Some("in");
+        if passive != self.capture_passive {
+            self.capture_passive = passive;
             self.changed();
         }
     }
@@ -665,7 +708,6 @@ impl State {
                 *pw::keys::LINK_OUTPUT_PORT => endpoints.output_port.to_string(),
                 *pw::keys::LINK_INPUT_NODE => endpoints.input_node.to_string(),
                 *pw::keys::LINK_INPUT_PORT => endpoints.input_port.to_string(),
-                *pw::keys::LINK_PASSIVE => "true",
                 *pw::keys::OBJECT_LINGER => "false",
             };
             let link = match self
@@ -674,7 +716,7 @@ impl State {
             {
                 Ok(link) => link,
                 Err(error) => {
-                    self.fail(format!("failed to create passive audio link: {error}"));
+                    self.fail(format!("failed to create audio link: {error}"));
                     return;
                 }
             };
@@ -684,14 +726,6 @@ impl State {
                 .add_listener_local()
                 .info(move |info| {
                     let Some(state) = weak.upgrade() else { return };
-                    let passive = info
-                        .change_mask()
-                        .contains(pw::link::LinkChangeMask::PROPS)
-                        .then(|| {
-                            info.props()
-                                .and_then(|props| props.get(*pw::keys::LINK_PASSIVE))
-                                == Some("true")
-                        });
                     state.borrow_mut().link_info(
                         slot,
                         ObservedLink {
@@ -710,7 +744,6 @@ impl State {
                                 input_node: info.input_node_id(),
                                 input_port: info.input_port_id(),
                             },
-                            passive,
                             status: info
                                 .change_mask()
                                 .contains(pw::link::LinkChangeMask::STATE)
@@ -731,6 +764,9 @@ impl State {
 
     fn expected_links(&self) -> Result<Vec<Endpoints>, String> {
         let input_node = self.stream.node_id();
+        if !self.capture_passive {
+            return Err("capture node did not retain node.passive=in".to_owned());
+        }
         let input = stereo_ports(&self.ports, input_node, "in")?;
         if input
             .iter()
@@ -789,9 +825,6 @@ impl State {
                 serial: observed
                     .serial
                     .or_else(|| link.observed.and_then(|previous| previous.serial)),
-                passive: observed
-                    .passive
-                    .or_else(|| link.observed.and_then(|previous| previous.passive)),
                 status: observed
                     .status
                     .or_else(|| link.observed.and_then(|previous| previous.status)),
@@ -803,7 +836,7 @@ impl State {
             return;
         };
         if self.active && !link_matches(expected, observed) {
-            self.fail("active PipeWire link broke the passive exact-link contract".to_owned());
+            self.fail("active PipeWire link broke the exact-link contract".to_owned());
         } else if self.is_ready() && observed.status != Some(LinkStatus::Active) {
             self.changed();
         } else {
@@ -818,7 +851,7 @@ impl State {
                 .observed
                 .filter(|observed| link_matches(link.expected, *observed))
             else {
-                self.fail("PipeWire did not confirm every passive exact link".to_owned());
+                self.fail("PipeWire did not confirm every exact link".to_owned());
                 return;
             };
             let Some(serial) = observed.serial else {
@@ -991,7 +1024,6 @@ fn link_matches(expected: Endpoints, observed: ObservedLink) -> bool {
         observed.status,
         Some(LinkStatus::Pending | LinkStatus::Active)
     ) && observed.serial.is_some()
-        && observed.passive == Some(true)
         && observed.endpoints == expected
 }
 
@@ -1018,6 +1050,8 @@ fn run(
         registry: registry.clone(),
         stream: stream.clone(),
         exclusions,
+        capture: None,
+        capture_passive: false,
         playback: HashMap::new(),
         sinks: HashSet::new(),
         ports: HashMap::new(),
@@ -1257,6 +1291,7 @@ fn stream_properties() -> pw::properties::PropertiesBox {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Screen",
+        *pw::keys::NODE_PASSIVE => "in",
         "node.dont-fallback" => "true",
         "node.dont-move" => "true",
         "port.ignore-latency" => "true",
@@ -1271,6 +1306,7 @@ fn validate_stream_properties(props: &spa::utils::dict::DictRef) -> Result<(), S
         (*pw::keys::MEDIA_TYPE, "Audio"),
         (*pw::keys::MEDIA_CATEGORY, "Capture"),
         (*pw::keys::MEDIA_ROLE, "Screen"),
+        (*pw::keys::NODE_PASSIVE, "in"),
         (*pw::keys::NODE_AUTOCONNECT, "false"),
         (*pw::keys::NODE_DONT_RECONNECT, "true"),
         ("node.dont-fallback", "true"),

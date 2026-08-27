@@ -124,55 +124,47 @@ not assumed to be MP4 box boundaries.
 
 ## Selective audio
 
-**Current policy run:** revision `e54f1b2`, 2026-08-27. Two real 48 kHz stereo
-PipeWire playback streams were started at zero stream volume before Aercast:
+**Current policy run:** 2026-08-27 on the recorded PipeWire `1.6.8` niri host.
+The user override
+`90-aercast-passive-links.conf` was removed, the user media services were
+restarted, and this command returned an empty object:
 
 ```sh
-pw-cat --playback --raw --rate 48000 --channels 2 --format s16 --volume 0 \
-  --media-role Music \
-  -P '{ application.id = "org.aercast.AllowedTest" application.name = "Aercast Allowed Test" node.name = "aercast-test-allowed" }' \
-  /dev/zero
-pw-cat --playback --raw --rate 48000 --channels 2 --format s16 --volume 0 \
-  --media-role Communication \
-  -P '{ application.id = "org.aercast.CommunicationTest" application.name = "Aercast Communication Test" node.name = "aercast-test-communication" }' \
-  /dev/zero
-env XDG_CONFIG_HOME=/tmp/aercast-audio-smoke cargo run
+pw-config -n pipewire.conf merge module.link-factory.args
 ```
 
-The default settings enabled system audio. A real Portal share reported
-`Selective audio active: 1 playback stream(s), 2 verified passive links.` The
-Music node had two `link.passive=true`, active links to
-`aercast-selective-audio`; the Communication node had none. Both nodes retained
-their two non-passive, active links to the same local USB sink. The four
-pre-existing sink link IDs were unchanged when Aercast first activated.
+Two real nonzero stereo signals were then fed into PipeWire: a 440 Hz allowed
+Music stream named `aercast-game-test`, and an 880 Hz Communication stream named
+`aercast-discord-test`. Aercast was started with `cargo run`, and a display was
+approved through the real ScreenCast Portal. It reported:
 
-Restarting the Music process changed its PipeWire client PID from `496082` to
-`497883` while retaining `application.id=org.aercast.AllowedTest`; Aercast
-rematched it and again reported one stream and two verified passive links.
-Restarting Communication changed its PID from `496138` to `498251` while
-retaining its stable identity and role; it still had only its two active sink
-links and no Aercast link. The default sink remained `0.49 [MUTED]`. Normal Stop
-and process cleanup left no Aercast or test node, link, listener, or process.
+```text
+Selective audio active: 1 playback stream(s), 2 verified passive links.
+```
+
+`pw-cli info` and `pw-dump` read back `node.passive=in` on
+`aercast-selective-audio`. The two Aercast-created links contained only exact
+endpoints, `object.linger=false`, and the server-added async/object properties;
+neither contained client-supplied `link.passive`. Both were active and carried
+real data. The allowed stream retained its two original active sink links with
+the same IDs, serials, and endpoints. The Communication stream retained its two
+active sink links and had no link to Aercast.
+
+Exiting the allowed stream removed its node and both Aercast links; the Aercast
+capture node became `idle`, while the Communication sink links stayed active.
+Restarting the 440 Hz stream with the same `application.id` created a new object
+serial and Aercast automatically returned to one stream and two exact links.
+The final tray Stop returned to `Status: Ready`, printed only `Ending share.`,
+and normal Quit plus test-source cleanup left no Aercast or test graph objects.
 
 This current run proves real graph policy, PID-independent identity rematching,
-Communication exclusion, passive-link verification, and preservation of the
-Host's local route. Because both test streams were silent, it is not a new
-signal-level or human-listening measurement. The latest signal-level baseline
-remains the recorded Phase 3 run: an allowed 440 Hz source survived capture and
-AAC playback while an excluded 880 Hz source measured about 92.7 dB lower in
-the browser analyser.
-
-### PipeWire 1.6.8 prerequisite
-
-PipeWire `1.6.8` removes a client-supplied `link.passive=true` unless its link
-factory has deliberately enabled passive client links with
-`allow.link.passive = true`. Aercast neither writes nor reloads that daemon-wide
-setting. It fails closed when exact passive readback, active local sink routes,
-expected endpoints, active status, and real data are not all present.
-
-This prerequisite remains a packaging and compatibility blocker. The current
-run proves automatic `media.role=Communication` exclusion only with this
-deliberate host opt-in present.
+Communication exclusion, inherited passive scheduling, preservation of the
+Host's local route, stopped-source idleness, automatic replay recovery, and
+clean Stop without daemon configuration. The sink was still muted and no new
+browser analyser was recorded, so this is not a human-listening measurement.
+The latest signal-level browser baseline remains the recorded Phase 3 run: an
+allowed 440 Hz source survived capture and AAC playback while an excluded
+880 Hz source measured about 92.7 dB lower in the browser analyser.
 
 ## Phase 4 lifecycle
 

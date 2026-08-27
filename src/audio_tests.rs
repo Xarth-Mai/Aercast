@@ -33,7 +33,7 @@ fn a_reported_audio_failure_is_not_a_cleanup_failure() {
 }
 
 #[test]
-fn passive_link_contract_rejects_missing_property_error_and_wrong_endpoint() {
+fn exact_link_contract_rejects_missing_serial_error_and_wrong_endpoint() {
     let expected = Endpoints {
         output_node: 1,
         output_port: 2,
@@ -44,21 +44,12 @@ fn passive_link_contract_rejects_missing_property_error_and_wrong_endpoint() {
         id: 5,
         serial: Some(6),
         endpoints: expected,
-        passive: Some(true),
         status: Some(LinkStatus::Active),
     };
     assert!(link_matches(expected, good));
     for bad in [
         ObservedLink {
             serial: None,
-            ..good
-        },
-        ObservedLink {
-            passive: Some(false),
-            ..good
-        },
-        ObservedLink {
-            passive: None,
             ..good
         },
         ObservedLink {
@@ -120,6 +111,8 @@ fn unsafe_stream_overrides_and_audio_policy_are_checked() {
     let mut properties = stream_properties();
     assert!(validate_stream_properties(properties.dict()).is_ok());
     assert!(validate_exported_node(properties.dict()).is_ok());
+    properties.insert(*pw::keys::NODE_PASSIVE, "false");
+    assert!(validate_stream_properties(properties.dict()).is_err());
     properties.insert("target.object", "unexpected-source");
     assert!(validate_stream_properties(properties.dict()).is_err());
     properties.insert("node.driver", "true");

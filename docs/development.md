@@ -12,8 +12,8 @@ source build on the recorded niri host. Phase 5 qualification proves the fixed
 desktop and tray lifecycle, settings boundaries, Portal-derived appearance,
 notifications, Viewer management, link refresh, and one-encoder three-Viewer
 workflows in Zen first and Chromium second. There is no packaged release; the
-PipeWire 1.6.8 compatibility boundary below still prevents a publishable AUR
-package.
+current source now passes selective-audio graph and lifecycle verification on
+PipeWire 1.6.8 without a daemon-wide passive-link override.
 
 ## Product commitments
 
@@ -182,36 +182,26 @@ regular PipeWire graph -> allowed playback taps -> audio mixer ----+->
 - PipeWire playback nodes with `media.role=Communication` are excluded by the
   Phase 4 core rule. Phase 5 settings add editable default rules for Discord,
   Vesktop, and Steam Voice.
-- Each allowed stereo playback stream is tapped through exact verified passive
-  links and must retain an independent active route to an audio sink. Unknown,
-  mono, surround, duplicate, or unsafe graph layouts stay silent.
+- Each allowed stereo playback stream is tapped from its existing output ports
+  into an Aercast capture node exported and read back with `node.passive=in`.
+  Its input ports inherit that passive mode. Aercast does not request
+  `link.passive`; it verifies each exact link's endpoints, object serial, and
+  state while PipeWire derives runnable behavior from the node and port modes.
+  The playback stream must retain an independent active route to an audio sink.
+  Unknown, mono, surround, duplicate, or unsafe graph layouts stay silent.
 - Audio-off and no-source states keep a silent track so the MSE track schema
   does not change during a share.
 
 ### PipeWire 1.6.8 compatibility
 
-Selective system audio on PipeWire 1.6.8 requires the user to explicitly create
-`${XDG_CONFIG_HOME:-$HOME/.config}/pipewire/pipewire.conf.d/90-aercast-passive-links.conf`
-with:
-
-```ini
-module.link-factory.args = {
-    allow.link.passive = true
-}
-```
-
-Apply it by signing out and back in, then enable **System Audio** in Aercast.
-The setting permits every client with link-creation access to request passive
-links through the user's PipeWire daemon, not only Aercast. Aercast and its
-package never create or edit the file, or reload or restart PipeWire; without
-the opt-in, Aercast rejects non-passive capture links before activating audio.
-Remove the file and sign out and back in to revoke it.
-
-This is a temporary compatibility path, not a release requirement. A
-publishable AUR package must use a proven client-side selective capture design
-without first-use daemon configuration. Whole-sink monitor capture remains
-invalid because it cannot preserve per-application and Communication
-exclusions.
+Selective system audio on PipeWire 1.6.8 requires no daemon-wide
+`allow.link.passive` override. Aercast marks its capture node's input direction
+passive through `node.passive=in`, waits for PipeWire NodeInfo to read back that
+value, and creates exact links without a client-supplied `link.passive`.
+PipeWire 1.6.8 does not duplicate this derived mode into the link properties;
+passivity is the inherited input-port scheduling behavior. Whole-sink monitor
+capture remains invalid because it cannot preserve per-application and
+Communication exclusions.
 
 ### Desktop implementation
 
