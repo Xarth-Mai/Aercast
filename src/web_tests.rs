@@ -571,7 +571,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     for required in [
         b"href=\"/assets/aercast-icon.png\"".as_slice(),
         b"html, body, video { width: 100%; height: 100%; }".as_slice(),
-        b"<video playsinline controls></video>".as_slice(),
+        b"<video playsinline></video>".as_slice(),
         b"localStorage.getItem(MUTED_KEY) === \"true\"".as_slice(),
         b"video.addEventListener(\"volumechange\"".as_slice(),
         b"if (policyMuted === video.muted)".as_slice(),
@@ -579,7 +579,8 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"await video.play()".as_slice(),
         b"end - video.currentTime > 0.35".as_slice(),
         b"seekTo(Math.max(start, end - 0.15))".as_slice(),
-        b"positioned = true;\n          await playAutomatically(attempt);".as_slice(),
+        b"video.controls = false;\n    video.src = attempt.source;".as_slice(),
+        b"positioned = true;\n          setMutedByPolicy(preferredMuted);\n          video.controls = true;\n          await playAutomatically(attempt);".as_slice(),
         b"setMutedByPolicy(true)".as_slice(),
         b"void connect(beginAttempt())".as_slice(),
         b"video.addEventListener(\"play\"".as_slice(),
@@ -618,6 +619,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"id=\"status\"".as_slice(),
         b"textContent".as_slice(),
         b"video.src = attempt.source;\n    void playAutomatically(attempt);".as_slice(),
+        b"<video playsinline controls>".as_slice(),
     ] {
         assert!(!html.windows(removed.len()).any(|window| window == removed));
     }

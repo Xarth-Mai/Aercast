@@ -10,7 +10,7 @@
   body { margin: 0; overflow: hidden; background: #000; }
   video { display: block; object-fit: contain; background: #000; }
 </style>
-<video playsinline controls></video>
+<video playsinline></video>
 <script>
   const video = document.querySelector("video");
   const MUTED_KEY = "aercast-viewer-muted";
@@ -160,13 +160,13 @@
       error: null
     };
     currentAttempt = attempt;
+    video.controls = false;
     video.src = attempt.source;
     return attempt;
   }
 
   async function playAutomatically(attempt) {
     automaticPlay = true;
-    setMutedByPolicy(preferredMuted);
     try {
       await video.play();
     } catch (error) {
@@ -252,6 +252,8 @@
         }
         if (!positioned) {
           positioned = true;
+          setMutedByPolicy(preferredMuted);
+          video.controls = true;
           await playAutomatically(attempt);
         }
       }
