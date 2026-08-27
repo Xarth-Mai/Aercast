@@ -1058,6 +1058,11 @@ fn share_view(app: &App) -> Element<'_, Message> {
     } else {
         column![]
     };
+    let status_color = if app.phase == Phase::Sharing {
+        app.appearance.theme.extended_palette().primary.strong.color
+    } else {
+        app.appearance.muted_text()
+    };
     let status = column![text(status)];
     let status = if let Some(source) = app.approved_source {
         status.push(
@@ -1069,27 +1074,30 @@ fn share_view(app: &App) -> Element<'_, Message> {
         status
     }
     .spacing(4);
+    let status = row![text("●").size(12).color(status_color), status]
+        .spacing(8)
+        .align_y(iced::Alignment::Start);
     let share_icon = if matches!(app.phase, Phase::Selecting | Phase::Sharing | Phase::Ending) {
         include_bytes!("../assets/stop-symbolic.svg").as_slice()
     } else {
         include_bytes!("../assets/play-symbolic.svg").as_slice()
     };
     let mut share_focus = focus_ring;
-    share_focus.radius = 18.0.into();
+    share_focus.radius = 16.0.into();
     let share_action = accessibility::button(
         button(
             row![symbolic_icon(share_icon), text(share_label)]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
         )
-        .padding([0, 18])
+        .padding([0, 20])
         .style(move |_, status| {
             let mut style = if can_end {
                 app.appearance.neutral_button(status)
             } else {
                 app.appearance.primary_button(status)
             };
-            style.border.radius = 18.0.into();
+            style.border.radius = 16.0.into();
             style
         }),
         share_message,
@@ -1101,23 +1109,26 @@ fn share_view(app: &App) -> Element<'_, Message> {
         include_bytes!("../assets/copy-symbolic.svg").as_slice()
     };
 
-    container(
+    let details = container(
         column![
-            navigation(app),
-            text("Share").size(24),
             status,
+            rule::horizontal(if app.appearance.high_contrast { 2 } else { 1 })
+                .style(|_| app.appearance.separator()),
+            text("Share link")
+                .size(12)
+                .color(app.appearance.muted_text()),
             row![
+                accessibility::text_input(
+                    text_input("Share link will appear here", &app.link)
+                        .style(|_, status| app.appearance.text_input(status)),
+                    false,
+                ),
                 icon_button(
                     app,
                     include_bytes!("../assets/refresh-symbolic.svg"),
                     "Refresh link",
                     (matches!(app.phase, Phase::Waiting | Phase::Sharing) && !app.link.is_empty())
                         .then_some(Message::Refresh),
-                ),
-                accessibility::text_input(
-                    text_input("Share link will appear here", &app.link)
-                        .style(|_, status| app.appearance.text_input(status)),
-                    false,
                 ),
                 icon_button(
                     app,
@@ -1130,9 +1141,21 @@ fn share_view(app: &App) -> Element<'_, Message> {
                     (!app.link.is_empty()).then_some(Message::Copy),
                 ),
             ]
-            .spacing(12),
+            .spacing(8),
             refresh_confirmation,
             quit_confirmation,
+        ]
+        .spacing(8),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .style(|_| app.appearance.boxed_list());
+
+    container(
+        column![
+            navigation(app),
+            text("Share").size(24),
+            details,
             space().height(Length::Fill),
             row![
                 space().width(Length::Fill),
@@ -1161,7 +1184,7 @@ fn navigation(app: &App) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .style(move |_, status| {
                     if app.page == page {
-                        app.appearance.primary_button(status)
+                        app.appearance.selected_button(status)
                     } else {
                         app.appearance.neutral_button(status)
                     }
@@ -1200,7 +1223,7 @@ fn icon_button<'a>(
         text(label),
         tooltip::Position::Bottom,
     )
-    .gap(6)
+    .gap(8)
     .padding(8)
     .delay(Duration::from_millis(400))
     .into()
@@ -1215,6 +1238,12 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
         .iter()
         .enumerate()
         .fold(column![], |rows, (index, viewer)| {
+            let online = viewer.online();
+            let state_color = if online {
+                app.appearance.theme.extended_palette().primary.strong.color
+            } else {
+                app.appearance.muted_text()
+            };
             let (rtt, playback_lag) = viewer.telemetry(now);
             let rows = if index == 0 {
                 rows
@@ -1228,20 +1257,23 @@ fn viewers_view(app: &App) -> Element<'_, Message> {
                 container(
                     column![
                         row![
-                            text(viewer.ip.to_string()).size(12),
+                            text("●").size(12).color(state_color),
+                            text(viewer.ip.to_string()).size(13),
                             space().width(Length::Fill),
+                            text(if online { "Online" } else { "Offline" })
+                                .size(12)
+                                .color(state_color),
                             accessibility::button(
                                 button("Disconnect")
                                     .style(|_, status| app.appearance.neutral_button(status)),
-                                viewer.online().then_some(Message::Disconnect(viewer.key)),
+                                online.then_some(Message::Disconnect(viewer.key)),
                                 focus_ring,
                             ),
                         ]
                         .spacing(8)
                         .align_y(iced::Alignment::Center),
                         text(format!(
-                            "{} · {}   RTT {}   Lag {}",
-                            if viewer.online() { "Online" } else { "Offline" },
+                            "Connected {}   RTT {}   Lag {}",
                             format_duration(viewer.duration()),
                             format_milliseconds(rtt),
                             format_milliseconds(playback_lag),
@@ -1326,7 +1358,7 @@ fn settings_option<'a>(
             .width(Length::Fill)
             .style(move |_, status| {
                 if selected {
-                    app.appearance.primary_button(status)
+                    app.appearance.selected_button(status)
                 } else {
                     app.appearance.neutral_button(status)
                 }
@@ -1334,6 +1366,17 @@ fn settings_option<'a>(
         Some(message),
         app.appearance.focus_ring(),
     )
+}
+
+fn settings_section<'a>(
+    app: &'a App,
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    container(content)
+        .padding(16)
+        .width(Length::Fill)
+        .style(|_| app.appearance.boxed_list())
+        .into()
 }
 
 fn video_encoder_label(encoder: settings::VideoEncoder) -> &'static str {
@@ -1605,7 +1648,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
                         .width(Length::Fill)
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 ]
-                .spacing(2)
+                .spacing(4)
                 .width(Length::Fill),
                 accessibility::button(
                     button("Add").style(|_, status| app.appearance.neutral_button(status)),
@@ -1733,7 +1776,13 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         ),
     ]
     .spacing(12);
-    let sections = column![quality, audio, network, notifications].spacing(24);
+    let sections = column![
+        settings_section(app, quality),
+        settings_section(app, audio),
+        settings_section(app, network),
+        settings_section(app, notifications),
+    ]
+    .spacing(16);
     let body = if let Some(error) = app.settings_error.as_deref() {
         column![
             text(format!("⚠ {error}"))
@@ -1770,8 +1819,8 @@ fn settings_view(app: &App) -> Element<'_, Message> {
 
 fn symbolic_icon(bytes: &'static [u8]) -> iced::widget::Svg<'static> {
     svg(svg::Handle::from_memory(bytes))
-        .width(18)
-        .height(18)
+        .width(16)
+        .height(16)
         .style(|theme: &Theme, _| svg::Style {
             color: Some(theme.palette().text),
         })

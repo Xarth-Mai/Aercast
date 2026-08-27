@@ -1,5 +1,6 @@
 use iced::{
-    Background, Border, Color, Element, Event, Length, Rectangle, Size, Task, Theme, Vector,
+    Background, Border, Color, Element, Event, Length, Pixels, Rectangle, Size, Task, Theme,
+    Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
         widget::{
@@ -398,7 +399,7 @@ pub(super) fn text_input<'a>(
     control: TextInput<'a, Message>,
     enabled: bool,
 ) -> Element<'a, Message> {
-    let content = control.padding([10, 12]);
+    let content = control.size(13).line_height(Pixels(20.0)).padding([8, 12]);
     if enabled {
         content.into()
     } else {

@@ -29,11 +29,12 @@ browser build.
 
 ## Current unqualified changes
 
-The post-Phase 5 Host layout, tray and favicon scaling, Viewer-control polish,
-and PipeWire missing-resource recovery have only automated checks. At the
-user's request, no real GUI, Portal, PipeWire graph, Zen, or Chromium acceptance
-was run for these changes. The Phase 5 record below remains the latest valid
-real evidence and does not qualify them.
+The post-Phase 5 Host layout, current neutral-surface visual restructuring and
+four-pixel layout grid, tray and favicon scaling, Viewer-control polish, and
+PipeWire missing-resource recovery have only automated checks. At the user's
+request, no real GUI, Portal, PipeWire graph, Zen, or Chromium acceptance was
+run for these changes. The Phase 5 record below remains the latest valid real
+evidence and does not qualify them.
 
 ## Current idle smoke
 

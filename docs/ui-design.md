@@ -67,13 +67,22 @@ All text and interactive states must meet WCAG AA. Error, warning, success,
 focus, and selection always include text, iconography, border, or shape in
 addition to color.
 
+`accent-bg` is reserved for the one primary action in a view and compact
+controls such as a checked box. Navigation and option selection use
+`accent-subtle` with an `accent-standalone` border and normal text. Focus rings
+and small active-status markers use `accent-standalone`; ordinary content
+surfaces remain neutral even when the Portal supplies a saturated accent.
+
 ## Geometry
 
+- All layout spacing, padding, gaps, control dimensions, icon dimensions, and
+  corner radii follow a `4px` grid. Font sizes and one-to-three-pixel strokes
+  are optical and accessibility exceptions.
 - Spacing scale: `4 / 8 / 12 / 16 / 24` logical pixels.
-- Interactive control height: `34–36` logical pixels.
-- Control corner radius: about `14` logical pixels.
+- Interactive control height: `36` logical pixels.
+- Control corner radius: `12` logical pixels.
 - Grouped surface corner radius: about `20` logical pixels.
-- The centered main Share action uses an `18px` pill radius.
+- The centered main Share action uses a `16px` pill radius.
 - Borders: one logical pixel normally; never create hierarchy with multiple
   nested outlines.
 - Shadows: at most one subtle compositor-independent shadow for an elevated
@@ -99,14 +108,17 @@ may use tabular figures when the active system font provides them.
 
 ## Components
 
-- **Primary button:** `accent-bg`, `accent-fg`, one clear action per view.
+- **Primary button:** `accent-bg`, `accent-fg`, one clear action per view; never
+  use it to indicate navigation or option selection.
+- **Selected button:** `accent-subtle`, normal text, and a one-pixel
+  `accent-standalone` border.
 - **Neutral button:** `surface`, one-pixel border, brighter hover surface.
 - **Destructive button:** neutral by default; destructive color and explicit
   wording appear in confirmation or active destructive state.
 - **Icon button:** square control matching standard height, symbolic icon,
   tooltip, and accessible name.
 - **Top navigation:** three equal-width buttons switch between Main, Viewers,
-  and Settings; the active page uses the accent treatment.
+  and Settings; the active page uses the selected-button treatment.
 - **Text input:** `surface`, one-pixel border, two-pixel accent focus ring;
   invalid input adds an icon and message.
 - **Boxed list:** one grouped surface with single separators between rows. Do
@@ -119,6 +131,16 @@ may use tabular figures when the active system font provides them.
 
 Focus is always visible and uses a ring at least `2px` thick with sufficient
 contrast against both the control and its surrounding surface.
+
+## Page composition
+
+Every Host page uses `24px` outer padding, the same three-part navigation, a
+clear page title, and neutral grouped surfaces. Main groups status, approved
+source, link, and confirmations in one surface while keeping its share action
+centered at the bottom. Viewers uses one boxed list with separators rather than
+per-row cards. Settings uses one grouped surface for each of Quality, Audio,
+Network, and Notifications inside its existing scroll area; controls within a
+section do not add another container outline.
 
 ## Motion and accessibility preferences
 

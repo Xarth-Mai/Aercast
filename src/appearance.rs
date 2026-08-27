@@ -81,7 +81,7 @@ impl Appearance {
         Border {
             color: self.theme.extended_palette().primary.strong.color,
             width: if self.high_contrast { 3.0 } else { 2.0 },
-            radius: 14.0.into(),
+            radius: 12.0.into(),
         }
     }
 
@@ -100,6 +100,17 @@ impl Appearance {
             primary.base.color,
             mix(primary.base.color, Color::WHITE, 0.06),
             primary.base.text,
+            primary.strong.color,
+        )
+    }
+
+    pub(super) fn selected_button(&self, status: button::Status) -> button::Style {
+        let primary = self.theme.extended_palette().primary;
+        self.button(
+            status,
+            primary.weak.color,
+            mix(primary.weak.color, Color::WHITE, 0.06),
+            primary.weak.text,
             primary.strong.color,
         )
     }
@@ -138,7 +149,7 @@ impl Appearance {
             border: Border {
                 color: self.border_color(border),
                 width: if self.high_contrast { 2.0 } else { 1.0 },
-                radius: 14.0.into(),
+                radius: 12.0.into(),
             },
             ..button::Style::default()
         }
@@ -194,7 +205,7 @@ impl Appearance {
                 } else {
                     1.0
                 },
-                radius: 14.0.into(),
+                radius: 12.0.into(),
             },
             icon: self.muted_text(),
             placeholder: if disabled {
@@ -395,6 +406,17 @@ mod tests {
             assert_eq!(appearance.high_contrast, high_contrast);
             assert_eq!(appearance.reduced_motion, reduced_motion);
             assert!(primary.strong.color.relative_contrast(WINDOW_BG) >= 4.5);
+            let selected = appearance.selected_button(button::Status::Active);
+            assert_eq!(
+                selected.background,
+                Some(Background::Color(primary.weak.color))
+            );
+            assert_ne!(
+                selected.background,
+                Some(Background::Color(primary.base.color))
+            );
+            assert!(primary.weak.color.relative_contrast(selected.text_color) >= 4.5);
+            assert_eq!(selected.border.width, if high_contrast { 2.0 } else { 1.0 });
             assert_eq!(
                 appearance
                     .text_input(text_input::Status::Focused { is_hovered: false })
