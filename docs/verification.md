@@ -6,17 +6,19 @@ or a product specification.
 
 ## Current qualification
 
-Aercast v0.1.2 is distributed through AUR, distribution packages, and a
-prebuilt program archive, but no artifact install has been recorded here. The
-latest complete real Host/Viewer qualification remains the niri run at revision
-`073169b`. The current media, cross-platform Viewer, and desktop-lifecycle
-changes have automated coverage only; they have not repeated the real Portal,
-PipeWire, Zen, Chromium, or iOS Safari workflow.
+Aercast v0.1.2 is distributed through GitHub packages and a prebuilt program
+archive, but no artifact install has been recorded here. Its verified AUR
+metadata is committed, while remote publication is blocked because the local
+AUR endpoint presented an SSH host key that does not match the fingerprint
+published by AUR. The latest complete real Host/Viewer qualification remains
+the niri run at revision `073169b`. The current media, cross-platform Viewer,
+and desktop-lifecycle changes have automated coverage only; they have not
+repeated the real Portal, PipeWire, Zen, Chromium, or iOS Safari workflow.
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
-| Release artifacts | AUR metadata for v0.1.1 exists at revision `ef8cdc3`; other assets are distributed outside the recorded checks | No clean install and launch check from any artifact |
+| Release artifacts | GitHub Actions run `33185981523` passed checks and published the v0.1.2 `.deb`, tarball, and checksums; `makepkg --verifysource` passed for the matching AUR metadata at `92d11ca` | No clean install and launch check; AUR remote sync is blocked by an unverified SSH host key change |
 | Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.2 behavior has not repeated that acceptance |
 | Cross-platform Viewer | User checks through `6a43fab`: desktop Chrome no longer stuttered, and iOS 27 Safari played on LAN at about two seconds behind live after buffering before playback | The short user checks do not record exact browser versions or acceptance duration; no platform is qualified by them |
 | Media pipeline optimization | 2026-08-28 working tree: generated pipeline contracts cover selectable 96/128/160 kbps AAC, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation without forced `vapostproc` copies, and immediate normal-EOF reconnect | No real encoder, DMA-BUF, Safari, or constrained-network measurement was run; zero-copy and latency remain unqualified |
