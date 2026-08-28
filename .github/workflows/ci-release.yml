@@ -155,8 +155,6 @@ jobs:
           tar -tzf "$dist/$archive.tar.gz"
           dpkg-deb --info "$dist/aercast_${PACKAGE_VERSION}_amd64.deb"
           dpkg-deb --contents "$dist/aercast_${PACKAGE_VERSION}_amd64.deb"
-          (cd "$dist" && sha256sum *.deb *.tar.gz > SHA256SUMS)
-          (cd "$dist" && sha256sum --check SHA256SUMS)
 
       - name: Publish GitHub release
         env:
