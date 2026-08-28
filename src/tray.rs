@@ -46,7 +46,7 @@ impl AercastTray {
 
 impl ksni::Tray for AercastTray {
     fn id(&self) -> String {
-        "aercast".to_owned()
+        "Aercast".to_owned()
     }
 
     fn title(&self) -> String {
@@ -179,6 +179,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
+        assert_eq!(tray.id(), "Aercast");
         assert_eq!(tray.title(), "Aercast");
         assert_eq!(tray.tool_tip().title, "Aercast");
         assert_eq!(labels(&tray), ["Status: Ready", "Show", "Start", "Quit"]);

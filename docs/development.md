@@ -55,9 +55,10 @@ platforms. See the [current verification gap](verification.md#current-qualificat
   window does not remain always on top. Unsupported compositor activation is
   best-effort.
 - One state-independent `ksni` tray item always opens the window on primary
-  activation. Its tooltip title is **Aercast**. Its menu exposes status, Show,
-  the applicable Start/Copy/Stop action, and Quit; while sharing with online
-  Viewers, status is `Status: Sharing: N` using the online count only.
+  activation. Its displayed title and tooltip title are **Aercast**. Its menu
+  exposes status, Show, the applicable Start/Copy/Stop action, and Quit; while
+  sharing with online Viewers, status is `Status: Sharing: N` using the online
+  count only.
 - Quitting while sharing requires confirmation. Confirmed Quit revokes the
   token, disconnects Viewers, closes Portal and media state, removes desktop
   integrations, and exits.
