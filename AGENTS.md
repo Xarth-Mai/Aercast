@@ -13,7 +13,7 @@ architecture, roadmap, configuration, or documentation-index file.
 | Change | Authoritative document |
 | --- | --- |
 | Project homepage: what Aercast is, why it exists, current usability, short data flow, support summary, and document links | `README.md` |
-| Product commitment, exact Host/Viewer behavior, settings, security boundary, engineering decision, active Phase, acceptance, risk, non-goal, or next-Phase entry condition | `docs/development.md` |
+| Product commitment, exact Host/Viewer behavior, settings, security boundary, engineering decision, acceptance, risk, or non-goal | `docs/development.md` |
 | Compatibility, performance, or completion evidence from a real check | `docs/verification.md` |
 | Visual token, component appearance, typography, spacing, color, motion, icon, or accessibility rule | `docs/ui-design.md` |
 
@@ -21,20 +21,18 @@ One fact has one authoritative home; other documents link to it instead of
 copying it. Update the owning document in the same commit whenever code changes
 product behavior, an engineering decision, a verification conclusion, or a UI
 token. Keep README product-facing and free of governance text, requirement
-classification, exact values, acceptance language, Phase checklists, development
+classification, exact values, acceptance language, progress checklists, development
 commands, implementation research, and test logs. Its job is only to explain
 what Aercast is, why someone would use it, whether it is usable today, roughly
 how it works, and where details live.
 
-When a Phase completes, compress it in `docs/development.md` to one dated line
-with a conclusion and verification anchor; Git history keeps the old checklist.
 Keep only the latest valid evidence and current blocker for each claim in
 `docs/verification.md`, never an append-only run diary or raw long output.
 
 ## How to work
 
-- Implement only the active Phase in `docs/development.md` and its smallest
-  runnable vertical slice. Do not add adjacent features while here.
+- Implement only the explicitly requested behavior and its smallest runnable
+  vertical slice. Do not add adjacent features while here.
 - Trace the real flow and every caller before editing. Fix a shared root cause
   once instead of patching each symptom.
 - Prefer the standard library, Linux/Wayland platform capabilities, and current

@@ -374,8 +374,10 @@ fn ui_commands_follow_the_host_lifecycle() {
     ));
     assert_eq!(app.active_audio, Some(test_audio(false)));
     assert_eq!(app.approved_source, Some("Window"));
+    app.settings.audio_bitrate_kbps = 160;
     app.settings.audio_exclusions[0].enabled = false;
     let changed_audio = audio_settings(&app.settings);
+    assert_eq!(changed_audio.bitrate_kbps, 160);
     drop(update(&mut app, Message::ApplySystemAudio));
     assert_eq!(
         receiver.try_recv().unwrap(),
@@ -708,10 +710,12 @@ fn av_pipeline_description_has_no_syntax_error() {
             settings: video,
             encoder: Encoder::X264,
         },
+        96,
     );
     assert!(description.contains("width=1280,height=720"));
     assert!(description.contains("framerate=60/1"));
-    assert!(description.contains("bitrate=6000 key-int-max=60"));
+    assert!(description.contains("bitrate=6000 vbv-buf-capacity=100 nal-hrd=cbr key-int-max=60"));
+    assert!(description.contains("avenc_aac bitrate=96000"));
     assert!(description.contains("videoconvertscale add-borders=true"));
     assert!(!description.contains("vapostproc"));
     let encoder_default = pipeline_description(
@@ -725,6 +729,7 @@ fn av_pipeline_description_has_no_syntax_error() {
             },
             encoder: Encoder::X264,
         },
+        128,
     );
     assert!(
         encoder_default.contains(
@@ -738,9 +743,15 @@ fn av_pipeline_description_has_no_syntax_error() {
             settings: video,
             encoder: Encoder::VaApi,
         },
+        160,
     );
     assert!(va_api.contains("video/x-raw(memory:VAMemory),format=NV12"));
-    assert!(va_api.contains("vah264enc name=encoder rate-control=cbr target-usage=7"));
+    assert!(va_api.contains("vapostproc add-borders=true"));
+    assert!(!va_api.contains("disable-passthrough=true"));
+    assert!(va_api.contains(
+        "vah264enc name=encoder rate-control=cbr target-usage=7 bitrate=6000 cpb-size=600"
+    ));
+    assert!(va_api.contains("avenc_aac bitrate=160000"));
     assert!(va_api.contains("profile=constrained-baseline,stream-format=byte-stream"));
     for description in [description, va_api] {
         if let Err(error) = gst::parse::launch(&description) {
@@ -781,12 +792,24 @@ fn host_video_encoders_are_available() {
     })
     .unwrap();
     assert_eq!(software.encoder, Encoder::X264);
-    let pipeline = build_pipeline(&pipeline_description(1, 0, automatic)).unwrap();
+    let pipeline = build_pipeline(&pipeline_description(
+        1,
+        0,
+        automatic,
+        settings::DEFAULT_AUDIO_BITRATE_KBPS,
+    ))
+    .unwrap();
     let encoder = pipeline.by_name("encoder").unwrap();
     assert_eq!(encoder.property::<u32>("bitrate"), 6_000);
     assert_eq!(encoder.property::<u32>("key-int-max"), 60);
     assert_eq!(encoder.property::<u32>("target-usage"), 7);
-    let pipeline = build_pipeline(&pipeline_description(1, 0, software)).unwrap();
+    let pipeline = build_pipeline(&pipeline_description(
+        1,
+        0,
+        software,
+        settings::DEFAULT_AUDIO_BITRATE_KBPS,
+    ))
+    .unwrap();
     let encoder = pipeline.by_name("encoder").unwrap();
     assert_eq!(encoder.property::<u32>("bitrate"), 6_000);
     assert_eq!(encoder.property::<u32>("key-int-max"), 60);

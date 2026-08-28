@@ -602,6 +602,9 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"\"Aercast-Viewer-ID\": viewerId".as_slice(),
         b"response.status === 409".as_slice(),
         b"blockedByHost = true".as_slice(),
+        b"let failed = false;".as_slice(),
+        b"failed = true;".as_slice(),
+        b"if (failed) await delay(500);".as_slice(),
         b"fetch(`${location.pathname}/telemetry`".as_slice(),
         b"method: \"POST\"".as_slice(),
         b"await withAbort(delay(2000), signal)".as_slice(),
@@ -628,6 +631,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"new MediaSource()".as_slice(),
         b"MediaSource.isTypeSupported".as_slice(),
         b"await playAutomatically(attempt)".as_slice(),
+        b"if (!running) return;\n      await delay(500);".as_slice(),
     ] {
         assert!(!html.windows(removed.len()).any(|window| window == removed));
     }

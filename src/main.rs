@@ -69,6 +69,7 @@ enum Command {
 #[derive(Clone, Debug, PartialEq)]
 struct AudioSettings {
     enabled: bool,
+    bitrate_kbps: u32,
     exclude_communication: bool,
     exclusions: Vec<String>,
 }
@@ -194,6 +195,7 @@ enum Message {
     ApplySystemAudio,
     Page(Page),
     SystemAudio(bool),
+    AudioBitrate(u32),
     CommunicationAudio(bool),
     AudioExclusion(String, bool),
     DeleteAudioExclusion(String),
@@ -656,6 +658,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::SystemAudio(_)
+        | Message::AudioBitrate(_)
         | Message::CommunicationAudio(_)
         | Message::AudioExclusion(..)
         | Message::DeleteAudioExclusion(_)
@@ -664,6 +667,9 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             if app.applying_network => {}
         Message::SystemAudio(system_audio) => {
             save_settings(app, |settings| settings.system_audio = system_audio);
+        }
+        Message::AudioBitrate(bitrate_kbps) => {
+            save_settings(app, |settings| settings.audio_bitrate_kbps = bitrate_kbps);
         }
         Message::CommunicationAudio(enabled) => {
             save_settings(app, |settings| {
@@ -958,6 +964,7 @@ fn scan_audio_applications(app: &mut App) -> Task<Message> {
 fn audio_settings(settings: &settings::Settings) -> AudioSettings {
     AudioSettings {
         enabled: settings.system_audio,
+        bitrate_kbps: settings.audio_bitrate_kbps,
         exclude_communication: settings.exclude_communication_audio,
         exclusions: settings
             .audio_exclusions
@@ -1712,6 +1719,31 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             Message::VideoEncoder(encoder),
         ))
     });
+    let audio_bitrate_options =
+        settings::AUDIO_BITRATES_KBPS
+            .into_iter()
+            .fold(row![], |options, bitrate| {
+                options.push(settings_option(
+                    app,
+                    format!("{bitrate} kbps"),
+                    app.settings.audio_bitrate_kbps == bitrate,
+                    Message::AudioBitrate(bitrate),
+                ))
+            });
+    let configured_media_rate = app.settings.video.bitrate_mbps.map_or_else(
+        || {
+            format!(
+                "Configured media rate: encoder-default video + {} kbps audio (transport overhead excluded).",
+                app.settings.audio_bitrate_kbps
+            )
+        },
+        |video| {
+            format!(
+                "Configured media rate: about {video}.{:03} Mbps (transport overhead excluded).",
+                app.settings.audio_bitrate_kbps
+            )
+        },
+    );
     let quality = quality
         .push(text("Encoder").size(14))
         .push(encoder_options.spacing(8))
@@ -1864,6 +1896,11 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             (!app.applying_network).then_some(Message::SystemAudio as fn(bool) -> Message),
             focus_ring,
         ),
+        text("Audio bitrate").size(14),
+        audio_bitrate_options.spacing(8),
+        text(configured_media_rate)
+            .size(13)
+            .color(app.appearance.secondary_text()),
         text(hint).size(13).color(app.appearance.secondary_text()),
         text("Excluded applications").size(14),
         exclusion_rows,
@@ -2356,7 +2393,8 @@ async fn share_once(
             Ok(media) => media,
             Err(error) => break Ok(ShareStop::Failed(error.into())),
         };
-        let description = pipeline_description(node_id, remote.as_raw_fd(), video);
+        let description =
+            pipeline_description(node_id, remote.as_raw_fd(), video, audio.bitrate_kbps);
         let attempt = serve_video(
             &description,
             &mut capture_caps,
@@ -2731,7 +2769,12 @@ fn plan_encoder(video: settings::VideoSettings, encoder: Encoder) -> Result<Vide
         settings: video,
         encoder,
     };
-    let pipeline = build_pipeline(&pipeline_description(1, 0, plan))?;
+    let pipeline = build_pipeline(&pipeline_description(
+        1,
+        0,
+        plan,
+        settings::DEFAULT_AUDIO_BITRATE_KBPS,
+    ))?;
     let encoder = pipeline
         .by_name("encoder")
         .ok_or_else(|| io::Error::other("GStreamer pipeline has no video encoder"))?;
@@ -2768,32 +2811,48 @@ fn build_pipeline(description: &str) -> Result<gst::Pipeline> {
         .map_err(|_| io::Error::other("GStreamer did not create a pipeline").into())
 }
 
-fn pipeline_description(node_id: u32, remote_fd: i32, plan: VideoPlan) -> String {
+fn pipeline_description(
+    node_id: u32,
+    remote_fd: i32,
+    plan: VideoPlan,
+    audio_bitrate_kbps: u32,
+) -> String {
     let video = plan.settings;
-    let bitrate = video
-        .bitrate_mbps
-        .map(|bitrate| format!(" bitrate={}", u32::from(bitrate) * 1_000))
-        .unwrap_or_default();
     let video_pipeline = match plan.encoder {
-        Encoder::VaApi => format!(
-            "vapostproc disable-passthrough=true add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=7{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
-            width = video.width,
-            height = video.height,
-            fps = video.fps,
-        ),
-        Encoder::X264 => format!(
-            "videoconvertscale add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps}",
-            width = video.width,
-            height = video.height,
-            fps = video.fps,
-        ),
+        Encoder::VaApi => {
+            let bitrate = video.bitrate_mbps.map_or_else(String::new, |bitrate| {
+                let bitrate = u32::from(bitrate) * 1_000;
+                format!(" bitrate={bitrate} cpb-size={}", bitrate / 10)
+            });
+            format!(
+                "vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=7{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
+                width = video.width,
+                height = video.height,
+                fps = video.fps,
+            )
+        }
+        Encoder::X264 => {
+            let bitrate = video.bitrate_mbps.map_or_else(String::new, |bitrate| {
+                format!(
+                    " bitrate={} vbv-buf-capacity=100 nal-hrd=cbr",
+                    u32::from(bitrate) * 1_000
+                )
+            });
+            format!(
+                "videoconvertscale add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps}",
+                width = video.width,
+                height = video.height,
+                fps = video.fps,
+            )
+        }
     };
     format!(
         "mp4mux name=mux fragment-duration=100 ! appsink name=stream sync=false wait-on-eos=false
-         audiomixer name=audio-mixer ignore-inactive-pads=true ! audioconvert ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0
+         audiomixer name=audio-mixer ignore-inactive-pads=true ! audioconvert ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! avenc_aac bitrate={audio_bitrate} ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! queue ! mux.audio_0
          audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! queue ! audio-mixer.
          appsrc name=system-audio is-live=true format=time do-timestamp=true block=false max-bytes=384000 leaky-type=downstream ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! queue ! audio-mixer.
          pipewiresrc name=portal-video fd={remote_fd} path={node_id} on-disconnect=error ! capsfilter name=portal-format ! {video_pipeline} ! h264parse name=h264 ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux.video_0",
+        audio_bitrate = audio_bitrate_kbps * 1_000,
     )
 }
 

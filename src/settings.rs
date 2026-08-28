@@ -10,10 +10,14 @@ use std::{
 use axum::http::Uri;
 use serde::{Deserialize, Serialize};
 
+pub(crate) const AUDIO_BITRATES_KBPS: [u32; 3] = [96, 128, 160];
+pub(crate) const DEFAULT_AUDIO_BITRATE_KBPS: u32 = 128;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) system_audio: bool,
+    pub(crate) audio_bitrate_kbps: u32,
     pub(crate) exclude_communication_audio: bool,
     pub(crate) audio_exclusions: Vec<AudioExclusion>,
     pub(crate) notifications: bool,
@@ -27,6 +31,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             system_audio: true,
+            audio_bitrate_kbps: DEFAULT_AUDIO_BITRATE_KBPS,
             exclude_communication_audio: true,
             audio_exclusions: default_audio_exclusions(),
             notifications: true,
@@ -232,6 +237,9 @@ impl Settings {
 
     fn validate(self) -> io::Result<Self> {
         self.bind()?;
+        if !AUDIO_BITRATES_KBPS.contains(&self.audio_bitrate_kbps) {
+            return Err(invalid("Audio bitrate must be 96, 128, or 160 kbps"));
+        }
         let mut identities = HashSet::new();
         if self.audio_exclusions.iter().any(|exclusion| {
             exclusion.label.is_empty()
@@ -330,6 +338,7 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let defaults = Settings::load_from(&path).unwrap();
         assert!(defaults.system_audio);
+        assert_eq!(defaults.audio_bitrate_kbps, DEFAULT_AUDIO_BITRATE_KBPS);
         assert!(defaults.exclude_communication_audio);
         assert_eq!(defaults.audio_exclusions, default_audio_exclusions());
         assert!(defaults.notifications);
@@ -337,6 +346,7 @@ mod tests {
         assert_eq!(defaults.bind().unwrap(), "127.0.0.1:8877".parse().unwrap());
         Settings {
             system_audio: false,
+            audio_bitrate_kbps: 160,
             exclude_communication_audio: false,
             audio_exclusions: vec![AudioExclusion {
                 label: "Chat".to_owned(),
@@ -359,6 +369,7 @@ mod tests {
         .unwrap();
         let saved = Settings::load_from(&path).unwrap();
         assert!(!saved.system_audio);
+        assert_eq!(saved.audio_bitrate_kbps, 160);
         assert!(!saved.exclude_communication_audio);
         assert_eq!(saved.audio_exclusions[0].identity, "org.example.Chat");
         assert!(!saved.audio_exclusions[0].enabled);
@@ -385,6 +396,10 @@ mod tests {
         )
         .unwrap();
         assert!(Settings::load_from(&path).unwrap().notifications);
+        assert_eq!(
+            Settings::load_from(&path).unwrap().audio_bitrate_kbps,
+            DEFAULT_AUDIO_BITRATE_KBPS
+        );
         assert!(
             Settings::load_from(&path)
                 .unwrap()
@@ -399,6 +414,11 @@ mod tests {
             .audio_exclusions
             .push(duplicate.audio_exclusions[0].clone());
         assert!(duplicate.validate().is_err());
+        let invalid_audio = Settings {
+            audio_bitrate_kbps: 192,
+            ..Settings::default()
+        };
+        assert!(invalid_audio.validate().is_err());
         assert_eq!(
             Settings::load_from(&path).unwrap().video,
             VideoSettings::default()

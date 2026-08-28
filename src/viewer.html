@@ -281,6 +281,7 @@
   async function connect(attempt) {
     claimSession();
     while (running) {
+      let failed = false;
       document.body.dataset.state = "connecting";
       delete document.body.dataset.error;
       try {
@@ -319,6 +320,7 @@
           console.warn("Viewer stream ended; reconnecting.");
         }
       } catch (error) {
+        failed = true;
         const cause = attempt.error ?? error;
         if (!running) {
           showError(cause);
@@ -331,7 +333,7 @@
         await stopAttempt(attempt);
       }
       if (!running) return;
-      await delay(500);
+      if (failed) await delay(500);
       attempt = beginAttempt();
     }
   }

@@ -1,7 +1,7 @@
 # Development contract
 
 This document owns Aercast's product behavior, settings, security boundary,
-engineering decisions, active work, acceptance, and non-goals. The
+engineering decisions, acceptance, and non-goals. The
 [README](../README.md) is the product homepage, the
 [verification record](verification.md) owns evidence, and
 [UI design](ui-design.md) owns visual rules.
@@ -12,11 +12,10 @@ Aercast v0.1.1 is an early x86-64 Linux release distributed through AUR,
 distribution packages, and a prebuilt program archive. Availability is not
 evidence of support until an artifact passes a real install and launch check.
 
-The recorded niri baseline completed the original product phases. Changes after
-that qualification have automated coverage but have not repeated the real
-Portal, PipeWire, Zen, and Chromium workflow. Phase 6 is active to make the
-existing Viewer compatible across browser engines and qualify available real
-platforms. See the [current verification gap](verification.md#current-qualification).
+The recorded niri baseline remains the latest complete real qualification.
+Changes after it have automated coverage but have not repeated the real Portal,
+PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
+[current verification gap](verification.md#current-qualification).
 
 ## Product boundary
 
@@ -40,6 +39,8 @@ platforms. See the [current verification gap](verification.md#current-qualificat
 - Keep the product focused: do not add accounts, chat, calls, cameras, WebRTC
   infrastructure, recording, cloud relays, remote control, file transfer, or
   built-in NAT traversal.
+- Mobile 1440p, 120 FPS, AirPlay, background playback, adaptive bitrate, split
+  audio/video delivery, and new transport or media protocols are out of scope.
 
 ## Host behavior
 
@@ -106,8 +107,13 @@ platforms. See the [current verification gap](verification.md#current-qualificat
   behind the live edge. Lag from 1.5 through 3 seconds catches up gradually at
   up to 1.15×; larger lag and manual seeking return to that live position once
   playback has started, without issuing another seek while one is in progress.
-  Automatic reconnect continues until the share ends or the Host blocks the
-  Viewer.
+  Normal media replacement reconnects immediately; a failed request waits 500
+  ms, and a waiting `425` response polls after 500 ms. Automatic reconnect
+  continues until the share ends or the Host blocks the Viewer.
+- Bounded per-Viewer delivery may end and replace a lagging response so the
+  Viewer jumps forward as one synchronized stream. If sustained throughput is
+  below the configured video-plus-audio rate, continuous audio is not
+  guaranteed; there is no audio-priority side channel.
 
 ## Settings contract
 
@@ -119,6 +125,7 @@ platforms. See the [current verification gap](verification.md#current-qualificat
 | Bitrate | Preset value, encoder default for untouched Custom, or manual `1–500 Mbps` |
 | Encoder | Auto prefers detected hardware and falls back to software; detected implementations may be selected; codec is not exposed |
 | System audio | Enabled by default; no microphone |
+| Audio bitrate | AAC-LC, 48 kHz stereo; `96 / 128 / 160 kbps`, default `128 kbps` |
 | Audio exclusions | Permanent toggleable Communication rule; toggleable/deletable Discord, Vesktop, and Steam Voice defaults; add active applications |
 | Network | `127.0.0.1:8877` by default; configurable unicast address, port, and optional `scheme://host:port` public base URL |
 | Notifications | Enabled by default |
@@ -167,9 +174,13 @@ Settings are replace-written internal state at
   object `0`, triggers graph rebuild rather than ending the share. No daemon-wide
   passive-link override is allowed.
 - GStreamer owns media conversion, clocks, H.264, AAC-LC, and fMP4. Keep
-  `mp4mux` while real MSE and late-join checks pass. Hardware encoding and
-  DMA-BUF optimization require measurements; do not add factories before a
-  second verified implementation exists.
+  `mp4mux` while real MSE and late-join checks pass. A manual video bitrate uses
+  a 100 ms x264 VBV with CBR HRD or a 100 ms VA-API CPB to limit short bursts;
+  untouched Custom keeps the encoder default. The VA-API path accepts Portal
+  DMA-BUF, lets `vapostproc` pass compatible frames through, and keeps converted
+  raw frames in VA memory through `vah264enc`; x264 remains the CPU fallback.
+  This is a zero-copy-capable raw video path, not an end-to-end zero-copy claim,
+  and remains unqualified until measured on the target hardware.
 - HTTP state owns the token separately from replaceable media state. Viewer
   telemetry and Host controls use ordinary HTTP, not WebSocket.
 - Desktop integration uses iced Wayland/wgpu, `ksni`, direct `zbus`, ashpd, and
@@ -179,31 +190,3 @@ Settings are replace-written internal state at
   stable `vX.Y.Z` tag must match the Cargo package version before the same
   checks build and publish x86-64 `.deb`, binary tarball, and checksum assets.
   Workflow actions use their latest major release; Arch remains source-built.
-
-## Completed product work
-
-**Phases 1–5 — 2026-08-25 to 2026-08-27:** Portal capture, browser fMP4
-playback, per-application audio exclusions, same-link recovery, desktop
-lifecycle, settings, and one-encoder three-Viewer workflows completed the
-recorded niri baseline.
-[Evidence](verification.md#qualified-baseline)
-
-Git history retains the old phase checklists.
-
-## Active product work
-
-**Phase 6 — Cross-platform Viewer compatibility**
-
-- Keep one capability-detected fMP4 Viewer implementation with no browser-name
-  branches and no changes to the public HTTP interface or media format. Host
-  changes are limited to the tray naming, online count, and one-shot window
-  activation polish specified in Desktop lifecycle.
-- Qualify 720p60 at 6 Mbps and 1080p60 at 12 Mbps first on the available real
-  Linux Zen, Linux Chromium, and iOS Safari devices. Playback must advance for
-  two minutes without repeated stalls, reconnects, or cancellation errors;
-  audio, telemetry, same-link recovery, Disconnect, and Refresh Link must work.
-- Windows Chrome, Edge, and Firefox; macOS Safari; and Android Chrome and Firefox
-  remain explicit qualification gaps until the same scenarios run on real
-  platforms. Passing one engine representative does not qualify another OS.
-- Mobile 1440p, 120 FPS, AirPlay, background playback, adaptive bitrate, and new
-  transport or media protocols are non-goals for this Phase.

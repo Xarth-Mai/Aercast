@@ -8,8 +8,8 @@ or a product specification.
 
 Aercast v0.1.1 is distributed through AUR, distribution packages, and a
 prebuilt program archive, but no artifact install has been recorded here. The
-latest complete real Host/Viewer qualification remains the Phase 5 niri run at
-revision `073169b`. The current cross-platform Viewer and desktop-lifecycle
+latest complete real Host/Viewer qualification remains the niri run at revision
+`073169b`. The current media, cross-platform Viewer, and desktop-lifecycle
 changes have automated coverage only; they have not repeated the real Portal,
 PipeWire, Zen, Chromium, or iOS Safari workflow.
 
@@ -17,8 +17,9 @@ PipeWire, Zen, Chromium, or iOS Safari workflow.
 | --- | --- | --- |
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
 | Release artifacts | AUR metadata for v0.1.1 exists at revision `ef8cdc3`; other assets are distributed outside the recorded checks | No clean install and launch check from any artifact |
-| Full product workflow | Phase 5 passed at `073169b` | Current v0.1.1 behavior has not repeated that acceptance |
-| Cross-platform Viewer | User checks after `abce8c0` and `aa3dda9`: desktop Chrome no longer stuttered; iOS 27 Safari still rendered only one frame and a short audio slice every few seconds at the current 1080p60/12 Mbps setting after seek suppression | Safari begins playback with only the first 100 ms fragment and repeatedly starves at the live edge; no platform is qualified by this short check |
+| Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.1 behavior has not repeated that acceptance |
+| Cross-platform Viewer | User checks through `6a43fab`: desktop Chrome no longer stuttered, and iOS 27 Safari played on LAN at about two seconds behind live after buffering before playback | The short user checks do not record exact browser versions or acceptance duration; no platform is qualified by them |
+| Media pipeline optimization | 2026-08-28 working tree: generated pipeline contracts cover selectable 96/128/160 kbps AAC, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation without forced `vapostproc` copies, and immediate normal-EOF reconnect | No real encoder, DMA-BUF, Safari, or constrained-network measurement was run; zero-copy and latency remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
 ## Recorded environment
@@ -71,18 +72,18 @@ At revision `073169b`, `cargo fmt --check`,
 environment-dependent ignores, and `git diff --check` passed. These results do
 not qualify later revisions.
 
-For the 2026-08-28 cross-platform Viewer and desktop-lifecycle working tree,
-`node --check` on the embedded script, `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, all 38 runnable tests, the isolated
-D-Bus single-instance activation test, and `git diff --check` passed; five
-explicitly environment-dependent tests remained ignored. This proves the
-generated Viewer, tray, and notification contracts, not playback or window
-activation in a real desktop session.
+For the 2026-08-28 media, cross-platform Viewer, and desktop-lifecycle working
+tree, `node --check` on the embedded script, `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, all 38 runnable tests, and
+`git diff --check` passed; five explicitly environment-dependent tests remained
+ignored. This proves generated settings, pipeline, Viewer, tray, and
+notification contracts, not real capture, encoding, playback, or window
+activation. Real acceptance was explicitly skipped for this change.
 
-The latest real Viewer check used the existing HTTPS path and 1080p60/12 Mbps
-VA-API stream. It confirms the Chrome buffering fix and exposes the current
-iOS Safari playback blocker, but lacks the exact Chrome version and two-minute
-acceptance duration required for qualification.
+The latest user Viewer check used the existing HTTPS path and 1080p60/12 Mbps
+VA-API stream. It reports Chrome playback without the earlier stutter and iOS
+27 Safari about two seconds behind live, but lacks exact browser versions and
+the acceptance duration required for qualification.
 
 The desktop smoke preflight found a running Aercast instance whose tray reported
 `Status: Sharing`, already owning the live Portal and PipeWire session. It was
@@ -101,5 +102,7 @@ tray-count, Viewer-notification, or window-activation checks.
 - Installation and launch from AUR, `.deb`, or a prebuilt release asset
 - GNOME, KDE, other distributions, stable desktop Firefox, or Google Chrome
 - Hardware encoding; 1080p60, 1440p60, or 120 FPS
+- A single Viewer at 1440p60/24 Mbps over 30 Mbps with 80 ms RTT, 20 ms jitter,
+  and 0.1% loss; VA-API raw-frame zero-copy and Host CPU/GPU measurements
 - Trusted-LAN end-to-end latency, long-duration load, or public-network
   deployment
