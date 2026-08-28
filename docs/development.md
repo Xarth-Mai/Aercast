@@ -1,282 +1,176 @@
-# Development direction
+# Development contract
 
-This document owns product commitments, exact Host and Viewer behavior,
-engineering decisions, settings, security boundaries, the current Phase,
-acceptance criteria, risks, non-goals, and the next-Phase entry condition; it
-does not own homepage copy, visual tokens, or raw test output.
+This document owns Aercast's product behavior, settings, security boundary,
+engineering decisions, active work, acceptance, and non-goals. The
+[README](../README.md) is the product homepage, the
+[verification record](verification.md) owns evidence, and
+[UI design](ui-design.md) owns visual rules.
 
-## Status
+## Release state
 
-Aercast is pre-alpha. The planned product phases are complete on the recorded
-niri baseline. Phase 5 qualification proves the fixed desktop and tray
-lifecycle, settings boundaries, Portal-derived appearance, notifications,
-Viewer management, link refresh, and one-encoder three-Viewer workflows in Zen
-first and Chromium second. The current interface polish and PipeWire graph-race
-fix have automated coverage but have not repeated that real Host and Viewer
-qualification. There is no packaged release; the last real selective-audio
-graph and lifecycle verification passed on PipeWire 1.6.8 without a daemon-wide
-passive-link override.
+Aercast v0.1.1 is an early x86-64 Linux release distributed through AUR,
+distribution packages, and a prebuilt program archive. Availability is not
+evidence of support until an artifact passes a real install and launch check.
 
-## Product commitments
+The recorded niri baseline completed the planned product phases. Changes after
+that qualification have automated coverage but have not repeated the real
+Portal, PipeWire, Zen, and Chromium workflow. No new product Phase is active;
+packaging must not expand product behavior. See the
+[current verification gap](verification.md#current-qualification).
 
-- Aercast is a lightweight, native Linux/Wayland screen-sharing GUI for gamers.
-  niri is the formal validation environment; other Wayland desktops are
-  best-effort until separately verified. Flatpak is deferred.
-- Current stable desktop Firefox is the primary Viewer target and is validated
-  before first-class Chromium. Zen Browser is the local Firefox-family test
-  vehicle. Safari, mobile browsers, and codec-incomplete builds are not launch
-  promises.
-- The Host chooses exactly one monitor or window through the non-persistent XDG
-  ScreenCast Portal. Capture never starts before explicit approval.
+## Product boundary
+
+- Aercast is a lightweight native Linux/Wayland GUI for gamers. niri is the
+  formal validation environment; other Wayland desktops remain best-effort
+  until separately verified.
+- Stable desktop Firefox is the primary Viewer target and is checked before
+  Chromium. Zen Browser is the local Firefox-family test vehicle. Safari,
+  mobile browsers, and codec-incomplete builds are not release promises.
+- The Host selects exactly one monitor or window through the non-persistent XDG
+  ScreenCast Portal. Capture never starts without explicit approval.
 - One synchronized H.264/AAC-LC fMP4 stream is encoded once and sent directly
-  over HTTP to every Viewer. Video and audio are never split into separate
-  public streams.
-- Selective system audio is a release gate. Exclusions must survive application
-  restart and must not change what the Host hears. There is no microphone or
-  selected-applications-only audio mode.
-- Aercast is not a meeting, recording, or remote-access platform. Do not add
-  accounts, chat, calls, cameras, WebRTC, signaling, ICE, STUN, TURN, an SFU,
-  cloud relays, recording, remote control, clipboard, file transfer, or built-in
-  NAT traversal.
+  over HTTP to every Viewer. Video and audio are not split into separate public
+  streams.
+- System audio can exclude specified applications. Exclusions survive restart
+  and never change what the Host hears. Microphone and
+  selected-applications-only modes are out of scope.
+- Keep the product focused: do not add accounts, chat, calls, cameras, WebRTC
+  infrastructure, recording, cloud relays, remote control, file transfer, or
+  built-in NAT traversal.
 
-## Product behavior
+## Host behavior
 
-### Window, tray, and application lifecycle
+### Desktop lifecycle
 
-- The Host has only a GUI. The main window is fixed at `920×520` logical pixels,
-  is not resizable, and uses ordinary system decorations. Its fixed size lets
-  niri's native heuristic float it without a user window rule.
-- The in-content close button and the compositor close action both hide the
-  window without stopping an active share.
-- iced runs with daemon lifetime. Closing the window always hides it, including
-  when no tray watcher exists; it does not stop sharing or exit Aercast.
-- Only one process instance may run. A later launch displays and activates the
-  existing window.
-- `ksni` supplies one fixed, state-independent StatusNotifierItem using
-  `assets/aercast-icon.png`. Primary activation always displays the window.
-  Its menu dynamically shows status, Show, Start or Copy/Stop, and Quit.
-- Quitting during an active share requires confirmation. A confirmed Quit
-  revokes the token, disconnects Viewers, closes media and Portal state, removes
-  the tray item and listener, then exits.
+- Aercast is one GUI process. Its `920×520` logical-pixel window is fixed-size,
+  uses system decorations, and has no Host video preview.
+- Its sidebar switches among **Share**, **Viewers**, and **Settings**.
+- Closing either the content window or compositor window hides it without
+  stopping a share or exiting. `iced::daemon` keeps the process alive.
+- Only one process instance may run; a later launch activates the existing
+  window.
+- One state-independent `ksni` tray item always opens the window on primary
+  activation. Its menu exposes status, Show, the applicable Start/Copy/Stop
+  action, and Quit.
+- Quitting while sharing requires confirmation. Confirmed Quit revokes the
+  token, disconnects Viewers, closes Portal and media state, removes desktop
+  integrations, and exits.
 
-### Host share controls
+### Sharing and links
 
-- The top navigation switches between **Main**, **Viewers**, and **Settings**.
-  There is no Host video preview.
-- **Start Sharing** opens the Portal picker, which owns monitor/window choice
-  and pointer behavior. The same stateful action becomes **Cancel** during
-  selection and **Stop Sharing** while active. This primary action is centered
-  at the bottom of the Share view. The view also shows the approved source and
-  share link. Copy and Refresh Link are icon buttons; successful Copy briefly
-  replaces its icon with a check mark.
-- Stop closes media and the Portal session. The current link remains valid and
-  returns Viewers to waiting. A later Start reuses it.
-- Refresh Link is available while waiting or sharing. It creates a new token
-  without restarting capture, closes every old Viewer stream, clears Viewer
-  history, and makes every old token route return the same `404`. Refresh is
-  immediate with no Viewers and requires confirmation when any Viewer is
-  connected.
-- Process exit is the other operation that invalidates the current token.
+- **Start Sharing** opens the Portal picker. The same primary action becomes
+  **Cancel** while selecting and **Stop Sharing** while active.
+- Stop closes media and the Portal session but keeps the link valid. Existing
+  Viewer pages wait, and a later Start reuses the link.
+- Refresh Link works while waiting or sharing. With connected Viewers it
+  requires confirmation; it rotates the token without restarting capture,
+  disconnects old streams, clears Viewer history, and makes all old token routes
+  return the same `404`.
+- Copy briefly changes to a check mark. Process exit is the only other token
+  invalidation boundary.
 
-### Viewer management
+### Viewer management and playback
 
-- The dedicated Viewers page shows the online/total count and Viewer list.
-- Each row shows IP address, connection duration, RTT, playback lag, and one
-  disconnect action. The displayed IP prefers a reverse proxy's `X-Real-IP`,
-  then the first `X-Forwarded-For` address, and otherwise uses the TCP peer.
-  These headers affect display only; the proxy must replace client-supplied
-  values. When multiple Viewers share the same IP, sequential indices disambiguate
-  them. Online Viewers sort before offline history.
-- The Viewer reports the previous successful telemetry request's round-trip time
-  and buffered media end minus playback position every two seconds. Offline
-  telemetry, or telemetry at least six seconds old, displays as unavailable.
-- Each token retains at most 100 in-memory Viewer records. Refresh Link and
-  process exit clear them. IP addresses and telemetry are never persisted or
-  written to ordinary logs.
-- A random browser-scoped Viewer ID merges automatic reconnects into one record.
-  Opening or resuming playback in another tab of the same browser takes over the
-  active session.
-- A Host disconnect permanently blocks that Viewer from reconnecting through
-  Stop, later Start, and media recoveries; Refresh Link and process exit clear it
-  with Viewer history.
-- Connection duration accumulates across reconnects of that browser from the Host's
-  monotonic clock and freezes while its record is offline.
-- The Viewer fills the browser viewport with one square-cornered, `contain`-fit
-  video and only the browser's native playback, volume, and fullscreen controls;
-  it has no Aercast overlay or visible status text. Page load first attempts
-  unmuted playback and retries muted when autoplay policy rejects sound. A
-  user-selected native muted state is remembered locally, while that policy
-  fallback is not stored as preference. Manual timeline seeking returns to the
-  live edge. Playback between 350 ms and 2 s behind the latest buffered media
-  catches up by gradually increasing playback rate (up to 1.15×); playback more
-  than 2 s behind seeks to 150 ms behind the live edge. Automatic reconnect
-  continues until the share
-  ends or the Host disconnects the Viewer.
-  Connection and media diagnostics remain only in the console and document
-  state attributes.
+- The Viewers page shows online/total count and rows containing IP, accumulated
+  connection duration, RTT, playback lag, and Disconnect. Online rows precede
+  offline history.
+- Displayed IP prefers `X-Real-IP`, then the first `X-Forwarded-For` value, then
+  the TCP peer. A trusted reverse proxy must replace client-supplied headers.
+  Sequential indices distinguish Viewers sharing an IP.
+- Telemetry reports the previous request RTT and buffered-end playback lag every
+  two seconds; offline or six-second-old values are unavailable.
+- Each token keeps at most 100 in-memory Viewer records. Viewer IDs, IPs, and
+  telemetry are neither persisted nor written to ordinary logs.
+- A random browser-scoped Viewer ID merges reconnects. A second tab takes over
+  the active session. Host Disconnect permanently blocks that Viewer until
+  Refresh Link or process exit; there is no manual retry.
+- Connection duration accumulates from the Host's monotonic clock and pauses
+  while offline.
+- The Viewer is one square-cornered, viewport-filling `contain` video using only
+  native controls. It tries unmuted autoplay, retries muted when policy blocks
+  it, and remembers only a user-selected muted state. Diagnostics stay in the
+  console and document state attributes.
+- Manual seeking returns to the live edge. Lag from 350 ms through 2 s catches
+  up gradually at up to 1.15×; larger lag seeks to 150 ms behind the buffered
+  end. Automatic reconnect continues until the share ends or the Host blocks
+  the Viewer.
 
-### Settings contract
+## Settings contract
 
-| Area | Required behavior |
+| Area | Behavior |
 | --- | --- |
 | Presets | `720p60 / 6 Mbps`, `1080p60 / 12 Mbps`, `1440p60 / 24 Mbps` |
-| Custom quality | Any width and height within the selected encoder's reported capability; preserve aspect ratio and center with black padding when needed |
+| Custom quality | Encoder-supported width and height; preserve aspect ratio with centered black padding |
 | Frame rate | `30 / 60 / 120 FPS` |
-| Bitrate | Presets use their listed bitrate; Custom uses the encoder default until manually set; manual range `1–500 Mbps` |
-| Encoder | Auto prefers detected hardware and falls back to software; allow a detected implementation to be selected; never expose codec choice |
-| System audio | One switch, enabled by default; no microphone |
-| Audio exclusions | Communication rule is enabled by default and can be toggled but not deleted; enabled defaults for Discord, Vesktop, and Steam Voice can be toggled or deleted, and ordinary rules can be added from active PipeWire applications |
-| Network | Loopback and `8877/TCP` by default; configurable listen address, port, and optional `scheme://host:port` share base URL |
-| Notifications | One switch, enabled by default |
+| Bitrate | Preset value, encoder default for untouched Custom, or manual `1–500 Mbps` |
+| Encoder | Auto prefers detected hardware and falls back to software; detected implementations may be selected; codec is not exposed |
+| System audio | Enabled by default; no microphone |
+| Audio exclusions | Permanent toggleable Communication rule; toggleable/deletable Discord, Vesktop, and Steam Voice defaults; add active applications |
+| Network | `127.0.0.1:8877` by default; configurable unicast address, port, and optional `scheme://host:port` public base URL |
+| Notifications | Enabled by default |
 
-Unsupported saved quality reports the error and blocks Start; it is not repaired
-or silently downgraded. Quality edits are saved through **Save quality** and
-take effect on the next Start; an active share and its media-only recoveries
-retain the quality snapshot taken before its Portal picker opened.
-Audio-setting edits during sharing take effect only
-through **Apply to Current Share**, which performs one coordinated media restart.
-Network rebinding is allowed only while stopped and warns that old waiting pages
-may not recover. While the Host window is hidden, enabled desktop notifications
-report the first transition into sharing, the return to waiting after an active
-share, and Host or network failure. They never include the share link or token.
-Portal pointer behavior has no setting. Autostart is not provided.
+Unsupported saved quality blocks Start instead of being repaired or downgraded.
+Saved quality changes apply to the next Start; an active share and its media-only
+recoveries keep the snapshot taken before Portal selection. Audio edits apply
+to an active share only through **Apply to Current Share**, which coordinates
+one media restart. Network rebinding is stopped-only and warns that waiting
+pages using the old address may not recover.
 
-Settings are internal application state at
-`$XDG_CONFIG_HOME/aercast/settings.json`; the file is not a public hand-edited
-interface.
+Notifications are sent only while the Host window is hidden for the first
+transition into sharing, return to waiting, and Host or network failure. They
+never contain a link or token. Pointer behavior and autostart have no setting.
+Settings are replace-written internal state at
+`$XDG_CONFIG_HOME/aercast/settings.json`, not a public hand-edited interface.
 
-## Security and network boundary
+## Security and network
 
-- The token is 32 bytes of operating-system CSPRNG output encoded for the link.
-  It is a bearer credential, not transport security.
+- The link token is 32 bytes of operating-system CSPRNG output and is a bearer
+  credential, not transport security.
 - Page, media, telemetry, and controls are same-origin. Invalid, expired, and
-  superseded token routes return the same `404` without revealing prior state.
+  superseded routes all return `404` without revealing prior state.
 - Tokens, Viewer IDs, IP addresses, and telemetry must not enter ordinary logs
-  or third-party requests. Reverse proxies must disable or redact access logs
-  for tokenized paths.
-- Plain HTTP is limited to a trusted LAN. Public or otherwise untrusted access
-  requires an external HTTPS reverse proxy. Aercast does not own domains,
-  certificates, proxies, tunnels, port forwarding, or NAT traversal.
+  or third-party requests. Reverse proxies must redact tokenized paths.
+- Loopback is the safe default. Trusted-LAN binding is explicit. Untrusted or
+  public access requires an external HTTPS reverse proxy; Aercast owns no
+  domains, certificates, tunnels, port forwarding, or NAT traversal.
 
 ## Engineering decisions
 
-### Process and media
+- One Rust process owns one Portal source and one GStreamer capture, encode, and
+  mux pipeline per share regardless of Viewer count. Completed fMP4 fragments
+  fan out through Axum; bounded per-Viewer delivery drops lagging readers.
+- Video uses the Portal's restricted PipeWire remote. Audio observes the regular
+  PipeWire graph, taps only safe allowed stereo playback streams, and preserves
+  their existing sink routes. Audio-off and no-source states keep a silent track
+  so the MSE schema remains stable.
+- Audio identity is `application.id`, then process binary, then application
+  name. PID is diagnostic only. Communication is excluded by the permanent
+  default rule; unknown, mono, surround, duplicate, or unsafe layouts stay
+  silent.
+- On PipeWire 1.6.8, the Aercast capture node uses `node.passive=in`; exact links
+  do not request `link.passive`. Missing-resource `ENOENT`, including from core
+  object `0`, triggers graph rebuild rather than ending the share. No daemon-wide
+  passive-link override is allowed.
+- GStreamer owns media conversion, clocks, H.264, AAC-LC, and fMP4. Keep
+  `mp4mux` while real MSE and late-join checks pass. Hardware encoding and
+  DMA-BUF optimization require measurements; do not add factories before a
+  second verified implementation exists.
+- HTTP state owns the token separately from replaceable media state. Viewer
+  telemetry and Host controls use ordinary HTTP, not WebSocket.
+- Desktop integration uses iced Wayland/wgpu, `ksni`, direct `zbus`, ashpd, and
+  serde. Prefer current dependencies and platform APIs; do not add speculative
+  abstraction or cross-platform layers.
+- Pull requests run the canonical static checks on `ubuntu-latest`. A pushed
+  stable `vX.Y.Z` tag must match the Cargo package version before the same
+  checks build and publish x86-64 `.deb`, binary tarball, and checksum assets.
+  Workflow actions use their latest major release; Arch remains source-built.
 
-- Aercast is one Rust process. It owns one Portal source and one
-  capture/encode/mux pipeline per active share, regardless of Viewer count.
-- Video enters through the restricted PipeWire remote returned by the
-  ScreenCast Portal. Application audio is observed through the user's regular
-  PipeWire graph without moving or muting existing output links.
-- GStreamer owns capture conversion, clocks, H.264, AAC-LC, and fragmented MP4.
-  Rust coordinates the lifecycle and fans out completed media fragments.
-- Development builds lightly optimize Aercast and fully optimize dependencies;
-  release builds use thin LTO, one codegen unit, and stripped symbols while
-  preserving unwind-based cleanup.
-- The installed `mp4mux` remains the muxer while real MSE and late-join checks
-  pass. `isofmp4mux` requires a recorded failure before it is considered.
-- New Viewers receive only the latest initialization segment and current
-  keyframe-started GOP. Bounded per-Viewer delivery disconnects lagging readers
-  instead of backpressuring the media pipeline.
-- Hardware encoding and DMA-BUF copy reduction are measurement-driven work.
-  Do not build an encoder factory before a second verified implementation
-  exists.
+## Completed product work
 
-```text
-ScreenCast Portal -> restricted PipeWire remote -> video capture ----\
-                                                                  |
-regular PipeWire graph -> allowed playback taps -> audio mixer ----+->
-           GStreamer H.264 + AAC-LC -> fMP4 -> Axum -> browser MSE
-```
+**Phases 1–5 — 2026-08-25 to 2026-08-27:** Portal capture, browser fMP4
+playback, per-application audio exclusions, same-link recovery, desktop
+lifecycle, settings, and one-encoder three-Viewer workflows completed the
+recorded niri baseline.
+[Evidence](verification.md#qualified-baseline)
 
-### Session and HTTP lifecycle
-
-- App startup creates the process token described in
-  [Security and network boundary](#security-and-network-boundary) and starts the
-  HTTP listener; it does not start capture.
-- HTTP state owns the token separately from replaceable media state so Stop and
-  recovery can close a media hub without rotating the link.
-- Future Viewer heartbeat, telemetry, and Host control use ordinary Axum/Tokio
-  HTTP requests; do not add WebSocket.
-- Loopback is the safe default. A trusted-LAN bind is explicit. Public base
-  URLs and TLS termination are external infrastructure.
-
-### Audio policy
-
-- The policy is all eligible system playback except exclusions; there is no
-  selected-applications-only mode.
-- Stable application identity is `application.id`, then process binary, then
-  application name. PID is diagnostic data only and never affects policy.
-- PipeWire playback nodes with `media.role=Communication` are excluded by
-  default through a permanent, user-toggleable rule. Phase 5 settings add
-  editable default rules for Discord, Vesktop, and Steam Voice.
-- Each allowed stereo playback stream is tapped from its existing output ports
-  into an Aercast capture node exported and read back with `node.passive=in`.
-  Its input ports inherit that passive mode. Aercast does not request
-  `link.passive`; it verifies each exact link's endpoints, object serial, and
-  state while PipeWire derives runnable behavior from the node and port modes.
-  The playback stream must retain an independent active route to an audio sink.
-  Unknown, mono, surround, duplicate, or unsafe graph layouts stay silent.
-- Audio-off and no-source states keep a silent track so the MSE track schema
-  does not change during a share.
-
-### PipeWire 1.6.8 compatibility
-
-Selective system audio on PipeWire 1.6.8 requires no daemon-wide
-`allow.link.passive` override. Aercast marks its capture node's input direction
-passive through `node.passive=in`, waits for PipeWire NodeInfo to read back that
-value, and creates exact links without a client-supplied `link.passive`.
-PipeWire 1.6.8 does not duplicate this derived mode into the link properties;
-passivity is the inherited input-port scheduling behavior. Whole-sink monitor
-capture remains invalid because it cannot preserve per-application and
-Communication exclusions.
-
-Dynamic graph teardown may report `ENOENT` through either the removed object or
-PipeWire core object `0`; both mean the resource already vanished and trigger
-the normal graph rebuild instead of ending the share.
-
-### Desktop implementation
-
-- The product has only a GUI. Audio exclusions live only in internal settings;
-  there is no command-line control surface.
-- iced uses Wayland, Tokio, and the `wgpu` renderer. Phase 5 moves the lifecycle
-  to `iced::daemon`; hidden means no mapped window while the process continues.
-- The supplied `assets/aercast-icon.png` is the single application, tray, and
-  Viewer favicon brand image. UI controls use the minimal bundled symbolic SVG
-  set defined by [ui-design.md](ui-design.md).
-- Phase 5 uses `ksni` for StatusNotifierItem, direct `zbus` for single-instance
-  activation and notifications, the ashpd Settings Portal API for appearance
-  preferences, and `serde`/`serde_json` for internal settings. No GTK,
-  Libadwaita, Node, TypeScript, icon-theme, font, URL, UUID, or config-directory
-  dependency is planned.
-- Resolve the settings path with the standard XDG config fallback when
-  `XDG_CONFIG_HOME` is unset. Saving must be replace-based so a failed write
-  does not destroy the last valid file.
-
-## Completed work
-
-- **Phase 1 — 2026-08-25:** Portal monitor/window capture and passive-audio
-  feasibility were proven on the recorded niri host.
-  [Evidence](verification.md#portal-capture)
-- **Phase 2 — 2026-08-25:** Local H.264 fMP4 playback with negotiated codec MIME
-  was proven in Firefox-family and Chromium engines.
-  [Evidence](verification.md#browser-playback)
-- **Phase 3 — 2026-08-26:** Dynamic identity rematching, safe selective stereo
-  audio, AAC-LC muxing, and live browser playback were proven on the recorded
-  host. [Evidence](verification.md#selective-audio)
-- **Phase 4 — 2026-08-27:** Zen and Chromium completed the same-link lifecycle
-  through bounded same-Portal media recovery, Stop, and later Start; real
-  PipeWire policy excluded Communication streams across PID changes without
-  disturbing local sink routes. [Evidence](verification.md#phase-4-lifecycle)
-- **Phase 5 — 2026-08-27:** The fixed niri desktop product, settings, tray,
-  notifications, Viewer controls, link refresh, and one-encoder three-Viewer
-  workflow completed current-source acceptance in Zen and Chromium.
-  [Evidence](verification.md#phase-5-desktop-productization)
-
-Git history retains the detailed old checklists.
-
-## Repository non-goals
-
-Do not introduce microservices, multi-process media IPC, a custom media
-protocol, speculative cross-platform layers, one-implementation traits or
-factories, plugin systems, or unused directory structure. Product non-goals
-are authoritative in [Product commitments](#product-commitments).
+Git history retains the old phase checklists.

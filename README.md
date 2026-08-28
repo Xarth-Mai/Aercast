@@ -1,64 +1,83 @@
 # Aercast
 
-**Lightweight, direct screen sharing for Linux Wayland.**
+**Share your Linux Wayland screen directly with anyone who has a browser.**
 
-Aercast shares one screen or window, with selective system audio, directly to
-a small group of browser viewers. It is built for gamers, not meetings.
+Aercast shares one screen or window and its sound directly from your computer.
+You can leave out the sound from apps such as Discord or Steam Voice. Viewers
+just open a link—no account or app installation needed.
 
 ## Why Aercast
 
-- Native Wayland screen and window selection through the system Portal
-- Selective audio that does not change what the Host hears
-- Direct playback in Firefox-family and Chromium browsers
-- One encoded H.264/AAC stream for every Viewer
-- No accounts, Viewer install, or Aercast cloud relay
+- Choose a screen or window with the standard Wayland sharing dialog
+- Exclude sound from specific apps without changing what you hear
+- Let viewers watch directly in Firefox-family and Chromium browsers
+- Share with several viewers without encoding a separate stream for each one
+- See who's connected and disconnect viewers from the Aercast window
 
-## Status
+## Install
 
-Aercast is **pre-alpha**, with no packaged release or supported installation
-procedure yet. Its Phase 5 niri baseline completed end-to-end qualification:
-Portal capture, selective audio, same-link recovery, desktop and tray lifecycle,
-settings, Viewer management, and one-encoder three-Viewer playback were
-exercised in Zen Browser first and Chromium second. The latest interface polish
-and PipeWire graph-race fix have automated coverage but have not repeated that
-real Host and browser check.
-[See the evidence and current gap.](docs/verification.md)
+Aercast v0.1.1 is an early release for x86-64 Linux.
 
-GNOME, KDE, packaged installation, hardware encoding, 1080p60, and trusted-LAN
-latency targets are not yet verified.
+### Arch Linux
 
-## Quick start
+Install the AUR package:
 
-After installing a development build:
+```sh
+paru -Syu aercast
+```
 
-1. Open Aercast, select **Start Sharing**, then approve a screen or window in
-   the system Portal.
-2. Send the displayed link to a trusted Viewer. **Stop** ends capture while
-   keeping that link ready for a later share.
+### Debian and Ubuntu
 
-## How it works
+Download the `.deb` from the [latest release], then install it:
+
+```sh
+sudo apt install ./aercast_*.deb
+```
+
+### Other Linux distributions
+
+Download the prebuilt `.tar` from the [latest release], extract it, and run the
+included program:
+
+```sh
+tar -xf aercast-*.tar
+./aercast
+```
+
+[latest release]: https://github.com/Xarth-Mai/Aercast/releases/latest
+
+## Try it
+
+1. Open Aercast and select **Start Sharing**.
+2. Approve one screen or window in the system Portal.
+3. Open the displayed link in a browser on the same computer.
+
+Aercast listens only on `127.0.0.1` by default. To share across a trusted LAN,
+open **Settings → Network**, use the Host's unicast LAN IP as the listen
+address, apply the change, and send the new link.
+
+## Current support
+
+The complete Host and Viewer workflow has been exercised on niri with Zen
+Browser first and Chromium second. GNOME, KDE, stable Firefox, Google Chrome,
+mobile browsers, hardware encoding, higher-quality presets, and public-network
+deployment have not yet received the same qualification.
 
 ```text
 Wayland Portal -> PipeWire -> GStreamer -> HTTP/fMP4 -> Browser MSE
 ```
 
-One native Rust process sends the same synchronized stream directly to every
-Viewer. Its compact Host UI starts and stops shares, manages the link, and
-shows connected Viewers.
+Share links are private bearer credentials. Plain HTTP is limited to a trusted
+LAN; Internet-facing use requires an external HTTPS reverse proxy. Aercast does
+not provide tunnels, relays, certificates, or NAT traversal.
 
-## Security
+## Project documents
 
-Share links use private random bearer tokens. Plain HTTP is for trusted LANs;
-Internet-facing use requires an external HTTPS reverse proxy. Aercast provides
-no tunnels, relays, or NAT traversal.
-
-## Documentation
-
-- [Development direction and product decisions](docs/development.md)
-- [Verification evidence](docs/verification.md)
+- [Product behavior and engineering decisions](docs/development.md)
+- [Verification evidence and current gaps](docs/verification.md)
 - [UI design](docs/ui-design.md)
 - [Contributor instructions](AGENTS.md)
 
 ## License
 
-Aercast is licensed under the [Mozilla Public License 2.0](LICENSE).
+[Mozilla Public License 2.0](LICENSE)
