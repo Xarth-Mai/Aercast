@@ -102,11 +102,12 @@ platforms. See the [current verification gap](verification.md#current-qualificat
   source without requiring an AirPlay alternative. Missing media-source support
   fails before requesting the stream. Starting playback never blocks continued
   fragment download and append.
-- Manual seeking returns to the live edge. Lag from 350 ms through 2 s catches
-  up gradually at up to 1.15×; larger lag seeks to 150 ms behind the buffered
-  end once playback has started, without issuing another seek while one is in
-  progress. Automatic reconnect continues until the share ends or the Host
-  blocks the Viewer.
+- Playback starts after 1.5 seconds are buffered and stays about one second
+  behind the live edge. Lag from 1.5 through 3 seconds catches up gradually at
+  up to 1.15×; larger lag and manual seeking return to that live position once
+  playback has started, without issuing another seek while one is in progress.
+  Automatic reconnect continues until the share ends or the Host blocks the
+  Viewer.
 
 ## Settings contract
 

@@ -18,7 +18,7 @@ PipeWire, Zen, Chromium, or iOS Safari workflow.
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
 | Release artifacts | AUR metadata for v0.1.1 exists at revision `ef8cdc3`; other assets are distributed outside the recorded checks | No clean install and launch check from any artifact |
 | Full product workflow | Phase 5 passed at `073169b` | Current v0.1.1 behavior has not repeated that acceptance |
-| Cross-platform Viewer | User check after `abce8c0`: desktop Chrome no longer stuttered; iOS 27 Safari connected but rendered only one frame and a short audio slice every few seconds at the current 1080p60/12 Mbps setting | Safari repeatedly seeks while asynchronous autoplay is still starting; no platform is qualified by this short check |
+| Cross-platform Viewer | User checks after `abce8c0` and `aa3dda9`: desktop Chrome no longer stuttered; iOS 27 Safari still rendered only one frame and a short audio slice every few seconds at the current 1080p60/12 Mbps setting after seek suppression | Safari begins playback with only the first 100 ms fragment and repeatedly starves at the live edge; no platform is qualified by this short check |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
 ## Recorded environment

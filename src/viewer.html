@@ -15,6 +15,8 @@
   const video = document.querySelector("video");
   const MediaSourceClass = self.ManagedMediaSource ?? self.MediaSource;
   const MUTED_KEY = "aercast-viewer-muted";
+  const LIVE_EDGE_DELAY = 1.0;
+  const START_BUFFER = 1.5;
   let preferredMuted = false;
   try { preferredMuted = localStorage.getItem(MUTED_KEY) === "true"; } catch (_) {}
   let policyMuted = null;
@@ -251,14 +253,15 @@
         const start = buffer.buffered.start(range);
         const end = buffer.buffered.end(range);
         if (!positioned) {
-          seekTo(Math.max(start, end - 0.15));
+          if (end - start < START_BUFFER) continue;
+          seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
           video.playbackRate = 1.0;
         } else if (!automaticPlay && !video.paused) {
           const lag = end - video.currentTime;
-          if (lag > 2.0) {
-            if (!video.seeking) seekTo(Math.max(start, end - 0.15));
+          if (lag > 3.0) {
+            if (!video.seeking) seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
             video.playbackRate = 1.0;
-          } else if (lag > 0.35) {
+          } else if (lag > 1.5) {
             video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08);
           } else if (video.playbackRate !== 1.0) {
             video.playbackRate = 1.0;
@@ -363,7 +366,7 @@
     const range = video.buffered.length - 1;
     const start = video.buffered.start(range);
     const end = video.buffered.end(range);
-    seekTo(Math.max(start, end - 0.1));
+    seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
   });
   video.addEventListener("error", () => {
     const attempt = currentAttempt;
