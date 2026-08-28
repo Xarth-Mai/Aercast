@@ -6,7 +6,7 @@ or a product specification.
 
 ## Current qualification
 
-Aercast v0.1.1 is distributed through AUR, distribution packages, and a
+Aercast v0.1.2 is distributed through AUR, distribution packages, and a
 prebuilt program archive, but no artifact install has been recorded here. The
 latest complete real Host/Viewer qualification remains the niri run at revision
 `073169b`. The current media, cross-platform Viewer, and desktop-lifecycle
@@ -17,7 +17,7 @@ PipeWire, Zen, Chromium, or iOS Safari workflow.
 | --- | --- | --- |
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
 | Release artifacts | AUR metadata for v0.1.1 exists at revision `ef8cdc3`; other assets are distributed outside the recorded checks | No clean install and launch check from any artifact |
-| Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.1 behavior has not repeated that acceptance |
+| Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.2 behavior has not repeated that acceptance |
 | Cross-platform Viewer | User checks through `6a43fab`: desktop Chrome no longer stuttered, and iOS 27 Safari played on LAN at about two seconds behind live after buffering before playback | The short user checks do not record exact browser versions or acceptance duration; no platform is qualified by them |
 | Media pipeline optimization | 2026-08-28 working tree: generated pipeline contracts cover selectable 96/128/160 kbps AAC, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation without forced `vapostproc` copies, and immediate normal-EOF reconnect | No real encoder, DMA-BUF, Safari, or constrained-network measurement was run; zero-copy and latency remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
