@@ -1,0 +1,160 @@
+name: CI and release
+
+on:
+  pull_request:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev \
+            libpipewire-0.3-dev \
+            pkg-config
+
+      - name: Use latest stable Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Check PR whitespace
+        if: github.event_name == 'pull_request'
+        run: git diff --check "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+
+  release:
+    if: github.event_name == 'push'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang \
+            dpkg-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev \
+            libpipewire-0.3-dev \
+            pkg-config
+
+      - name: Use latest stable Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      - name: Validate tag version
+        id: version
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          [[ "$GITHUB_REF_NAME" == "v$package_version" ]]
+          echo "package=$package_version" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --locked --release
+
+      - name: Package release assets
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.package }}
+        run: |
+          dist="$RUNNER_TEMP/aercast-dist"
+          archive="aercast-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu"
+          archive_root="$RUNNER_TEMP/$archive"
+          deb_root="$RUNNER_TEMP/aercast-deb"
+          package_work="$RUNNER_TEMP/aercast-package"
+
+          install -Dm755 target/release/aercast "$archive_root/aercast"
+          install -Dm644 README.md "$archive_root/README.md"
+          install -Dm644 LICENSE "$archive_root/LICENSE"
+          install -d "$dist"
+          tar -C "$RUNNER_TEMP" -czf "$dist/$archive.tar.gz" "$archive"
+
+          install -Dm755 target/release/aercast "$deb_root/usr/bin/aercast"
+          install -Dm644 assets/aercast-icon.png "$deb_root/usr/share/pixmaps/aercast.png"
+          install -d "$deb_root/usr/share/applications" "$deb_root/DEBIAN" "$package_work/debian"
+          printf '%s\n' \
+            '[Desktop Entry]' \
+            'Type=Application' \
+            'Name=Aercast' \
+            'Comment=Share your screen directly from Linux' \
+            'Exec=aercast' \
+            'Icon=aercast' \
+            'Terminal=false' \
+            'Categories=AudioVideo;Network;' \
+            'Keywords=Wayland;Screen;Sharing;Streaming;' \
+            > "$deb_root/usr/share/applications/aercast.desktop"
+          printf '%s\n' \
+            'Source: aercast' \
+            '' \
+            'Package: aercast' \
+            'Architecture: amd64' \
+            > "$package_work/debian/control"
+          shlib_deps="$(cd "$package_work" && dpkg-shlibdeps -O -e"$deb_root/usr/bin/aercast" | sed -n 's/^shlibs:Depends=//p')"
+          printf '%s\n' \
+            'Package: aercast' \
+            "Version: $PACKAGE_VERSION" \
+            'Section: video' \
+            'Priority: optional' \
+            'Architecture: amd64' \
+            'Maintainer: Xarth-Mai <xarthleo@gmail.com>' \
+            "Depends: $shlib_deps, gstreamer1.0-libav, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, libvulkan1, libwayland-client0, libxkbcommon0, xdg-desktop-portal" \
+            'Recommends: gstreamer1.0-vaapi' \
+            'Homepage: https://github.com/Xarth-Mai/Aercast' \
+            'Description: Native Linux/Wayland screen sharing over HTTP' \
+            ' Aercast shares one screen or window with selective system audio' \
+            ' directly to a small group of browser viewers.' \
+            > "$deb_root/DEBIAN/control"
+          dpkg-deb --build --root-owner-group "$deb_root" "$dist/aercast_${PACKAGE_VERSION}_amd64.deb"
+
+          if ldd target/release/aercast | grep -q 'not found'; then
+            exit 1
+          fi
+          tar -tzf "$dist/$archive.tar.gz"
+          dpkg-deb --info "$dist/aercast_${PACKAGE_VERSION}_amd64.deb"
+          dpkg-deb --contents "$dist/aercast_${PACKAGE_VERSION}_amd64.deb"
+          (cd "$dist" && sha256sum *.deb *.tar.gz > SHA256SUMS)
+          (cd "$dist" && sha256sum --check SHA256SUMS)
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/aercast-dist/* --verify-tag --generate-notes
