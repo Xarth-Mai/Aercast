@@ -265,6 +265,12 @@ enum Phase {
     Error(String),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct TrayState {
+    phase: Phase,
+    online_viewers: usize,
+}
+
 struct App {
     phase: Phase,
     link: String,
@@ -297,7 +303,7 @@ struct App {
     share_base_url: String,
     applying_network: bool,
     notifications: UnboundedSender<notification::Kind>,
-    tray_updates: Option<watch::Sender<Phase>>,
+    tray_updates: Option<watch::Sender<TrayState>>,
     tray_stopped: bool,
     host_stopped: bool,
     quitting: bool,
@@ -380,7 +386,10 @@ fn boot(
     let video_error = video_plan(&settings.video)
         .err()
         .map(|error| format!("Video quality unavailable: {error}"));
-    let (tray_updates, tray_state) = watch::channel(Phase::Starting);
+    let (tray_updates, tray_state) = watch::channel(TrayState {
+        phase: Phase::Starting,
+        online_viewers: 0,
+    });
     let app = App {
         phase: Phase::Starting,
         link: String::new(),
@@ -453,13 +462,19 @@ fn boot(
 fn update(app: &mut App, message: Message) -> Task<Message> {
     let previous_phase = app.phase.clone();
     let was_sharing = app.active_audio.is_some();
+    let previous_online = app.viewers.iter().filter(|viewer| viewer.online()).count();
     let task = update_app(app, message);
+    let online = app.viewers.iter().filter(|viewer| viewer.online()).count();
     if let Some(updates) = &app.tray_updates {
+        let next = TrayState {
+            phase: app.phase.clone(),
+            online_viewers: online,
+        };
         updates.send_if_modified(|current| {
-            if *current == app.phase {
+            if *current == next {
                 false
             } else {
-                current.clone_from(&app.phase);
+                current.clone_from(&next);
                 true
             }
         });
@@ -467,7 +482,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
     if app.window.is_none()
         && app.settings.notifications
         && !app.quitting
-        && let Some(kind) = notification_kind(&previous_phase, &app.phase, was_sharing)
+        && let Some(kind) = notification_kind(
+            &previous_phase,
+            &app.phase,
+            was_sharing,
+            previous_online,
+            online,
+        )
         && app.notifications.unbounded_send(kind).is_err()
     {
         eprintln!("Notification worker unavailable");
@@ -479,6 +500,8 @@ fn notification_kind(
     previous: &Phase,
     current: &Phase,
     was_sharing: bool,
+    previous_online: usize,
+    online: usize,
 ) -> Option<notification::Kind> {
     match (previous, current) {
         (Phase::Selecting, Phase::Sharing) => Some(notification::Kind::Started),
@@ -488,6 +511,8 @@ fn notification_kind(
         {
             Some(notification::Kind::Error)
         }
+        _ if previous_online == 0 && online > 0 => Some(notification::Kind::ViewerJoined),
+        _ if previous_online > 0 && online == 0 => Some(notification::Kind::ViewerLeft),
         _ => None,
     }
 }
@@ -982,7 +1007,7 @@ async fn queue_quit(commands: mpsc::Sender<Command>) -> bool {
 
 fn show_window(app: &mut App) -> Task<Message> {
     if let Some(id) = app.window {
-        return window::gain_focus(id);
+        return raise_window(id);
     }
     let (id, open) = window::open(window::Settings {
         size: iced::Size::new(920.0, 520.0),
@@ -991,7 +1016,14 @@ fn show_window(app: &mut App) -> Task<Message> {
         ..window::Settings::default()
     });
     app.window = Some(id);
-    open.then(window::gain_focus)
+    open.then(raise_window)
+}
+
+fn raise_window(id: window::Id) -> Task<Message> {
+    Task::batch([
+        window::request_user_attention(id, Some(window::UserAttention::Informational)),
+        window::gain_focus(id),
+    ])
 }
 
 fn view(app: &App, id: window::Id) -> Element<'_, Message> {

@@ -1,16 +1,16 @@
 use std::{io::Cursor, sync::LazyLock};
 
 use iced::futures::channel::mpsc::UnboundedSender;
-use ksni::{MenuItem, TrayMethods as _, menu::StandardItem};
+use ksni::{MenuItem, ToolTip, TrayMethods as _, menu::StandardItem};
 use tokio::sync::watch;
 
-use super::{Message, Phase};
+use super::{Message, Phase, TrayState};
 
 const ICON_SIZE: usize = 64;
 
 pub(super) async fn run(
     messages: UnboundedSender<Message>,
-    mut state: watch::Receiver<Phase>,
+    mut state: watch::Receiver<TrayState>,
 ) -> Result<(), ksni::Error> {
     let handle = AercastTray {
         messages,
@@ -28,7 +28,7 @@ pub(super) async fn run(
 
 struct AercastTray {
     messages: UnboundedSender<Message>,
-    state: watch::Receiver<Phase>,
+    state: watch::Receiver<TrayState>,
 }
 
 impl AercastTray {
@@ -53,6 +53,13 @@ impl ksni::Tray for AercastTray {
         "Aercast".to_owned()
     }
 
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            title: "Aercast".to_owned(),
+            ..ToolTip::default()
+        }
+    }
+
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         vec![tray_icon().clone()]
     }
@@ -62,10 +69,14 @@ impl ksni::Tray for AercastTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let phase = self.state.borrow();
+        let state = self.state.borrow();
         let mut menu = vec![
             StandardItem {
-                label: format!("Status: {}", phase_label(&phase)),
+                label: if state.phase == Phase::Sharing && state.online_viewers > 0 {
+                    format!("Status: Sharing: {}", state.online_viewers)
+                } else {
+                    format!("Status: {}", phase_label(&state.phase))
+                },
                 enabled: false,
                 ..Default::default()
             }
@@ -73,7 +84,7 @@ impl ksni::Tray for AercastTray {
             MenuItem::Separator,
             Self::action("Show", Message::Show),
         ];
-        match &*phase {
+        match &state.phase {
             Phase::Waiting => menu.push(Self::action("Start", Message::Start)),
             Phase::Selecting => menu.push(Self::action("Stop", Message::End)),
             Phase::Sharing => menu.extend([
@@ -153,7 +164,10 @@ mod tests {
                 > 700
         );
         let (messages, mut received) = iced::futures::channel::mpsc::unbounded();
-        let (updates, state) = watch::channel(Phase::Waiting);
+        let (updates, state) = watch::channel(TrayState {
+            phase: Phase::Waiting,
+            online_viewers: 0,
+        });
         let mut tray = AercastTray { messages, state };
 
         let labels = |tray: &AercastTray| {
@@ -165,11 +179,24 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
+        assert_eq!(tray.title(), "Aercast");
+        assert_eq!(tray.tool_tip().title, "Aercast");
         assert_eq!(labels(&tray), ["Status: Ready", "Show", "Start", "Quit"]);
-        updates.send_replace(Phase::Sharing);
+        updates.send_replace(TrayState {
+            phase: Phase::Sharing,
+            online_viewers: 0,
+        });
         assert_eq!(
             labels(&tray),
             ["Status: Sharing", "Show", "Copy Link", "Stop", "Quit"]
+        );
+        updates.send_replace(TrayState {
+            phase: Phase::Sharing,
+            online_viewers: 2,
+        });
+        assert_eq!(
+            labels(&tray),
+            ["Status: Sharing: 2", "Show", "Copy Link", "Stop", "Quit"]
         );
         tray.activate(0, 0);
         assert!(matches!(
@@ -182,7 +209,10 @@ mod tests {
     #[ignore = "requires an isolated session bus"]
     async fn service_stops_without_a_status_notifier_watcher() {
         let (messages, _) = iced::futures::channel::mpsc::unbounded();
-        let (updates, state) = watch::channel(Phase::Waiting);
+        let (updates, state) = watch::channel(TrayState {
+            phase: Phase::Waiting,
+            online_viewers: 0,
+        });
         drop(updates);
         tokio::time::timeout(std::time::Duration::from_secs(2), run(messages, state))
             .await

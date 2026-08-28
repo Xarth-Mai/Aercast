@@ -50,11 +50,14 @@ platforms. See the [current verification gap](verification.md#current-qualificat
 - Its sidebar switches among **Share**, **Viewers**, and **Settings**.
 - Closing either the content window or compositor window hides it without
   stopping a share or exiting. `iced::daemon` keeps the process alive.
-- Only one process instance may run; a later launch activates the existing
-  window.
+- Only one process instance may run. A later desktop or command-line launch and
+  tray activation bring the existing window in front and focus it once; the
+  window does not remain always on top. Unsupported compositor activation is
+  best-effort.
 - One state-independent `ksni` tray item always opens the window on primary
-  activation. Its menu exposes status, Show, the applicable Start/Copy/Stop
-  action, and Quit.
+  activation. Its tooltip title is **Aercast**. Its menu exposes status, Show,
+  the applicable Start/Copy/Stop action, and Quit; while sharing with online
+  Viewers, status is `Status: Sharing: N` using the online count only.
 - Quitting while sharing requires confirmation. Confirmed Quit revokes the
   token, disconnects Viewers, closes Portal and media state, removes desktop
   integrations, and exits.
@@ -126,8 +129,9 @@ one media restart. Network rebinding is stopped-only and warns that waiting
 pages using the old address may not recover.
 
 Notifications are sent only while the Host window is hidden for the first
-transition into sharing, return to waiting, and Host or network failure. They
-never contain a link or token. Pointer behavior and autostart have no setting.
+transition into sharing, return to waiting, first online Viewer connection,
+last online Viewer disconnection, and Host or network failure. They never
+contain a link or token. Pointer behavior and autostart have no setting.
 Settings are replace-written internal state at
 `$XDG_CONFIG_HOME/aercast/settings.json`, not a public hand-edited interface.
 
@@ -189,7 +193,9 @@ Git history retains the old phase checklists.
 **Phase 6 — Cross-platform Viewer compatibility**
 
 - Keep one capability-detected fMP4 Viewer implementation with no browser-name
-  branches and no changes to the Host, public HTTP interface, or media format.
+  branches and no changes to the public HTTP interface or media format. Host
+  changes are limited to the tray naming, online count, and one-shot window
+  activation polish specified in Desktop lifecycle.
 - Qualify 720p60 at 6 Mbps and 1080p60 at 12 Mbps first on the available real
   Linux Zen, Linux Chromium, and iOS Safari devices. Playback must advance for
   two minutes without repeated stalls, reconnects, or cancellation errors;

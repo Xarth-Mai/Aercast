@@ -9,9 +9,9 @@ or a product specification.
 Aercast v0.1.1 is distributed through AUR, distribution packages, and a
 prebuilt program archive, but no artifact install has been recorded here. The
 latest complete real Host/Viewer qualification remains the Phase 5 niri run at
-revision `073169b`. The current cross-platform Viewer change has automated
-coverage only; it has not repeated the real Portal, PipeWire, Zen, Chromium, or
-iOS Safari workflow.
+revision `073169b`. The current cross-platform Viewer and desktop-lifecycle
+changes have automated coverage only; they have not repeated the real Portal,
+PipeWire, Zen, Chromium, or iOS Safari workflow.
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
@@ -19,6 +19,7 @@ iOS Safari workflow.
 | Release artifacts | AUR metadata for v0.1.1 exists at revision `ef8cdc3`; other assets are distributed outside the recorded checks | No clean install and launch check from any artifact |
 | Full product workflow | Phase 5 passed at `073169b` | Current v0.1.1 behavior has not repeated that acceptance |
 | Cross-platform Viewer | User check after `abce8c0`: desktop Chrome no longer stuttered; iOS 27 Safari connected but rendered only one frame and a short audio slice every few seconds at the current 1080p60/12 Mbps setting | Safari repeatedly seeks while asynchronous autoplay is still starting; no platform is qualified by this short check |
+| Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
 ## Recorded environment
 
@@ -70,16 +71,23 @@ At revision `073169b`, `cargo fmt --check`,
 environment-dependent ignores, and `git diff --check` passed. These results do
 not qualify later revisions.
 
-For the 2026-08-28 cross-platform Viewer working tree, `node --check` on the
-embedded script, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-all 38 runnable tests, and `git diff --check` passed; five explicitly
-environment-dependent tests remained ignored. This proves the generated Viewer
-contract and existing Host behavior, not playback in any browser.
+For the 2026-08-28 cross-platform Viewer and desktop-lifecycle working tree,
+`node --check` on the embedded script, `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, all 38 runnable tests, the isolated
+D-Bus single-instance activation test, and `git diff --check` passed; five
+explicitly environment-dependent tests remained ignored. This proves the
+generated Viewer, tray, and notification contracts, not playback or window
+activation in a real desktop session.
 
 The latest real Viewer check used the existing HTTPS path and 1080p60/12 Mbps
 VA-API stream. It confirms the Chrome buffering fix and exposes the current
 iOS Safari playback blocker, but lacks the exact Chrome version and two-minute
 acceptance duration required for qualification.
+
+The desktop smoke preflight found a running Aercast instance whose tray reported
+`Status: Sharing`, already owning the live Portal and PipeWire session. It was
+left untouched, so the current source build has not yet been launched for real
+tray-count, Viewer-notification, or window-activation checks.
 
 ## Not yet qualified
 

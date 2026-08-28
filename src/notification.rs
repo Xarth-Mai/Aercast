@@ -6,6 +6,8 @@ use futures_util::{Stream, StreamExt};
 pub(super) enum Kind {
     Started,
     Stopped,
+    ViewerJoined,
+    ViewerLeft,
     Error,
 }
 
@@ -25,6 +27,11 @@ async fn send(connection: &zbus::Connection, kind: Kind) -> zbus::Result<()> {
         Kind::Stopped => (
             "Screen sharing stopped",
             "The current link is waiting for the next share.",
+        ),
+        Kind::ViewerJoined => ("Viewer connected", "A Viewer is now watching."),
+        Kind::ViewerLeft => (
+            "Last Viewer disconnected",
+            "No Viewers are currently watching.",
         ),
         Kind::Error => ("Aercast needs attention", "Open Aercast for details."),
     };
@@ -108,6 +115,8 @@ mod tests {
         let (requests, pending) = iced::futures::channel::mpsc::unbounded();
         requests.unbounded_send(Kind::Started).unwrap();
         requests.unbounded_send(Kind::Stopped).unwrap();
+        requests.unbounded_send(Kind::ViewerJoined).unwrap();
+        requests.unbounded_send(Kind::ViewerLeft).unwrap();
         drop(requests);
         worker(connection, pending)
             .try_collect::<Vec<_>>()
@@ -123,6 +132,14 @@ mod tests {
                 (
                     "Screen sharing stopped".to_owned(),
                     "The current link is waiting for the next share.".to_owned(),
+                ),
+                (
+                    "Viewer connected".to_owned(),
+                    "A Viewer is now watching.".to_owned(),
+                ),
+                (
+                    "Last Viewer disconnected".to_owned(),
+                    "No Viewers are currently watching.".to_owned(),
                 ),
             ]
         );

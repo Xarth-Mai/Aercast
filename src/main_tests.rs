@@ -78,19 +78,30 @@ fn retry_policy_allows_exactly_three_media_recoveries() {
 #[test]
 fn notifications_follow_user_visible_state_boundaries() {
     use Phase::{Ending, NetworkError, Selecting, Sharing, Starting, Waiting};
-    use notification::Kind::{Error, Started, Stopped};
+    use notification::Kind::{Error, Started, Stopped, ViewerJoined, ViewerLeft};
 
     let error = NetworkError("occupied".to_owned());
     assert_eq!(
         [
-            notification_kind(&Selecting, &Sharing, false),
-            notification_kind(&Sharing, &Sharing, true),
-            notification_kind(&Ending, &Waiting, true),
-            notification_kind(&Ending, &Waiting, false),
-            notification_kind(&Waiting, &error, false),
-            notification_kind(&Starting, &error, false),
+            notification_kind(&Selecting, &Sharing, false, 0, 0),
+            notification_kind(&Sharing, &Sharing, true, 0, 1),
+            notification_kind(&Sharing, &Sharing, true, 1, 2),
+            notification_kind(&Sharing, &Sharing, true, 2, 0),
+            notification_kind(&Ending, &Waiting, true, 0, 0),
+            notification_kind(&Ending, &Waiting, false, 0, 0),
+            notification_kind(&Waiting, &error, false, 1, 0),
+            notification_kind(&Starting, &error, false, 0, 0),
         ],
-        [Some(Started), None, Some(Stopped), None, Some(Error), None]
+        [
+            Some(Started),
+            Some(ViewerJoined),
+            None,
+            Some(ViewerLeft),
+            Some(Stopped),
+            None,
+            Some(Error),
+            None,
+        ]
     );
 }
 
@@ -399,7 +410,16 @@ fn ui_commands_follow_the_host_lifecycle() {
     drop(update(&mut app, Message::Closed(reopened)));
     assert_eq!(app.window, None);
 
-    app.viewers = test_viewers(2, true);
+    let (tray_updates, tray_state) = watch::channel(TrayState {
+        phase: Phase::Sharing,
+        online_viewers: 0,
+    });
+    app.tray_updates = Some(tray_updates);
+    drop(update(
+        &mut app,
+        Message::Host(HostEvent::Viewers(test_viewers(2, true))),
+    ));
+    assert_eq!(tray_state.borrow().online_viewers, 2);
     let viewer_key = app.viewers[0].key;
     drop(update(&mut app, Message::Disconnect(viewer_key)));
     assert_eq!(
@@ -425,6 +445,7 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.link, "http://127.0.0.1/s/replacement");
     assert_eq!(app.approved_source, Some("Window"));
     assert!(app.viewers.is_empty());
+    assert_eq!(tray_state.borrow().online_viewers, 0);
     drop(update(&mut app, Message::Refresh));
     assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
     assert!(!app.confirm_refresh);
@@ -526,7 +547,10 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert!(!app.confirm_quit);
     drop(update(&mut app, Message::Quit));
     assert!(app.confirm_quit);
-    let (tray_updates, _) = watch::channel(Phase::Sharing);
+    let (tray_updates, _) = watch::channel(TrayState {
+        phase: Phase::Sharing,
+        online_viewers: 0,
+    });
     app.tray_updates = Some(tray_updates);
     app.tray_stopped = false;
     assert_eq!(update(&mut app, Message::ConfirmQuit).units(), 1);
