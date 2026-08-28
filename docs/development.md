@@ -12,20 +12,23 @@ Aercast v0.1.1 is an early x86-64 Linux release distributed through AUR,
 distribution packages, and a prebuilt program archive. Availability is not
 evidence of support until an artifact passes a real install and launch check.
 
-The recorded niri baseline completed the planned product phases. Changes after
+The recorded niri baseline completed the original product phases. Changes after
 that qualification have automated coverage but have not repeated the real
-Portal, PipeWire, Zen, and Chromium workflow. No new product Phase is active;
-packaging must not expand product behavior. See the
-[current verification gap](verification.md#current-qualification).
+Portal, PipeWire, Zen, and Chromium workflow. Phase 6 is active to make the
+existing Viewer compatible across browser engines and qualify available real
+platforms. See the [current verification gap](verification.md#current-qualification).
 
 ## Product boundary
 
 - Aercast is a lightweight native Linux/Wayland GUI for gamers. niri is the
   formal validation environment; other Wayland desktops remain best-effort
   until separately verified.
-- Stable desktop Firefox is the primary Viewer target and is checked before
-  Chromium. Zen Browser is the local Firefox-family test vehicle. Safari,
-  mobile browsers, and codec-incomplete builds are not release promises.
+- Viewer compatibility targets representative current stable browsers from the
+  Chromium family (Chrome and Edge), Gecko family (Firefox and Zen), and WebKit
+  family (Safari on macOS and iOS 17.1 or newer). Zen and Chromium remain the
+  local Linux test vehicles. A platform becomes qualified only after its exact
+  browser, operating system, device, quality, and network path pass a recorded
+  real check; untested derivatives and codec-incomplete builds are best-effort.
 - The Host selects exactly one monitor or window through the non-persistent XDG
   ScreenCast Portal. Capture never starts without explicit approval.
 - One synchronized H.264/AAC-LC fMP4 stream is encoded once and sent directly
@@ -90,6 +93,11 @@ packaging must not expand product behavior. See the
   native controls. It tries unmuted autoplay, retries muted when policy blocks
   it, and remembers only a user-selected muted state. Diagnostics stay in the
   console and document state attributes.
+- The Viewer selects `ManagedMediaSource` when available and otherwise uses
+  `MediaSource`; managed playback disables remote playback so Safari opens the
+  source without requiring an AirPlay alternative. Missing media-source support
+  fails before requesting the stream. Starting playback never blocks continued
+  fragment download and append.
 - Manual seeking returns to the live edge. Lag from 350 ms through 2 s catches
   up gradually at up to 1.15×; larger lag seeks to 150 ms behind the buffered
   end. Automatic reconnect continues until the share ends or the Host blocks
@@ -174,3 +182,19 @@ recorded niri baseline.
 [Evidence](verification.md#qualified-baseline)
 
 Git history retains the old phase checklists.
+
+## Active product work
+
+**Phase 6 — Cross-platform Viewer compatibility**
+
+- Keep one capability-detected fMP4 Viewer implementation with no browser-name
+  branches and no changes to the Host, public HTTP interface, or media format.
+- Qualify 720p60 at 6 Mbps and 1080p60 at 12 Mbps first on the available real
+  Linux Zen, Linux Chromium, and iOS Safari devices. Playback must advance for
+  two minutes without repeated stalls, reconnects, or cancellation errors;
+  audio, telemetry, same-link recovery, Disconnect, and Refresh Link must work.
+- Windows Chrome, Edge, and Firefox; macOS Safari; and Android Chrome and Firefox
+  remain explicit qualification gaps until the same scenarios run on real
+  platforms. Passing one engine representative does not qualify another OS.
+- Mobile 1440p, 120 FPS, AirPlay, background playback, adaptive bitrate, and new
+  transport or media protocols are non-goals for this Phase.

@@ -9,15 +9,16 @@ or a product specification.
 Aercast v0.1.1 is distributed through AUR, distribution packages, and a
 prebuilt program archive, but no artifact install has been recorded here. The
 latest complete real Host/Viewer qualification remains the Phase 5 niri run at
-revision `073169b`. Later Viewer behavior, Host layout, visual, tray/favicon,
-and PipeWire recovery changes have automated coverage but have not repeated the
-real Portal, PipeWire, Zen, and Chromium workflow.
+revision `073169b`. The current cross-platform Viewer change has automated
+coverage only; it has not repeated the real Portal, PipeWire, Zen, Chromium, or
+iOS Safari workflow.
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
 | Release artifacts | AUR metadata for v0.1.1 exists at revision `ef8cdc3`; other assets are distributed outside the recorded checks | No clean install and launch check from any artifact |
 | Full product workflow | Phase 5 passed at `073169b` | Current v0.1.1 behavior has not repeated that acceptance |
+| Cross-platform Viewer | 2026-08-28 working tree: JavaScript syntax, Viewer contract test, formatting, Clippy, and all 38 runnable Rust tests passed | No post-change real browser playback; Windows, macOS, iOS, and Android targets remain unqualified |
 
 ## Recorded environment
 
@@ -69,13 +70,28 @@ At revision `073169b`, `cargo fmt --check`,
 environment-dependent ignores, and `git diff --check` passed. These results do
 not qualify later revisions.
 
+For the 2026-08-28 cross-platform Viewer working tree, `node --check` on the
+embedded script, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+all 38 runnable tests, and `git diff --check` passed; five explicitly
+environment-dependent tests remained ignored. This proves the generated Viewer
+contract and existing Host behavior, not playback in any browser.
+
+The real smoke preflight found a separate running Aercast instance already
+owning the live Portal and PipeWire session. It was left untouched, and the two
+temporary test audio sources were removed, so the current source build has not
+yet been launched for browser playback.
+
 ## Not yet qualified
 
 - Current HEAD through a complete real GUI, Portal, selective-audio, Zen, and
   Chromium acceptance run
+- iOS Safari 17.1 or newer, including the available iOS 27 device at 720p60 and
+  1080p60
+- Windows Chrome, Edge, and Firefox; macOS Safari; and Android Chrome and
+  Firefox
+- Mobile 1440p or 120 FPS playback
 - Installation and launch from AUR, `.deb`, or a prebuilt release asset
-- GNOME, KDE, other distributions, stable Firefox, Google Chrome, or mobile
-  browsers
+- GNOME, KDE, other distributions, stable desktop Firefox, or Google Chrome
 - Hardware encoding; 1080p60, 1440p60, or 120 FPS
 - Trusted-LAN end-to-end latency, long-duration load, or public-network
   deployment

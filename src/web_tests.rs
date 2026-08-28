@@ -564,6 +564,11 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"href=\"/assets/aercast-icon.png\"".as_slice(),
         b"html, body, video { width: 100%; height: 100%; }".as_slice(),
         b"<video playsinline></video>".as_slice(),
+        b"const MediaSourceClass = self.ManagedMediaSource ?? self.MediaSource;".as_slice(),
+        b"const media = new MediaSourceClass();".as_slice(),
+        b"if (MediaSourceClass === self.ManagedMediaSource) video.disableRemotePlayback = true;"
+            .as_slice(),
+        b"if (!mime || !MediaSourceClass.isTypeSupported(mime))".as_slice(),
         b"localStorage.getItem(MUTED_KEY) === \"true\"".as_slice(),
         b"video.addEventListener(\"volumechange\"".as_slice(),
         b"if (policyMuted === video.muted)".as_slice(),
@@ -572,10 +577,13 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"else if (lag > 0.35)".as_slice(),
         b"video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08)".as_slice(),
         b"seekTo(Math.max(start, end - 0.15))".as_slice(),
-        b"video.controls = false;\n    video.src = attempt.source;".as_slice(),
-        b"positioned = true;\n          setMutedByPolicy(preferredMuted);\n          video.controls = true;\n          await playAutomatically(attempt);".as_slice(),
+        b"video.controls = false;".as_slice(),
+        b"positioned = true;\n          setMutedByPolicy(preferredMuted);\n          video.controls = true;\n          void playAutomatically(attempt);".as_slice(),
         b"setMutedByPolicy(true)".as_slice(),
-        b"void connect(beginAttempt())".as_slice(),
+        b"attempt.controller.signal.aborted || currentAttempt !== attempt".as_slice(),
+        b"if (MediaSourceClass) {\n    void connect(beginAttempt());".as_slice(),
+        b"showError(new Error(\"This browser does not support Media Source playback.\"))"
+            .as_slice(),
         b"video.addEventListener(\"play\"".as_slice(),
         b"video.addEventListener(\"seeking\"".as_slice(),
         b"seekTo(Math.max(start, end - 0.1))".as_slice(),
@@ -613,9 +621,21 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"video.src = attempt.source;\n    void playAutomatically(attempt);".as_slice(),
         b"<video playsinline controls>".as_slice(),
         b"heldSource".as_slice(),
+        b"new MediaSource()".as_slice(),
+        b"MediaSource.isTypeSupported".as_slice(),
+        b"await playAutomatically(attempt)".as_slice(),
     ] {
         assert!(!html.windows(removed.len()).any(|window| window == removed));
     }
+    let disable_remote = html
+        .windows(b"video.disableRemotePlayback = true".len())
+        .position(|window| window == b"video.disableRemotePlayback = true")
+        .unwrap();
+    let attach_source = html
+        .windows(b"video.src = attempt.source".len())
+        .position(|window| window == b"video.src = attempt.source")
+        .unwrap();
+    assert!(disable_remote < attach_source);
 
     let icon = viewer_icon().await;
     assert_eq!(icon.status(), StatusCode::OK);

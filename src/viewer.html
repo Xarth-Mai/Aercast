@@ -13,6 +13,7 @@
 <video playsinline></video>
 <script>
   const video = document.querySelector("video");
+  const MediaSourceClass = self.ManagedMediaSource ?? self.MediaSource;
   const MUTED_KEY = "aercast-viewer-muted";
   let preferredMuted = false;
   try { preferredMuted = localStorage.getItem(MUTED_KEY) === "true"; } catch (_) {}
@@ -163,7 +164,7 @@
 
   function beginAttempt() {
     const controller = new AbortController();
-    const media = new MediaSource();
+    const media = new MediaSourceClass();
     const opened = new Promise(resolve => media.addEventListener("sourceopen", resolve, { once: true }));
     const attempt = {
       controller,
@@ -176,6 +177,7 @@
     };
     currentAttempt = attempt;
     video.controls = false;
+    if (MediaSourceClass === self.ManagedMediaSource) video.disableRemotePlayback = true;
     video.src = attempt.source;
     return attempt;
   }
@@ -185,7 +187,7 @@
     try {
       await video.play();
     } catch (error) {
-      if (attempt.controller.signal.aborted) return;
+      if (attempt.controller.signal.aborted || currentAttempt !== attempt) return;
       if (!video.muted) {
         console.info("Unmuted autoplay was blocked; retrying muted.");
         setMutedByPolicy(true);
@@ -196,6 +198,7 @@
           error = mutedError;
         }
       }
+      if (attempt.controller.signal.aborted || currentAttempt !== attempt) return;
       showError(error);
     } finally {
       automaticPlay = false;
@@ -265,7 +268,7 @@
           positioned = true;
           setMutedByPolicy(preferredMuted);
           video.controls = true;
-          await playAutomatically(attempt);
+          void playAutomatically(attempt);
         }
       }
     }
@@ -301,7 +304,7 @@
           throw new Error(`Stream request failed: HTTP ${response.status}`);
         }
         const mime = response.headers.get("content-type");
-        if (!mime || !MediaSource.isTypeSupported(mime)) {
+        if (!mime || !MediaSourceClass.isTypeSupported(mime)) {
           running = false;
           console.error("Unsupported Viewer media type:", mime ?? "missing");
           throw new Error("This browser cannot play the shared media.");
@@ -371,6 +374,11 @@
     console.error("Viewer playback error:", attempt.error);
     attempt.controller.abort(attempt.error);
   });
-  void connect(beginAttempt());
+  if (MediaSourceClass) {
+    void connect(beginAttempt());
+  } else {
+    running = false;
+    showError(new Error("This browser does not support Media Source playback."));
+  }
 </script>
 </html>
