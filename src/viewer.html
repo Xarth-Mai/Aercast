@@ -253,10 +253,10 @@
         if (!positioned) {
           seekTo(Math.max(start, end - 0.15));
           video.playbackRate = 1.0;
-        } else {
+        } else if (!automaticPlay && !video.paused) {
           const lag = end - video.currentTime;
           if (lag > 2.0) {
-            seekTo(Math.max(start, end - 0.15));
+            if (!video.seeking) seekTo(Math.max(start, end - 0.15));
             video.playbackRate = 1.0;
           } else if (lag > 0.35) {
             video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08);

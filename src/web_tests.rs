@@ -574,6 +574,8 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"if (policyMuted === video.muted)".as_slice(),
         b"localStorage.setItem(MUTED_KEY, String(preferredMuted))".as_slice(),
         b"await video.play()".as_slice(),
+        b"else if (!automaticPlay && !video.paused)".as_slice(),
+        b"if (!video.seeking) seekTo(Math.max(start, end - 0.15))".as_slice(),
         b"else if (lag > 0.35)".as_slice(),
         b"video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08)".as_slice(),
         b"seekTo(Math.max(start, end - 0.15))".as_slice(),

@@ -100,8 +100,9 @@ platforms. See the [current verification gap](verification.md#current-qualificat
   fragment download and append.
 - Manual seeking returns to the live edge. Lag from 350 ms through 2 s catches
   up gradually at up to 1.15×; larger lag seeks to 150 ms behind the buffered
-  end. Automatic reconnect continues until the share ends or the Host blocks
-  the Viewer.
+  end once playback has started, without issuing another seek while one is in
+  progress. Automatic reconnect continues until the share ends or the Host
+  blocks the Viewer.
 
 ## Settings contract
 

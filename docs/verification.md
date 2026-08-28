@@ -18,7 +18,7 @@ iOS Safari workflow.
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
 | Release artifacts | AUR metadata for v0.1.1 exists at revision `ef8cdc3`; other assets are distributed outside the recorded checks | No clean install and launch check from any artifact |
 | Full product workflow | Phase 5 passed at `073169b` | Current v0.1.1 behavior has not repeated that acceptance |
-| Cross-platform Viewer | 2026-08-28 working tree: JavaScript syntax, Viewer contract test, formatting, Clippy, and all 38 runnable Rust tests passed | No post-change real browser playback; Windows, macOS, iOS, and Android targets remain unqualified |
+| Cross-platform Viewer | User check after `abce8c0`: desktop Chrome no longer stuttered; iOS 27 Safari connected but rendered only one frame and a short audio slice every few seconds at the current 1080p60/12 Mbps setting | Safari repeatedly seeks while asynchronous autoplay is still starting; no platform is qualified by this short check |
 
 ## Recorded environment
 
@@ -76,10 +76,10 @@ all 38 runnable tests, and `git diff --check` passed; five explicitly
 environment-dependent tests remained ignored. This proves the generated Viewer
 contract and existing Host behavior, not playback in any browser.
 
-The real smoke preflight found a separate running Aercast instance already
-owning the live Portal and PipeWire session. It was left untouched, and the two
-temporary test audio sources were removed, so the current source build has not
-yet been launched for browser playback.
+The latest real Viewer check used the existing HTTPS path and 1080p60/12 Mbps
+VA-API stream. It confirms the Chrome buffering fix and exposes the current
+iOS Safari playback blocker, but lacks the exact Chrome version and two-minute
+acceptance duration required for qualification.
 
 ## Not yet qualified
 
