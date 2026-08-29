@@ -8,7 +8,7 @@ engineering decisions, acceptance, and non-goals. The
 
 ## Release state
 
-Aercast v0.1.2 is an early x86-64 Linux release distributed through GitHub
+Aercast v0.1.3 is an early x86-64 Linux release distributed through GitHub
 packages and a prebuilt program archive. AUR availability remains blocked; see
 the [current verification gap](verification.md#current-qualification).
 Availability is not evidence of support until an artifact passes a real install
