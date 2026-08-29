@@ -16,13 +16,11 @@ just open a link—no account or app installation needed.
 
 ## Install
 
-Aercast v0.1.3 is an early release for x86-64 Linux.
+Aercast v0.1.4 is an early release for x86-64 Linux.
 
 ### Arch Linux
 
-The AUR package remains at v0.1.1; see the
-[current release gap](docs/verification.md#current-qualification). Install it
-with:
+The AUR package is currently v0.1.2. Install it with:
 
 ```sh
 paru -Syu aercast

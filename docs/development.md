@@ -8,11 +8,11 @@ engineering decisions, acceptance, and non-goals. The
 
 ## Release state
 
-Aercast v0.1.3 is an early x86-64 Linux release distributed through GitHub
-packages and a prebuilt program archive. AUR availability remains blocked; see
-the [current verification gap](verification.md#current-qualification).
+Aercast v0.1.4 is an early x86-64 Linux release distributed through GitHub
+packages and a prebuilt program archive. The AUR package is currently v0.1.2.
 Availability is not evidence of support until an artifact passes a real install
-and launch check.
+and launch check; see the
+[current verification gap](verification.md#current-qualification).
 
 The recorded niri baseline remains the latest complete real qualification.
 Changes after it have automated coverage but have not repeated the real Portal,

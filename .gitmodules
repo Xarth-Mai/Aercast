@@ -1,0 +1,3 @@
+[submodule "aur/aercast"]
+	path = aur/aercast
+	url = https://aur.archlinux.org/aercast.git

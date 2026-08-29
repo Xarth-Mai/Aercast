@@ -6,24 +6,27 @@ or a product specification.
 
 ## Current qualification
 
-Aercast v0.1.2 is distributed through GitHub packages and a prebuilt program
-archive, but no artifact install has been recorded here. Its verified AUR
-metadata is committed, while remote publication is blocked because the local
-AUR endpoint presented an SSH host key that does not match the fingerprint
-published by AUR. The latest complete real Host/Viewer qualification remains
-the niri run at revision `073169b`. Later changes have not repeated that
-complete workflow. A partial 2026-08-29 Portal, PipeWire, and iOS Safari run
-rejected a lower Viewer-lag threshold and restored the smooth 3.0 s policy.
+Aercast v0.1.2 is distributed through GitHub packages, a prebuilt program
+archive, and AUR, but no artifact install has been recorded here. The latest
+complete real Host/Viewer qualification remains the niri run at revision
+`073169b`. Later changes have not repeated that complete workflow. A partial
+2026-08-29 Portal, PipeWire, and iOS Safari run rejected a lower Viewer-lag
+threshold and restored the smooth 3.0 s policy.
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
-| Release artifacts | GitHub Actions run `33185981523` passed checks and published the v0.1.2 `.deb` and tarball; `makepkg --verifysource` passed for the matching AUR metadata at `92d11ca` | No clean install and launch check; AUR remote sync is blocked by an unverified SSH host key change |
+| Release artifacts | GitHub Actions run `33185981523` passed checks and published the v0.1.2 `.deb` and tarball; `makepkg --verifysource` passed for the matching AUR metadata at `92d11ca`; the AUR RPC reports v0.1.2-1 | No clean install and launch check from either artifact source |
 | Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.2 behavior has not repeated that acceptance |
 | Cross-platform Viewer | In the 2026-08-29 real iOS A/B described below, the 1.8 s correction reduced reported lag but made playback fall below one frame per second; restoring 3.0 s produced smooth playback with 1.3 s Host-reported lag and about 2 s perceived delay | No safe unified lag reduction was found; exact OS/browser builds and duration remain incomplete, Windows Firefox was not rerun, and neither platform is qualified |
 | Media pipeline optimization | Generated pipeline contracts cover selectable AAC rates, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation, and immediate normal-EOF reconnect; the 2026-08-29 real A/B reached iOS playback at 1080p60/16 Mbps with VA-API | DMA-BUF/zero-copy, Host CPU/GPU, and constrained-network measurements remain unrecorded; zero-copy and latency are unqualified |
 | Idle-media Host candidate | 2026-08-30 current working tree: formatting, Clippy with warnings denied, all 57 runnable Rust tests, and diff whitespace checks passed; five environment-dependent tests remained ignored | No current Portal, VA-API, vkmark, Zen, Chromium, or external-Viewer run; AMD throughput, power savings, wake latency, and regression limits remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
+
+On 2026-08-30, the AUR v5 RPC returned `0.1.2-1`, and an HTTPS
+`git ls-remote` resolved `master` to `2a85c6e`, matching the tracked AUR
+metadata. This confirms remote metadata publication, not package installation
+or launch.
 
 ## Recorded environment
 
