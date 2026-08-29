@@ -1164,39 +1164,9 @@ fn host_video_encoders_are_available() {
 }
 
 #[test]
-fn viewers_view_disambiguates_identical_ips() {
+fn viewers_view_handles_identical_ips() {
     let (mut app, _) = test_app();
-    app.commands = None;
-    app.window = None;
-    app.page = Page::Viewers;
-    app.viewers = vec![
-        web::Viewer {
-            key: 1,
-            ip: "192.0.2.1".parse().unwrap(),
-            online_since: Some(Instant::now()),
-            duration: Duration::from_secs(10),
-            rtt: None,
-            playback_lag: None,
-            telemetry_at: None,
-        },
-        web::Viewer {
-            key: 2,
-            ip: "192.0.2.1".parse().unwrap(),
-            online_since: None,
-            duration: Duration::from_secs(5),
-            rtt: None,
-            playback_lag: None,
-            telemetry_at: None,
-        },
-        web::Viewer {
-            key: 3,
-            ip: "192.0.2.2".parse().unwrap(),
-            online_since: Some(Instant::now()),
-            duration: Duration::from_secs(20),
-            rtt: None,
-            playback_lag: None,
-            telemetry_at: None,
-        },
-    ];
+    app.viewers = test_viewers(2, true);
+    app.viewers[1].ip = "192.0.2.1".parse().unwrap();
     let _ = viewers_view(&app);
 }

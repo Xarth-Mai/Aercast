@@ -114,18 +114,8 @@ jobs:
 
           install -Dm755 target/release/aercast "$deb_root/usr/bin/aercast"
           install -Dm644 assets/aercast-icon.png "$deb_root/usr/share/pixmaps/aercast.png"
-          install -d "$deb_root/usr/share/applications" "$deb_root/DEBIAN" "$package_work/debian"
-          printf '%s\n' \
-            '[Desktop Entry]' \
-            'Type=Application' \
-            'Name=Aercast' \
-            'Comment=Share your screen directly from Linux' \
-            'Exec=aercast' \
-            'Icon=aercast' \
-            'Terminal=false' \
-            'Categories=AudioVideo;Network;' \
-            'Keywords=Wayland;Screen;Sharing;Streaming;' \
-            > "$deb_root/usr/share/applications/aercast.desktop"
+          install -Dm644 assets/aercast.desktop "$deb_root/usr/share/applications/aercast.desktop"
+          install -d "$deb_root/DEBIAN" "$package_work/debian"
           printf '%s\n' \
             'Source: aercast' \
             '' \

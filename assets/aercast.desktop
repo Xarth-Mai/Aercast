@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Aercast
+Comment=Share your screen directly from Linux
+Exec=aercast
+Icon=aercast
+Terminal=false
+Categories=AudioVideo;Network;
+Keywords=Wayland;Screen;Sharing;Streaming;
