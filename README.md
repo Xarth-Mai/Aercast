@@ -20,7 +20,7 @@ Aercast v0.1.4 is an early release for x86-64 Linux.
 
 ### Arch Linux
 
-The AUR package is currently v0.1.2. Install it with:
+Install it with:
 
 ```sh
 paru -Syu aercast
