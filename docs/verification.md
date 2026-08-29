@@ -11,18 +11,18 @@ archive, but no artifact install has been recorded here. Its verified AUR
 metadata is committed, while remote publication is blocked because the local
 AUR endpoint presented an SSH host key that does not match the fingerprint
 published by AUR. The latest complete real Host/Viewer qualification remains
-the niri run at revision `073169b`. The current media, cross-platform Viewer,
-and desktop-lifecycle changes have automated coverage only; they have not
-repeated the real Portal, PipeWire, Zen, Chromium, or iOS Safari workflow.
+the niri run at revision `073169b`. Later changes have not repeated that
+complete workflow. A partial 2026-08-29 Portal, PipeWire, and iOS Safari run
+rejected a lower Viewer-lag threshold and restored the smooth 3.0 s policy.
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
 | Release artifacts | GitHub Actions run `33185981523` passed checks and published the v0.1.2 `.deb` and tarball; `makepkg --verifysource` passed for the matching AUR metadata at `92d11ca` | No clean install and launch check; AUR remote sync is blocked by an unverified SSH host key change |
 | Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.2 behavior has not repeated that acceptance |
-| Cross-platform Viewer | User checks through `6a43fab`: desktop Chrome no longer stuttered, and iOS 27 Safari played on LAN at about two seconds behind live after buffering before playback | The short user checks do not record exact browser versions or acceptance duration; no platform is qualified by them |
-| Media pipeline optimization | 2026-08-28 working tree: generated pipeline contracts cover selectable 96/128/160 kbps AAC, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation without forced `vapostproc` copies, and immediate normal-EOF reconnect | No real encoder, DMA-BUF, Safari, or constrained-network measurement was run; zero-copy and latency remain unqualified |
-| Idle-media Host candidate | 2026-08-30 Host-only candidate: formatting, Clippy with warnings denied, all 45 runnable Rust tests, and diff whitespace checks passed; five environment-dependent tests remained ignored | No current Portal, VA-API, vkmark, Zen, Chromium, or external-Viewer run; AMD throughput, power savings, wake latency, and regression limits remain unqualified |
+| Cross-platform Viewer | In the 2026-08-29 real iOS A/B described below, the 1.8 s correction reduced reported lag but made playback fall below one frame per second; restoring 3.0 s produced smooth playback with 1.3 s Host-reported lag and about 2 s perceived delay | No safe unified lag reduction was found; exact OS/browser builds and duration remain incomplete, Windows Firefox was not rerun, and neither platform is qualified |
+| Media pipeline optimization | Generated pipeline contracts cover selectable AAC rates, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation, and immediate normal-EOF reconnect; the 2026-08-29 real A/B reached iOS playback at 1080p60/16 Mbps with VA-API | DMA-BUF/zero-copy, Host CPU/GPU, and constrained-network measurements remain unrecorded; zero-copy and latency are unqualified |
+| Idle-media Host candidate | 2026-08-30 current working tree: formatting, Clippy with warnings denied, all 57 runnable Rust tests, and diff whitespace checks passed; five environment-dependent tests remained ignored | No current Portal, VA-API, vkmark, Zen, Chromium, or external-Viewer run; AMD throughput, power savings, wake latency, and regression limits remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
 ## Recorded environment
@@ -81,12 +81,12 @@ tree, `node --check` on the embedded script, `cargo fmt --check`,
 `git diff --check` passed; five explicitly environment-dependent tests remained
 ignored. This proves generated settings, pipeline, Viewer, tray, and
 notification contracts, not real capture, encoding, playback, or window
-activation. Real acceptance was explicitly skipped for this change.
+activation.
 
-For the 2026-08-30 Host-only candidate, `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, all 45 runnable Rust tests, and
+For the 2026-08-30 current working tree, `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, all 57 runnable Rust tests, and
 `git diff --check` passed; five explicitly environment-dependent tests remained
-ignored. The restricted sandbox first produced 43 passes and two expected
+ignored. The restricted sandbox first produced 55 passes and two expected
 `EPERM` socket failures; the same complete suite passed with narrowly granted
 host socket permission. These checks cover the idle-media demand lifecycle,
 structured VA-to-x264 fallback, asynchronous video probing, bounded Viewer
@@ -95,15 +95,22 @@ do not qualify real Portal capture, VA-API/VAMemory behavior, vkmark, Zen or
 Chromium playback, an external Viewer, AMD performance or power savings, a
 wake-fragment p95 of 500 ms or less, or a performance regression limit.
 
-The latest user Viewer check used the existing HTTPS path and 1080p60/12 Mbps
-VA-API stream. It reports Chrome playback without the earlier stutter and iOS
-27 Safari about two seconds behind live, but lacks exact browser versions and
-the acceptance duration required for qualification.
+The latest Viewer A/B ran `cargo run` on 2026-08-29 on the recorded niri host,
+selected a Screen through Portal v5, and used 1920×1080 at 60 FPS, 16 Mbps
+VA-API video, and 160 kbps AAC. An iPhone Air using the Safari `604.1` and
+AppleWebKit `605.1.15` user-agent components connected over direct IPv6 LAN.
+With the hard-correction threshold lowered from 3.0 to 1.8 seconds, it reported
+10–30 ms RTT and 1.0–2.0 s playback lag, but actual playback stuttered, dropped
+frames, and stayed below one frame per second. After restoring the 3.0 s policy
+with the same settings, Host-reported lag was 1.3 s, perceived delay was about
+2 s, and playback was smooth. The 1.8 s change remains reverted.
 
-The desktop smoke preflight found a running Aercast instance whose tray reported
-`Status: Sharing`, already owning the live Portal and PipeWire session. It was
-left untouched, so the current source build has not yet been launched for real
-tray-count, Viewer-notification, or window-activation checks.
+The latest Windows observation remains the revision `0170682` Windows 11
+Firefox 154 check through an external HTTPS reverse proxy over IPv6: playback
+lag held 0.9–1.3 s for several hours without stalls, reconnects, or audio/video
+interruption. The iOS and Windows observations have incomplete exact browser
+and OS builds and are not end-to-end latency measurements or platform
+qualification.
 
 ## Not yet qualified
 
@@ -121,8 +128,7 @@ tray-count, Viewer-notification, or window-activation checks.
 - Ryzen 7 5700X / RX 6650 XT A/B measurements for 1080p60 with 1, 3, and 8
   Viewers, 1440p60 with one Viewer, three vkmark runs, VA/VAMemory negotiation,
   Host CPU/GPU/power, and a performance regression no greater than 3%
-- Hardware encoding; 1080p60, 1440p60, or 120 FPS
 - A single Viewer at 1440p60/24 Mbps over 30 Mbps with 80 ms RTT, 20 ms jitter,
-  and 0.1% loss; VA-API raw-frame zero-copy and Host CPU/GPU measurements
+  and 0.1% loss; VA-API raw-frame zero-copy remains unqualified
 - Trusted-LAN end-to-end latency, long-duration load, or public-network
   deployment
