@@ -403,7 +403,7 @@ pub(super) fn text_input<'a>(
     control: TextInput<'a, Message>,
     enabled: bool,
 ) -> Element<'a, Message> {
-    let content = control.size(14).line_height(Pixels(20.0)).padding([7, 12]);
+    let content = control.size(14).line_height(Pixels(20.0)).padding([8, 12]);
     if enabled {
         content.into()
     } else {

@@ -6,18 +6,18 @@ business, development progress, or backend behavior.
 
 ## Visual language
 
-Aercast follows a **dense desktop utility** visual language inspired by LACT's
-information architecture and Linear's visual treatment. It does not attempt to
-reproduce Libadwaita or any browser-based design system.
+Aercast is a compact Linux desktop utility: dense enough for experienced users,
+calm enough to scan while sharing, and implemented with iced rather than
+imitating GTK or a browser design system.
 
-The layout uses a fixed sidebar for navigation and a centered content area with
-a reasonable `max_width`. The interface is dark, layered through subtle surface
-contrast rather than visible borders, and uses one restrained accent color. All
-hierarchy is conveyed through spacing, typography weight, and surface luminance.
+Use the compositor's ordinary system title bar. Do not draw a custom header bar,
+duplicate Close control, or Host video preview. Build hierarchy from typography,
+spacing, neutral surface contrast, and separators. Group related controls on
+flat surfaces; do not nest every section and row inside another card.
 
-Use the compositor's ordinary system title bar. Do not draw a custom header
-bar. Do not use gradients, glow, large fields of brand color, glass effects, or
-stacked shadows.
+Do not use gradients, glow, glass effects, large fields of brand color, custom
+content shadows, or decorative animation. The compositor may draw its normal
+window shadow.
 
 ## Brand image and icons
 
@@ -28,6 +28,8 @@ stacked shadows.
 - UI actions use a bundled minimal symbolic SVG set so behavior does not depend
   on the installed icon theme. Symbolic icons use the current foreground color
   and remain recognizable at the control's rendered size.
+- Overview, Viewers, and Settings each have one bundled symbolic navigation
+  icon. They accompany text labels; they never replace them.
 - An icon-only interactive control must have an accessible name and tooltip.
   State and meaning must never be conveyed by an icon alone.
 
@@ -37,19 +39,21 @@ Aercast always renders a dark interface and ignores the system light/dark
 preference. It still reads the standardized XDG Settings Portal accent,
 contrast, and reduced-motion preferences independently.
 
-Base neutral tokens:
+The default neutral palette follows One Dark:
 
 | Token | Value | Use |
 | --- | ---: | --- |
-| `bg` | `#0B0D10` | window background |
-| `surface-1` | `#11151A` | sidebar, cards, grouped content |
-| `surface-2` | `#171C22` | inputs, neutral buttons, hover surfaces |
-| `surface-3` | `#20262E` | raised/hover states |
-| `border` | `white 7%` | subtle boundaries (not for hierarchy) |
-| `text` | `#F4F6F8` | primary text |
-| `text-secondary` | `#929BA7` | labels, descriptions, inactive nav |
-| `text-muted` | `#5C646E` | unavailable and disabled controls |
-| `danger` | `#E54D4D` | destructive actions |
+| `bg` | `#282C34` | One Dark window background |
+| `surface` | `#21252B` | sidebar and grouped content |
+| `control` | `#2C313A` | inputs and neutral buttons |
+| `hover` | `#3E4451` | hovered and raised control states |
+| `border` | `white 10%` | ordinary boundaries and separators |
+| `text` | `#ABB2BF` | primary text |
+| `secondary` | `#9DA5B4` | labels, descriptions, inactive navigation |
+| `muted` | `#7F848E` | unavailable and disabled controls |
+| `danger` | `#E06C75` | destructive actions |
+| `success` | `#98C379` | positive status |
+| `warning` | `#E5C07B` | caution and mismatch status |
 
 ### Accent derivation
 
@@ -59,7 +63,7 @@ Base neutral tokens:
 2. Otherwise read `org.freedesktop.appearance` / `accent-color` as one sRGB
    `(r, g, b)` tuple. Every channel must be finite and within `[0, 1]`; treat an
    invalid value as absent.
-3. Use the valid value as `accent-base`, or the cool blue default `#4C9AFF` when
+3. Use the valid value as `accent-base`, or the One Dark blue `#61AFEF` when
    absent.
 4. `accent-bg` equals `accent-base`.
 5. `accent-fg` is whichever of `#ffffff` and `#1e1e1e` has the higher WCAG
@@ -67,7 +71,7 @@ Base neutral tokens:
    `#000000`.
 6. `accent-standalone` begins at `accent-base` and moves only toward white until
    it reaches at least `4.5:1` against `bg`.
-7. `accent-subtle` is a 15% alpha composite of `accent-base` over `surface-1`.
+7. `accent-subtle` is a 15% alpha composite of `accent-base` over `surface`.
 
 Color math operates in sRGB with WCAG relative luminance and contrast formulas.
 All text and interactive states must meet WCAG AA. Error, warning, success,
@@ -80,27 +84,36 @@ controls such as a checked box. Navigation and option selection use
 and small active-status markers use `accent-standalone`; ordinary content
 surfaces remain neutral even when the Portal supplies a saturated accent.
 
-## Geometry
+## Window and layout
 
-- All layout spacing, padding, gaps, control dimensions, icon dimensions, and
-  corner radii follow a `4px` grid. Font sizes and one-to-three-pixel strokes
-  are optical and accessibility exceptions.
+The Host is one ordinary resizable layout, not separate wide and narrow
+component trees. The compositor receives a `960×640` logical-pixel initial size
+hint. The minimum height is `480`; given the current monitor's logical width
+`W` and height `H`, the minimum width is:
+
+```text
+max(640, min(W, H × 16 / 9) / 4)
+```
+
+Projecting an ultrawide monitor through its height makes the quarter-width rule
+match an equivalent 16:9 display. Query the current monitor when the window
+opens, is shown again, or is resized, and update the minimum only when the
+logical result changes. HiDPI scale factors must not be applied a second time.
+
+- All spacing, padding, gaps, control dimensions, icon dimensions, and radii
+  follow a `4px` grid. Font sizes and one-to-three-pixel strokes are optical and
+  accessibility exceptions.
 - Spacing scale: `4 / 8 / 12 / 16 / 20 / 24` logical pixels.
-- Interactive control height: `34` logical pixels.
-- Control corner radius: `8` logical pixels.
-- Card and section corner radius: `10` logical pixels.
-- Sidebar width: `220` logical pixels.
-- Content max width: `700` logical pixels.
-- Section gap: `16–24` logical pixels.
-- The centered main Share action uses a `16px` pill radius.
-- Borders: one logical pixel normally; never create hierarchy with multiple
-  nested outlines. Prefer surface contrast over visible borders.
-- Shadows: at most one subtle compositor-independent shadow for an elevated
-  transient surface; ordinary grouped content uses borders and luminance only.
-
-The main window content must fit `920×520` logical pixels without horizontal
-overflow. It is not resizable, but layout must tolerate normal font metrics and
-the compositor's server-side decoration size.
+- Interactive control height: `36` logical pixels.
+- Control and group corner radius: `8` logical pixels.
+- Icon-and-text sidebar width: `192` logical pixels.
+- The single-column content area has `20px` outer padding and a `960px` maximum
+  width, centered in the space beside the sidebar. It remains usable without
+  horizontal clipping at the `640×480` floor.
+- Sections use `16–24px` vertical gaps and one-pixel separators. Do not create
+  hierarchy with nested outlines.
+- Content overflow keeps its scrollbar hidden. Keyboard, wheel, touchpad, and
+  focus-reveal scrolling remain available.
 
 ## Typography
 
@@ -111,69 +124,92 @@ Use the first available system font from `Adwaita Sans`, `Cantarell`,
 | --- | ---: | --- |
 | Body and controls | about `14px` | regular |
 | Supporting text | `12–13px` | secondary or muted, not low-contrast |
-| Page title | about `16px` | bold, secondary color, uppercase not used |
+| Page title | `20px` | bold, primary text, uppercase not used |
 
 Use sentence case. Prefer short labels over reduced font size. Numeric telemetry
 may use tabular figures when the active system font provides them.
 
 ## Components
 
-- **Primary button:** `accent-bg`, `accent-fg`, and bold text. The Share page's
-  Start, Cancel, Stop, and stopping states retain this treatment; never use it
-  to indicate navigation or option selection.
+- **Primary button:** `accent-bg`, `accent-fg`, and bold text. Each view exposes
+  at most one primary operation; navigation and option selection stay neutral.
 - **Selected button:** `accent-subtle`, normal text, and a one-pixel
   `accent-standalone` border.
-- **Neutral button:** `surface-2`, subtle border, brighter hover surface.
+- **Neutral button:** `control`, subtle border, `hover` on hover.
 - **Destructive button:** `danger` background with explicit destructive wording;
-  it appears only after confirmation is requested.
+  it appears only after confirmation is requested. Inline confirmation replaces
+  the original control in place rather than adding a modal or expanded panel.
 - **Icon button:** square control matching standard height, symbolic icon,
   tooltip, and accessible name. Link refresh and copy icons are `14px` and
   centered on both axes.
-- **Close button:** a compact neutral button with a centered symbolic icon in
-  the content area's top-right; it uses the same hide-window behavior as the
-  compositor close action.
-- **Sidebar navigation:** fixed left sidebar with text items; the active page
-  uses `surface-2`, primary text, and a two-pixel accent indicator; inactive
-  items use `text-secondary` on transparent background with `surface-2` on
-  hover.
-- **Text input:** `surface-2`, subtle border, two-pixel accent focus ring;
+- **Sidebar navigation:** fixed left sidebar with an icon and text for every
+  item. The active page uses `control`, primary text, and a two-pixel accent
+  indicator; inactive items use `secondary` on transparent background with
+  `control` on hover. A compact **Changed** label accompanies Settings while
+  Draft differs from Saved.
+- **Text input:** `control`, subtle border, two-pixel accent focus ring;
   invalid input adds an icon and message.
-- **Card:** one grouped `surface-1` container with `10px` radius and subtle
-  border. Used for status areas, viewer lists, and settings sections. Do not
-  wrap every row in another card.
+- **Grouped surface:** one flat `surface` container with `8px` radius and subtle
+  border. Separators divide related rows; rows do not become nested cards.
 - **Status:** compact text and symbolic icon. Reserve accent for the small
-  portion that benefits from emphasis.
-- The Viewer has no custom controls, overlay, or visible status text. Its
-  square-cornered video fills the browser viewport with `contain` fitting and
-  uses only the browser's native playback, volume, and fullscreen controls.
+  portion that benefits from emphasis. Success, warning, and danger always pair
+  color with visible wording or an icon.
 
 Focus is always visible and uses a ring at least `2px` thick with sufficient
 contrast against both the control and its surrounding surface.
 
 ## Page composition
 
-The Host UI uses a fixed sidebar for navigation (Share, Viewers, Settings) with
-a status indicator at the bottom-left, the Cargo package version at the
-bottom-right, and a scrollable content area. Scrollbars stay hidden while
-wheel, touchpad, and keyboard scrolling remain available. Each content page
-uses `24px` outer padding, a section title in `text-secondary`, and `surface-1`
-card containers.
+The sidebar contains Overview, Viewers, and Settings navigation. The current
+share state and package version remain compact secondary information rather than
+competing with page content.
 
-The Share page groups status, approved source, link, and confirmations in one
-card while keeping its share action centered at the bottom. The Viewers page
-places its online-count capsule immediately after the title and uses one card
-with separators rather than per-row cards. Settings keeps existing application
-rows visible while refreshing, then replaces them with the completed scan; it
-uses one card for each of Quality, Audio, Network, and Notifications, and
-controls within a section do not add another container outline.
+- **Overview:** one vertical operations dashboard. Stage, source type, and the
+  single share action form the lead group; link controls, Viewer health, and
+  Active media are flat groups separated below it. Loopback status uses visible
+  **This device only** wording beside the Network shortcut. Saved/Active mismatch
+  uses warning wording, not color alone.
+- **Viewers:** one grouped surface contains compact two-line rows with separators.
+  State, IP, and Block occupy the first line. Connected begins below the first
+  IP character, while Online/Offline and Lag share a right-aligned status
+  column; Block has a separate action column. Rows never switch to a wide table
+  at larger window widths.
+- **Settings:** Quality, Audio, Network, and Notifications are visible as fully
+  expanded groups in one scroll area. A footer outside that scroll area contains
+  local status or errors, Revert, and Apply. Field errors sit with their field or
+  group. Active/Saved mismatch and its current-share action remain one clear
+  operation rather than another settings card.
+
+## Browser Viewer
+
+The square-cornered native video fills the viewport with `contain` fitting and
+keeps the browser's native playback, volume, and fullscreen controls. Aercast
+adds no custom play button, spinner, transport control, or performance overlay.
+
+The sole non-playing overlay is a centered passive status element with
+`pointer-events: none`, `role="status"`, `aria-live="polite"`, and
+`aria-atomic="true"`. It uses primary text on the dark background and never
+captures input. While playing it is hidden visually and removed from the
+accessibility tree; the exact state text is owned by the
+[development contract](development.md#viewer-management-and-playback).
 
 ## Motion and accessibility preferences
 
-Normal transitions last `120–180ms` and use simple opacity or position changes.
-When the Settings Portal reports reduced motion, remove non-essential
-transitions and animate only feedback required to understand a state change.
+The Host adds no animated transitions. Timed feedback such as **Copied** or an
+in-place confirmation changes state immediately, so reduced motion requires no
+alternate animation. Native browser controls remain browser-owned.
 
-When the Portal reports higher contrast, strengthen borders and separators,
-raise muted-text contrast, and use at least a `3px` focus ring. High contrast
-does not change the fixed dark theme. High contrast and reduced motion are
-independent flags; every combination must work.
+When the Settings Portal reports higher contrast, strengthen borders and
+separators, raise secondary and muted-text contrast, and use at least a `3px`
+focus ring. High contrast does not change the fixed dark theme. High contrast
+and reduced motion are independent flags; every combination must work.
+
+Every Host control must be reachable in forward and reverse keyboard order,
+support its ordinary Enter or Space activation, retain a visible focus ring,
+and scroll into view when focused. Text and controls meet WCAG AA. State uses
+visible wording or shape in addition to color.
+
+Host accessibility acceptance covers keyboard and visual access only. Iced
+0.14 does not provide a basis for claiming AT-SPI screen-reader support here.
+The browser Viewer status is separately exposed through the live-region rules
+above.

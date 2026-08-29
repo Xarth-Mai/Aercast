@@ -14,12 +14,68 @@ fn test_viewers(count: usize, online: bool) -> Vec<web::Viewer> {
         .collect()
 }
 
-fn test_audio(enabled: bool) -> AudioSettings {
+fn test_share(enabled: bool) -> ShareSettings {
     let settings = settings::Settings {
         system_audio: enabled,
         ..settings::Settings::default()
     };
-    audio_settings(&settings)
+    ShareSettings {
+        audio: audio_settings(&settings),
+        video: VideoPlan {
+            settings: settings.video,
+            encoder: Encoder::X264,
+        },
+    }
+}
+
+fn test_app() -> (App, mpsc::Receiver<Command>) {
+    let settings = settings::Settings::default();
+    let draft = SettingsDraft::from_settings(&settings);
+    let video_plan = VideoPlan {
+        settings: settings.video,
+        encoder: Encoder::X264,
+    };
+    let (commands, receiver) = mpsc::channel(16);
+    let (notifications, _) = iced::futures::channel::mpsc::unbounded();
+    (
+        App {
+            phase: Phase::Waiting,
+            link: "http://127.0.0.1:8877/s/token".to_owned(),
+            viewers: Vec::new(),
+            commands: Some(commands),
+            window: Some(window::Id::unique()),
+            monitor_size: None,
+            confirm_refresh: false,
+            confirm_quit: false,
+            confirm_apply_current: false,
+            confirm_block: None,
+            settings,
+            draft,
+            page: Page::Overview,
+            copied_at: None,
+            settings_error: None,
+            network_apply_error: None,
+            audio_candidates: Vec::new(),
+            audio_scanning: false,
+            audio_scan_error: None,
+            video_plan: Some(video_plan),
+            video_probe: None,
+            video_error: None,
+            video_apply_error: None,
+            pending_settings: None,
+            appearance: appearance::Appearance::default(),
+            approved_source: None,
+            active_share: None,
+            applying_share: None,
+            apply_share_error: None,
+            notifications,
+            tray_updates: None,
+            tray_stopped: true,
+            host_stopped: false,
+            quitting: false,
+        },
+        receiver,
+    )
 }
 
 fn gst_error<T: gst::message::MessageErrorDomain>(
@@ -88,7 +144,7 @@ fn retry_policy_allows_exactly_three_media_recoveries() {
     assert!(!should_retry(&media_failure, MAX_MEDIA_RECOVERIES));
 
     for terminal in [
-        ShareStop::Apply(test_audio(false)),
+        ShareStop::Apply(test_share(false)),
         ShareStop::Sleep,
         ShareStop::Wake,
         ShareStop::End,
@@ -378,7 +434,7 @@ async fn server_failure_is_terminal_control() {
 async fn apply_requests_a_media_restart_without_reclassifying_control() {
     let (commands, mut receiver) = mpsc::channel(1);
     commands
-        .send(Command::Apply(test_audio(false)))
+        .send(Command::Apply(test_share(false)))
         .await
         .unwrap();
     let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
@@ -395,7 +451,7 @@ async fn apply_requests_a_media_restart_without_reclassifying_control() {
             None,
         )
         .await,
-        ShareStop::Apply(audio) if audio == test_audio(false)
+        ShareStop::Apply(share) if share == test_share(false)
     ));
     server.abort();
 }
@@ -423,546 +479,463 @@ fn command_line_controls_are_rejected() {
 }
 
 #[test]
-fn ui_commands_follow_the_host_lifecycle() {
-    let (commands, mut receiver) = mpsc::channel(2);
-    let (notifications, _notification_requests) = iced::futures::channel::mpsc::unbounded();
-    let window = window::Id::unique();
-    let settings = settings::Settings::default();
-    let video_plan = VideoPlan {
-        settings: settings.video,
-        encoder: Encoder::X264,
-    };
-    let mut app = App {
-        phase: Phase::Starting,
-        link: String::new(),
-        viewers: Vec::new(),
-        commands: Some(commands),
-        window: Some(window),
-        confirm_refresh: false,
-        confirm_quit: false,
-        settings,
-        page: Page::Main,
-        copied_at: None,
-        settings_error: None,
-        audio_candidates: Vec::new(),
-        audio_scanning: false,
-        audio_scan_error: None,
-        video_plan: Some(video_plan),
-        video_probe: None,
-        video_error: None,
-        video_edit_error: None,
-        video_preset: Quality::P720,
-        video_width: "1280".to_owned(),
-        video_height: "720".to_owned(),
-        video_fps: 60,
-        video_bitrate: "6".to_owned(),
-        video_encoder: settings::VideoEncoder::Auto,
-        appearance: appearance::Appearance::default(),
-        approved_source: None,
-        active_audio: None,
-        applying_audio: None,
-        network_address: "127.0.0.1".to_owned(),
-        network_port: "8877".to_owned(),
-        share_base_url: String::new(),
-        applying_network: false,
-        notifications,
-        tray_updates: None,
-        tray_stopped: true,
-        host_stopped: false,
-        quitting: false,
-    };
+fn minimum_window_width_uses_the_logical_sixteen_by_nine_projection() {
+    assert_eq!(
+        minimum_window_size(iced::Size::new(3_840.0, 2_160.0)),
+        iced::Size::new(960.0, 480.0)
+    );
+    assert_eq!(
+        minimum_window_size(iced::Size::new(5_120.0, 2_160.0)),
+        iced::Size::new(960.0, 480.0)
+    );
+    assert_eq!(
+        minimum_window_size(iced::Size::new(1_920.0, 1_080.0)),
+        iced::Size::new(640.0, 480.0)
+    );
+    assert_eq!(
+        minimum_window_size(iced::Size::new(1_280.0, 720.0)),
+        iced::Size::new(640.0, 480.0)
+    );
+}
 
-    app.phase = Phase::Sharing;
-    app.confirm_refresh = true;
-    app.confirm_quit = true;
-    app.commands
-        .as_ref()
-        .unwrap()
-        .try_send(Command::End)
-        .unwrap();
-    app.commands
-        .as_ref()
-        .unwrap()
-        .try_send(Command::Refresh(false))
-        .unwrap();
-    drop(update(&mut app, Message::ConfirmRefresh));
-    assert_eq!(app.phase, Phase::Sharing);
-    assert!(app.confirm_refresh);
-    assert!(app.confirm_quit);
-    drop(update(&mut app, Message::End));
-    assert_eq!(app.phase, Phase::Sharing);
-    assert!(app.confirm_refresh);
-    assert!(app.confirm_quit);
-    assert_eq!(receiver.try_recv().unwrap(), Command::End);
-    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
-    app.phase = Phase::Starting;
-    app.confirm_refresh = false;
-    app.confirm_quit = false;
+#[test]
+fn settings_draft_builds_one_candidate_and_reverts_as_a_whole() {
+    let saved = settings::Settings::default();
+    let mut draft = SettingsDraft::from_settings(&saved);
+    assert!(!draft.dirty(&saved));
+    assert_eq!(draft.candidate().unwrap(), saved);
 
+    draft.settings.system_audio = false;
+    draft.settings.notifications = false;
+    draft.video_width = "1920".to_owned();
+    draft.video_height = "1080".to_owned();
+    draft.video_bitrate = "12".to_owned();
+    draft.video_encoder = settings::VideoEncoder::X264;
+    draft.network_port = "9000".to_owned();
+    draft.share_base_url = "https://share.example:443/".to_owned();
+    draft.changed();
+
+    let candidate = draft.candidate().unwrap();
+    assert!(draft.dirty(&saved));
+    assert!(!candidate.system_audio);
+    assert!(!candidate.notifications);
+    assert_eq!(candidate.video.width, 1920);
+    assert_eq!(candidate.listen_port, 9000);
+    assert_eq!(
+        candidate.share_base_url.as_deref(),
+        Some("https://share.example:443")
+    );
+
+    draft.video_width = "1279".to_owned();
+    assert!(draft.candidate().is_err());
+
+    let (mut app, _) = test_app();
+    drop(update_app(&mut app, Message::Notifications(false)));
+    drop(update_app(&mut app, Message::VideoPreset(Quality::P1080)));
+    let changed = app.draft.clone();
+    drop(update_app(&mut app, Message::Page(Page::Viewers)));
+    let window = app.window.unwrap();
+    drop(update_app(&mut app, Message::Close(window)));
+    assert_eq!(app.draft, changed);
+    drop(update_app(&mut app, Message::RevertSettings));
+    assert!(!app.draft.dirty(&app.settings));
+    assert_eq!(app.draft.candidate().unwrap(), app.settings);
+}
+
+#[test]
+fn viewer_tick_runs_only_for_visible_overview_or_viewers_with_online_viewers() {
+    let (mut app, _) = test_app();
     app.viewers = test_viewers(1, true);
-    assert!(!viewer_tick_enabled(&app));
+    assert!(viewer_tick_enabled(&app));
     app.page = Page::Viewers;
     assert!(viewer_tick_enabled(&app));
-    app.page = Page::Main;
+    app.page = Page::Settings;
+    assert!(!viewer_tick_enabled(&app));
+    app.page = Page::Overview;
     app.window = None;
     assert!(!viewer_tick_enabled(&app));
-    app.window = Some(window);
-    app.viewers.clear();
+    app.window = Some(window::Id::unique());
+    app.viewers = test_viewers(1, false);
+    assert!(!viewer_tick_enabled(&app));
+}
 
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::NetworkUnavailable(
-            "Could not listen on 127.0.0.1:8877".to_owned(),
-        )),
-    ));
-    assert!(matches!(app.phase, Phase::NetworkError(_)));
-    assert!(app.settings_error.is_some());
-    drop(update(&mut app, Message::ApplyNetwork));
+#[test]
+fn block_requires_the_same_button_twice_and_resets_transient_confirmation() {
+    let (mut app, mut commands) = test_app();
+    app.page = Page::Viewers;
+    app.viewers = test_viewers(2, true);
+
+    drop(update_app(&mut app, Message::Block(0)));
     assert_eq!(
-        receiver.try_recv().unwrap(),
-        Command::Network(settings::Settings::default())
+        app.confirm_block.map(|confirmation| confirmation.key),
+        Some(0)
     );
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::NetworkUnavailable(
-            "Still could not listen on 127.0.0.1:8877".to_owned(),
-        )),
-    ));
-    app.network_port = "9000".to_owned();
-    let recovered_network = app
-        .settings
-        .with_network(&app.network_address, &app.network_port, &app.share_base_url)
-        .unwrap();
-    drop(update(&mut app, Message::ApplyNetwork));
+    assert!(commands.try_recv().is_err());
+
+    drop(update_app(&mut app, Message::Block(1)));
     assert_eq!(
-        receiver.try_recv().unwrap(),
-        Command::Network(recovered_network.clone())
+        app.confirm_block.map(|confirmation| confirmation.key),
+        Some(1)
     );
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::NetworkApplied(Ok(recovered_network))),
-    ));
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Waiting(
-            "http://127.0.0.1:9000/s/token".to_owned(),
-        )),
-    ));
-    assert_eq!(app.phase, Phase::Waiting);
-    drop(update(&mut app, Message::Refresh));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
-    let candidate = audio::PlaybackApplication {
-        label: "Player".to_owned(),
-        identity: "org.example.Player".to_owned(),
-    };
-    app.audio_candidates.push(candidate);
-    drop(update(&mut app, Message::Page(Page::Settings)));
-    assert_eq!(app.page, Page::Settings);
-    assert!(app.audio_scanning);
-    assert_eq!(app.audio_candidates.len(), 1);
-    assert_eq!(app.audio_candidates[0].identity, "org.example.Player");
-    drop(update(&mut app, Message::AudioApplications(Ok(Vec::new()))));
-    assert!(!app.audio_scanning);
-    drop(update(&mut app, Message::Page(Page::Viewers)));
-    assert_eq!(app.page, Page::Viewers);
+    assert!(commands.try_recv().is_err());
+    drop(update_app(&mut app, Message::Block(1)));
+    assert_eq!(commands.try_recv().unwrap(), Command::Disconnect(1));
+    assert!(app.confirm_block.is_none());
 
-    app.network_address = "0.0.0.0".to_owned();
-    drop(update(&mut app, Message::ApplyNetwork));
-    assert!(app.settings_error.is_some());
-    assert!(receiver.try_recv().is_err());
-    assert_eq!(app.link, "http://127.0.0.1:9000/s/token");
+    drop(update_app(&mut app, Message::Block(0)));
+    app.confirm_block.as_mut().unwrap().started =
+        Instant::now() - BLOCK_CONFIRMATION_DURATION - Duration::from_millis(1);
+    drop(update_app(&mut app, Message::Tick));
+    assert!(app.confirm_block.is_none());
 
-    app.network_address = "127.0.0.1".to_owned();
-    app.network_port = "9001".to_owned();
-    app.share_base_url = "https://share.example:443/".to_owned();
-    let network = app
-        .settings
-        .with_network(&app.network_address, &app.network_port, &app.share_base_url)
-        .unwrap();
-    drop(update(&mut app, Message::ApplyNetwork));
-    assert_eq!(
-        receiver.try_recv().unwrap(),
-        Command::Network(network.clone())
-    );
-    assert!(app.applying_network);
-    drop(update(&mut app, Message::Start));
-    assert!(receiver.try_recv().is_err());
-    drop(update(&mut app, Message::SystemAudio(false)));
-    assert!(app.settings.system_audio);
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::NetworkApplied(Err("occupied".to_owned()))),
-    ));
-    assert!(!app.applying_network);
-    assert_eq!(app.settings.listen_port, 9000);
-    assert_eq!(app.link, "http://127.0.0.1:9000/s/token");
+    drop(update_app(&mut app, Message::Block(0)));
+    drop(update_app(&mut app, Message::Page(Page::Overview)));
+    assert!(app.confirm_block.is_none());
 
-    drop(update(&mut app, Message::ApplyNetwork));
-    assert_eq!(
-        receiver.try_recv().unwrap(),
-        Command::Network(network.clone())
-    );
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::NetworkApplied(Ok(network))),
-    ));
-    assert!(!app.applying_network);
-    assert_eq!(app.settings.listen_port, 9001);
-    assert_eq!(app.share_base_url, "https://share.example:443");
-
-    drop(update(&mut app, Message::VideoPreset(Quality::P1080)));
-    assert_eq!(app.video_width, "1920");
-    assert_eq!(app.video_height, "1080");
-    assert_eq!(app.video_bitrate, "12");
-    assert_eq!(app.settings.video, settings::VideoSettings::default());
-    drop(update(&mut app, Message::VideoPreset(Quality::Custom)));
-    assert_eq!(app.video_preset, Quality::Custom);
-    assert!(app.video_bitrate.is_empty());
-    drop(update(&mut app, Message::VideoBitrate("9".to_owned())));
-    drop(update(&mut app, Message::VideoPreset(Quality::Custom)));
-    assert_eq!(app.video_bitrate, "9");
-    drop(update(&mut app, Message::VideoFps(30)));
-    assert_eq!(app.video_fps, 30);
-    drop(update(
-        &mut app,
-        Message::VideoEncoder(settings::VideoEncoder::X264),
-    ));
-    drop(update(&mut app, Message::VideoPreset(Quality::P1080)));
-    assert_eq!(app.video_encoder, settings::VideoEncoder::X264);
-
-    let current_video = app.settings.video;
-    let current_plan = VideoPlan {
-        settings: current_video,
-        encoder: Encoder::X264,
-    };
-    app.video_plan = None;
-    app.video_probe = Some(VideoProbe::Current(current_video));
-    let stale_video = settings::VideoSettings {
-        fps: 30,
-        ..current_video
-    };
-    drop(update(
-        &mut app,
-        Message::VideoProbed(
-            VideoProbe::Current(stale_video),
-            Ok(VideoPlan {
-                settings: stale_video,
-                encoder: Encoder::X264,
-            }),
-        ),
-    ));
-    assert_eq!(app.video_probe, Some(VideoProbe::Current(current_video)));
-    assert_eq!(app.video_plan, None);
-    drop(update(
-        &mut app,
-        Message::VideoProbed(VideoProbe::Current(current_video), Ok(current_plan)),
-    ));
-    assert_eq!(app.video_probe, None);
-    assert_eq!(app.video_plan, Some(current_plan));
-
-    let saved_settings = app.settings.clone();
-    let saved_plan = app.video_plan;
-    let candidate = app
-        .settings
-        .with_video(
-            &app.video_width,
-            &app.video_height,
-            app.video_fps,
-            &app.video_bitrate,
-            app.video_encoder,
-        )
-        .unwrap()
-        .video;
-    assert_eq!(update(&mut app, Message::SaveVideo).units(), 1);
-    assert_eq!(app.video_probe, Some(VideoProbe::Save(candidate)));
-    assert_eq!(app.settings, saved_settings);
-    assert_eq!(app.video_plan, saved_plan);
-    drop(update(&mut app, Message::Start));
-    assert!(receiver.try_recv().is_err());
-    assert_eq!(update(&mut app, Message::SaveVideo).units(), 0);
-    let network_port = app.network_port.clone();
-    app.network_port = "9002".to_owned();
-    drop(update(&mut app, Message::ApplyNetwork));
-    assert!(!app.applying_network);
-    assert!(receiver.try_recv().is_err());
-    app.network_port = network_port;
-    drop(update(
-        &mut app,
-        Message::VideoProbed(
-            VideoProbe::Save(stale_video),
-            Ok(VideoPlan {
-                settings: stale_video,
-                encoder: Encoder::X264,
-            }),
-        ),
-    ));
-    assert_eq!(app.video_probe, Some(VideoProbe::Save(candidate)));
-    drop(update(
-        &mut app,
-        Message::VideoProbed(VideoProbe::Save(candidate), Err("probe failed".to_owned())),
-    ));
-    assert_eq!(app.video_probe, None);
-    assert_eq!(app.settings, saved_settings);
-    assert_eq!(app.video_plan, saved_plan);
-    assert!(
-        app.video_edit_error
-            .as_deref()
-            .is_some_and(|error| error.contains("probe failed"))
-    );
-    set_video_draft(&mut app, settings::VideoSettings::default());
-
-    app.settings.system_audio = false;
-    app.settings.video.width = 0;
-    drop(update(&mut app, Message::Start));
-    assert!(receiver.try_recv().is_err());
-    assert_eq!(app.phase, Phase::Waiting);
-    assert!(app.video_error.is_some());
-    app.settings.video = settings::VideoSettings::default();
-    app.video_error = None;
-    let share = ShareSettings {
-        audio: test_audio(false),
-        video: saved_plan.unwrap(),
-    };
-    drop(update(&mut app, Message::Start));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Start(share));
-    assert_eq!(app.phase, Phase::Selecting);
-    drop(update(&mut app, Message::Host(HostEvent::Source("Window"))));
-    assert_eq!(app.approved_source, Some("Window"));
-    app.settings.system_audio = true;
-    drop(update(&mut app, Message::ApplySystemAudio));
-    assert!(receiver.try_recv().is_err());
-
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Sharing(test_audio(false))),
-    ));
-    assert_eq!(app.active_audio, Some(test_audio(false)));
-    assert_eq!(app.approved_source, Some("Window"));
-    app.settings.audio_bitrate_kbps = 160;
-    app.settings.audio_exclusions[0].enabled = false;
-    let changed_audio = audio_settings(&app.settings);
-    assert_eq!(changed_audio.bitrate_kbps, 160);
-    drop(update(&mut app, Message::ApplySystemAudio));
-    assert_eq!(
-        receiver.try_recv().unwrap(),
-        Command::Apply(changed_audio.clone())
-    );
-    assert_eq!(app.applying_audio, Some(changed_audio.clone()));
-    drop(update(&mut app, Message::ApplySystemAudio));
-    assert!(receiver.try_recv().is_err());
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Sharing(test_audio(false))),
-    ));
-    assert_eq!(app.applying_audio, Some(changed_audio.clone()));
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Sharing(changed_audio.clone())),
-    ));
-    assert_eq!(app.active_audio, Some(changed_audio.clone()));
-    assert_eq!(app.applying_audio, None);
-
-    assert_eq!(update(&mut app, Message::Close(window)).units(), 1);
-    assert_eq!(app.window, None);
-    assert_eq!(app.phase, Phase::Sharing);
-    assert!(receiver.try_recv().is_err());
-    assert_ne!(update(&mut app, Message::Show).units(), 0);
-    let reopened = app.window.unwrap();
-    assert_ne!(reopened, window);
-    drop(update(&mut app, Message::Show));
-    assert_eq!(app.window, Some(reopened));
-    drop(update(&mut app, Message::Closed(window)));
-    assert_eq!(app.window, Some(reopened));
-    drop(update(&mut app, Message::Closed(reopened)));
-    assert_eq!(app.window, None);
-
-    let (tray_updates, tray_state) = watch::channel(TrayState {
-        phase: Phase::Sharing,
-        online_viewers: 0,
-    });
-    app.tray_updates = Some(tray_updates);
-    drop(update(
+    app.page = Page::Viewers;
+    drop(update_app(&mut app, Message::Block(0)));
+    drop(update_app(
         &mut app,
         Message::Host(HostEvent::Viewers(test_viewers(2, true))),
     ));
-    assert_eq!(tray_state.borrow().online_viewers, 2);
-    let viewer_key = app.viewers[0].key;
-    drop(update(&mut app, Message::Disconnect(viewer_key)));
-    assert_eq!(
-        receiver.try_recv().unwrap(),
-        Command::Disconnect(viewer_key)
-    );
-    drop(update(&mut app, Message::Refresh));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
-    assert!(!app.confirm_refresh);
-    drop(update(&mut app, Message::Host(HostEvent::ConfirmRefresh)));
-    assert!(app.confirm_refresh);
-    assert_eq!(app.page, Page::Main);
-    drop(update(&mut app, Message::CancelRefresh));
-    assert!(!app.confirm_refresh);
-    drop(update(&mut app, Message::Host(HostEvent::ConfirmRefresh)));
-    drop(update(&mut app, Message::ConfirmRefresh));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(true));
-    assert!(!app.confirm_refresh);
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Link("http://127.0.0.1/s/replacement".to_owned())),
-    ));
-    assert_eq!(app.link, "http://127.0.0.1/s/replacement");
-    assert_eq!(app.approved_source, Some("Window"));
-    assert!(app.viewers.is_empty());
-    assert_eq!(tray_state.borrow().online_viewers, 0);
-    drop(update(&mut app, Message::Refresh));
-    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
-    assert!(!app.confirm_refresh);
-    drop(update(&mut app, Message::End));
-    assert_eq!(receiver.try_recv().unwrap(), Command::End);
-    assert_eq!(app.phase, Phase::Ending);
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Source("Late source")),
-    ));
-    assert_eq!(app.approved_source, Some("Window"));
-    app.settings.system_audio = false;
-    drop(update(&mut app, Message::ApplySystemAudio));
-    assert!(receiver.try_recv().is_err());
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Sharing(test_audio(false))),
-    ));
-    assert_eq!(app.phase, Phase::Ending);
-    assert_eq!(app.active_audio, Some(changed_audio));
-    let offline = test_viewers(1, false);
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Viewers(offline.clone())),
-    ));
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Waiting("http://127.0.0.1/s/token".to_owned())),
-    ));
-    assert_eq!(app.phase, Phase::Waiting);
-    assert_eq!(app.link, "http://127.0.0.1/s/token");
-    drop(update(&mut app, Message::Copy));
-    let first_copy = app.copied_at.unwrap();
-    let latest_copy = first_copy + Duration::from_millis(1);
-    app.copied_at = Some(latest_copy);
-    drop(update(&mut app, Message::CopyFeedbackExpired(first_copy)));
-    assert_eq!(app.copied_at, Some(latest_copy));
-    drop(update(&mut app, Message::CopyFeedbackExpired(latest_copy)));
-    assert_eq!(app.copied_at, None);
-    assert!(app.approved_source.is_none());
-    assert_eq!(app.active_audio, None);
-    assert_eq!(app.viewers, offline);
-    assert_eq!(format_duration(app.viewers[0].duration()), "1:05");
+    assert!(app.confirm_block.is_none());
 
-    drop(receiver);
-    app.confirm_refresh = true;
-    app.confirm_quit = true;
-    assert!(!send_command(&mut app, Command::Refresh(false)));
-    assert_eq!(
-        app.phase,
-        Phase::Error("Host control is unavailable".to_owned())
-    );
-    assert!(!app.confirm_refresh);
-    assert!(!app.confirm_quit);
+    drop(update_app(&mut app, Message::Block(0)));
+    app.viewers = test_viewers(1, false);
+    drop(update_app(&mut app, Message::Block(0)));
+    assert!(app.confirm_block.is_none());
+    assert!(commands.try_recv().is_err());
+}
 
-    assert_eq!(
-        update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
-        1
-    );
-    app.quitting = false;
-    app.host_stopped = false;
+#[test]
+fn start_reads_saved_settings_and_ignores_the_dirty_draft() {
+    let (mut app, mut commands) = test_app();
+    drop(update_app(&mut app, Message::SystemAudio(false)));
+    drop(update_app(&mut app, Message::VideoPreset(Quality::P1080)));
+    assert!(app.draft.dirty(&app.settings));
 
-    let (commands, _) = mpsc::channel(1);
-    app.commands = Some(commands);
+    drop(update_app(&mut app, Message::Start));
+    assert_eq!(
+        commands.try_recv().unwrap(),
+        Command::Start(test_share(true))
+    );
+    assert_eq!(app.phase, Phase::Selecting);
+    assert!(app.draft.dirty(&app.settings));
+}
+
+#[test]
+fn network_changes_block_sharing_and_commit_the_full_draft_transactionally() {
+    let (mut app, mut commands) = test_app();
+    let saved = app.settings.clone();
+    drop(update_app(&mut app, Message::SystemAudio(false)));
+    drop(update_app(&mut app, Message::Notifications(false)));
+    drop(update_app(
+        &mut app,
+        Message::NetworkPort("9000".to_owned()),
+    ));
+    let candidate = app.draft.candidate().unwrap();
+
+    app.phase = Phase::Sharing;
+    drop(update_app(&mut app, Message::ApplySettings));
+    assert!(
+        app.settings_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Stop sharing"))
+    );
+    assert!(app.pending_settings.is_none());
+    assert!(commands.try_recv().is_err());
+    assert_eq!(app.settings, saved);
+
     app.phase = Phase::Waiting;
-    app.viewers = test_viewers(2, true);
+    drop(update_app(&mut app, Message::ApplySettings));
     assert_eq!(
-        update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
-        1
+        commands.try_recv().unwrap(),
+        Command::Network(candidate.clone())
     );
-    assert!(app.viewers.is_empty());
-    app.quitting = false;
-    app.host_stopped = false;
+    assert!(app.pending_settings.is_some());
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::NetworkApplied(Err("occupied".to_owned()))),
+    ));
+    assert!(app.pending_settings.is_none());
+    assert_eq!(app.settings, saved);
+    assert!(app.draft.dirty(&app.settings));
 
-    let (commands, _) = mpsc::channel(1);
-    app.commands = Some(commands);
-    app.phase = Phase::Sharing;
-    app.approved_source = Some("Screen");
-    app.viewers = test_viewers(3, true);
-    app.page = Page::Settings;
+    drop(update_app(&mut app, Message::ApplySettings));
     assert_eq!(
-        update(
-            &mut app,
-            Message::Host(HostEvent::Stopped(Err("stopped".to_owned())))
-        )
-        .units(),
-        0
+        commands.try_recv().unwrap(),
+        Command::Network(candidate.clone())
     );
-    assert_eq!(app.phase, Phase::Error("stopped".to_owned()));
-    assert!(app.approved_source.is_none());
-    assert!(app.viewers.is_empty());
-    assert_ne!(update(&mut app, Message::Show).units(), 0);
-    let reopened = app.window.unwrap();
-    assert_eq!(app.phase, Phase::Error("stopped".to_owned()));
-    assert_eq!(update(&mut app, Message::Close(reopened)).units(), 1);
-    assert_eq!(app.window, None);
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::NetworkApplied(Ok(candidate.clone()))),
+    ));
+    assert_eq!(app.settings, candidate);
+    assert!(!app.settings.system_audio);
+    assert!(!app.settings.notifications);
+    assert!(!app.draft.dirty(&app.settings));
+    assert!(app.pending_settings.is_none());
+}
 
-    let (commands, _) = mpsc::channel(1);
-    app.commands = Some(commands);
-    app.host_stopped = false;
+#[test]
+fn stale_apply_probe_cannot_commit_a_newer_draft_revision() {
+    let (mut app, _) = test_app();
+    let saved = app.settings.clone();
+    drop(update_app(&mut app, Message::VideoPreset(Quality::P1080)));
+    let candidate = app.draft.candidate().unwrap();
+    let probe = VideoProbe::Apply {
+        revision: app.draft.revision,
+        candidate: candidate.clone(),
+    };
+    app.video_probe = Some(probe.clone());
+
+    drop(update_app(&mut app, Message::VideoBitrate("13".to_owned())));
+    drop(update_app(
+        &mut app,
+        Message::VideoProbed(
+            probe,
+            Ok(VideoPlan {
+                settings: candidate.video,
+                encoder: Encoder::X264,
+            }),
+        ),
+    ));
+
+    assert!(app.video_probe.is_none());
+    assert_eq!(app.settings, saved);
+    assert_eq!(app.draft.video_bitrate, "13");
+    assert!(
+        app.settings_error
+            .as_deref()
+            .is_some_and(|error| error.contains("changed during"))
+    );
+
+    drop(update_app(&mut app, Message::RevertSettings));
+    drop(update_app(&mut app, Message::VideoPreset(Quality::P1080)));
+    let candidate = app.draft.candidate().unwrap();
+    let reverted_probe = VideoProbe::Apply {
+        revision: app.draft.revision,
+        candidate: candidate.clone(),
+    };
+    app.video_probe = Some(reverted_probe.clone());
+    drop(update_app(&mut app, Message::RevertSettings));
+    assert!(app.video_probe.is_none());
+    drop(update_app(&mut app, Message::VideoPreset(Quality::P1080)));
+    drop(update_app(
+        &mut app,
+        Message::VideoProbed(reverted_probe, Err("old failure".to_owned())),
+    ));
+    assert_eq!(app.settings, saved);
+    assert_eq!(app.draft.candidate().unwrap(), candidate);
+    assert!(app.settings_error.is_none());
+}
+
+#[test]
+fn current_share_apply_confirms_online_viewers_and_tracks_the_full_snapshot() {
+    let (mut app, mut commands) = test_app();
+    let old = test_share(true);
+    let saved = settings::Settings {
+        system_audio: false,
+        audio_bitrate_kbps: 160,
+        video: settings::VideoSettings {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_mbps: Some(12),
+            encoder: settings::VideoEncoder::X264,
+        },
+        ..settings::Settings::default()
+    };
+    let expected = ShareSettings {
+        audio: audio_settings(&saved),
+        video: VideoPlan {
+            settings: saved.video,
+            encoder: Encoder::X264,
+        },
+    };
+    app.settings = saved;
+    app.draft = SettingsDraft::from_settings(&app.settings);
+    app.video_plan = Some(expected.video);
     app.phase = Phase::Sharing;
-    let closing = window::Id::unique();
-    app.window = Some(closing);
-    assert_ne!(update(&mut app, Message::Quit).units(), 0);
+    app.active_share = Some(old.clone());
+    app.viewers = test_viewers(1, true);
+
+    drop(update_app(&mut app, Message::ApplyCurrentShare));
+    assert!(app.confirm_apply_current);
+    assert!(app.applying_share.is_none());
+    assert!(commands.try_recv().is_err());
+
+    drop(update_app(&mut app, Message::ApplyCurrentShare));
+    assert_eq!(
+        commands.try_recv().unwrap(),
+        Command::Apply(expected.clone())
+    );
+    assert_eq!(app.applying_share, Some(expected.clone()));
+    assert!(!app.confirm_apply_current);
+
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::ApplyFailed("encoder failed".to_owned())),
+    ));
+    assert_eq!(app.active_share, Some(old));
+    assert!(app.applying_share.is_none());
+    assert_eq!(app.apply_share_error.as_deref(), Some("encoder failed"));
+
+    app.viewers.clear();
+    drop(update_app(&mut app, Message::ApplyCurrentShare));
+    assert_eq!(
+        commands.try_recv().unwrap(),
+        Command::Apply(expected.clone())
+    );
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::Sharing(expected.clone())),
+    ));
+    assert_eq!(app.active_share, Some(expected));
+    assert!(app.applying_share.is_none());
+    assert!(app.apply_share_error.is_none());
+}
+
+#[test]
+fn auto_fallback_encoder_is_not_dirty_and_survives_audio_apply() {
+    let (mut app, mut commands) = test_app();
+    app.video_plan.as_mut().unwrap().encoder = Encoder::VaApi;
+    let saved = saved_share(&app).unwrap();
+    let mut active = saved.clone();
+    active.video.encoder = Encoder::X264;
+    assert_ne!(active, saved);
+    assert!(same_saved_media(&active, &saved));
+
+    app.phase = Phase::Sharing;
+    app.active_share = Some(active.clone());
+    drop(update_app(&mut app, Message::ApplyCurrentShare));
+    assert!(!app.confirm_apply_current);
+    assert!(app.applying_share.is_none());
+    assert!(commands.try_recv().is_err());
+
+    app.applying_share = Some(saved);
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::Sharing(active.clone())),
+    ));
+    assert_eq!(app.active_share, Some(active.clone()));
+    assert!(app.applying_share.is_none());
+
+    app.settings.system_audio = !app.settings.system_audio;
+    drop(update_app(&mut app, Message::ApplyCurrentShare));
+    let Command::Apply(target) = commands.try_recv().unwrap() else {
+        panic!("audio apply did not restart media");
+    };
+    assert_eq!(target.video, active.video);
+    assert_eq!(target.audio, audio_settings(&app.settings));
+    assert_eq!(app.applying_share, Some(target));
+}
+
+#[test]
+fn media_apply_preserves_the_previous_full_snapshot_for_one_attempt() {
+    gst::init().unwrap();
+    let old = test_share(true);
+    let mut next = test_share(false);
+    next.video.settings.width = 1920;
+    next.video.settings.height = 1080;
+    next.video.settings.bitrate_mbps = Some(12);
+    let mut current = old.clone();
+    let mut rollback = None;
+    let mut recoveries = MAX_MEDIA_RECOVERIES;
+    let mut fallback_attempted = true;
+    let mut capture_caps = Some(gst::Caps::new_any());
+
+    begin_media_apply(
+        &mut current,
+        &mut rollback,
+        next.clone(),
+        &mut recoveries,
+        &mut fallback_attempted,
+        &mut capture_caps,
+    );
+
+    assert_eq!(current, next);
+    assert_eq!(rollback, Some(old));
+    assert_eq!(recoveries, 0);
+    assert!(!fallback_attempted);
+    assert!(capture_caps.is_none());
+
+    let mut sleeping = test_share(true);
+    let previous = sleeping.clone();
+    let audio_only = test_share(false);
+    let mut sleeping_rollback = None;
+    let mut retained_caps = Some(gst::Caps::new_any());
+    begin_media_apply(
+        &mut sleeping,
+        &mut sleeping_rollback,
+        audio_only.clone(),
+        &mut recoveries,
+        &mut fallback_attempted,
+        &mut retained_caps,
+    );
+    assert_eq!(sleeping, audio_only);
+    assert_eq!(sleeping_rollback, Some(previous));
+    assert!(retained_caps.is_some());
+}
+
+#[test]
+fn media_apply_rolls_back_only_media_start_errors() {
+    let media_error: Result<ShareStop> = Err(io::Error::other("media failed").into());
+    assert!(media_apply_failure(&media_error, false, true).is_some());
+    assert!(media_apply_failure(&media_error, true, true).is_none());
+    assert!(media_apply_failure(&media_error, false, false).is_none());
+
+    let terminal: Result<ShareStop> =
+        Ok(ShareStop::Failed(io::Error::other("server failed").into()));
+    assert!(media_apply_failure(&terminal, false, true).is_none());
+}
+
+#[test]
+fn overview_summary_uses_only_online_fresh_telemetry() {
+    let now = Instant::now();
+    let mut viewers = test_viewers(3, true);
+    viewers[0].rtt = Some(Duration::from_millis(10));
+    viewers[0].playback_lag = Some(Duration::from_millis(100));
+    viewers[0].telemetry_at = Some(now);
+    viewers[1].rtt = Some(Duration::from_millis(25));
+    viewers[1].playback_lag = Some(Duration::from_millis(50));
+    viewers[1].telemetry_at = Some(now);
+    viewers[2].online_since = None;
+    viewers[2].rtt = Some(Duration::from_secs(9));
+    viewers[2].playback_lag = Some(Duration::from_secs(9));
+    viewers[2].telemetry_at = Some(now);
+
+    assert_eq!(
+        viewer_summary(&viewers, now),
+        ViewerSummary {
+            online: 2,
+            total: 3,
+            worst_rtt: Some(Duration::from_millis(25)),
+            worst_lag: Some(Duration::from_millis(100)),
+        }
+    );
+    assert!(is_device_only(&settings::Settings::default()));
+    let public = settings::Settings {
+        share_base_url: Some("https://share.example:443".to_owned()),
+        ..settings::Settings::default()
+    };
+    assert!(!is_device_only(&public));
+}
+
+#[test]
+fn dirty_draft_requires_quit_confirmation_without_being_discarded() {
+    let (mut app, _) = test_app();
+    drop(update_app(&mut app, Message::Notifications(false)));
+    let dirty = app.draft.clone();
+
+    drop(update_app(&mut app, Message::Quit));
     assert!(app.confirm_quit);
     assert!(!app.quitting);
-    assert!(app.commands.is_some());
-    assert_eq!(app.page, Page::Main);
-    drop(update(&mut app, Message::CancelQuit));
+    assert_eq!(app.page, Page::Overview);
+    assert_eq!(app.draft, dirty);
+    drop(update_app(&mut app, Message::CancelQuit));
     assert!(!app.confirm_quit);
-    drop(update(&mut app, Message::Quit));
-    assert!(app.confirm_quit);
-    let (tray_updates, _) = watch::channel(TrayState {
-        phase: Phase::Sharing,
-        online_viewers: 0,
-    });
-    app.tray_updates = Some(tray_updates);
-    app.tray_stopped = false;
-    assert_eq!(update(&mut app, Message::ConfirmQuit).units(), 1);
-    assert!(app.commands.is_none());
-    assert!(app.tray_updates.is_none());
-    assert_eq!(app.phase, Phase::Ending);
-    assert!(app.quitting);
-    drop(update(
-        &mut app,
-        Message::Host(HostEvent::Waiting("http://127.0.0.1/s/stale".to_owned())),
-    ));
-    drop(update(&mut app, Message::Show));
-    assert_eq!(app.phase, Phase::Ending);
-    assert_eq!(app.window, Some(closing));
-    assert_eq!(update(&mut app, Message::Close(closing)).units(), 1);
-    assert!(app.window.is_none());
-    assert_eq!(
-        update(
-            &mut app,
-            Message::Host(HostEvent::Stopped(Err("cleanup failed".to_owned())))
-        )
-        .units(),
-        0
-    );
-    assert_eq!(update(&mut app, Message::TrayStopped(Ok(()))).units(), 1);
-
-    let (commands, _) = mpsc::channel(1);
-    app.commands = Some(commands);
-    app.host_stopped = false;
-    app.tray_stopped = true;
-    app.quitting = false;
-    app.phase = Phase::Sharing;
-    assert_eq!(update(&mut app, Message::BusClosed).units(), 1);
-    assert!(!app.confirm_quit);
-    assert!(app.quitting);
+    assert_eq!(app.draft, dirty);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1192,73 +1165,38 @@ fn host_video_encoders_are_available() {
 
 #[test]
 fn viewers_view_disambiguates_identical_ips() {
-    let (notifications, _notification_requests) = iced::futures::channel::mpsc::unbounded();
-    let app = App {
-        phase: Phase::Starting,
-        link: String::new(),
-        viewers: vec![
-            web::Viewer {
-                key: 1,
-                ip: "192.0.2.1".parse().unwrap(),
-                online_since: Some(Instant::now()),
-                duration: Duration::from_secs(10),
-                rtt: None,
-                playback_lag: None,
-                telemetry_at: None,
-            },
-            web::Viewer {
-                key: 2,
-                ip: "192.0.2.1".parse().unwrap(),
-                online_since: None,
-                duration: Duration::from_secs(5),
-                rtt: None,
-                playback_lag: None,
-                telemetry_at: None,
-            },
-            web::Viewer {
-                key: 3,
-                ip: "192.0.2.2".parse().unwrap(),
-                online_since: Some(Instant::now()),
-                duration: Duration::from_secs(20),
-                rtt: None,
-                playback_lag: None,
-                telemetry_at: None,
-            },
-        ],
-        commands: None,
-        window: None,
-        confirm_refresh: false,
-        confirm_quit: false,
-        settings: settings::Settings::default(),
-        page: Page::Viewers,
-        copied_at: None,
-        settings_error: None,
-        audio_candidates: Vec::new(),
-        audio_scanning: false,
-        audio_scan_error: None,
-        video_plan: None,
-        video_probe: None,
-        video_error: None,
-        video_edit_error: None,
-        video_preset: Quality::P720,
-        video_width: "1280".to_owned(),
-        video_height: "720".to_owned(),
-        video_fps: 60,
-        video_bitrate: "6".to_owned(),
-        video_encoder: settings::VideoEncoder::Auto,
-        appearance: appearance::Appearance::default(),
-        approved_source: None,
-        active_audio: None,
-        applying_audio: None,
-        network_address: "127.0.0.1".to_owned(),
-        network_port: "8877".to_owned(),
-        share_base_url: String::new(),
-        applying_network: false,
-        notifications,
-        tray_updates: None,
-        tray_stopped: true,
-        host_stopped: false,
-        quitting: false,
-    };
+    let (mut app, _) = test_app();
+    app.commands = None;
+    app.window = None;
+    app.page = Page::Viewers;
+    app.viewers = vec![
+        web::Viewer {
+            key: 1,
+            ip: "192.0.2.1".parse().unwrap(),
+            online_since: Some(Instant::now()),
+            duration: Duration::from_secs(10),
+            rtt: None,
+            playback_lag: None,
+            telemetry_at: None,
+        },
+        web::Viewer {
+            key: 2,
+            ip: "192.0.2.1".parse().unwrap(),
+            online_since: None,
+            duration: Duration::from_secs(5),
+            rtt: None,
+            playback_lag: None,
+            telemetry_at: None,
+        },
+        web::Viewer {
+            key: 3,
+            ip: "192.0.2.2".parse().unwrap(),
+            online_since: Some(Instant::now()),
+            duration: Duration::from_secs(20),
+            rtt: None,
+            playback_lag: None,
+            telemetry_at: None,
+        },
+    ];
     let _ = viewers_view(&app);
 }

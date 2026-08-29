@@ -9,14 +9,41 @@
   html, body, video { width: 100%; height: 100%; }
   body { margin: 0; overflow: hidden; background: #000; }
   video { display: block; object-fit: contain; background: #000; }
+  #status {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 24px;
+    color: #f4f6f8;
+    background: rgba(0, 0, 0, 0.65);
+    font: 14px/1.5 system-ui, sans-serif;
+    text-align: center;
+    pointer-events: none;
+  }
+  #status[hidden] { display: none; }
 </style>
-<video playsinline></video>
+<video playsinline aria-label="Shared screen"></video>
+<p id="status" role="status" aria-live="polite" aria-atomic="true">Connecting…</p>
 <script>
   const video = document.querySelector("video");
+  const status = document.querySelector("#status");
   const MediaSourceClass = self.ManagedMediaSource ?? self.MediaSource;
   const MUTED_KEY = "aercast-viewer-muted";
   const LIVE_EDGE_DELAY = 1.0;
   const START_BUFFER = 1.5;
+  const STATUS_MESSAGES = {
+    connecting: "Connecting…",
+    waiting: "Waiting for the Host to start sharing…",
+    reconnecting: "Connection interrupted. Reconnecting…",
+    stopped: "This share has ended or the link is invalid.",
+    blocked: "Blocked by the Host.",
+    autoplay: "Playback could not start. Press Play to try again.",
+    unsupported: "This browser cannot play the shared media.",
+    inactive: "Playback moved to another tab. Press Play to resume here."
+  };
   let preferredMuted = false;
   try { preferredMuted = localStorage.getItem(MUTED_KEY) === "true"; } catch (_) {}
   let policyMuted = null;
@@ -25,6 +52,11 @@
   let automaticPlay = false;
   let currentAttempt = null;
   let permittedSeek = null;
+  const setState = state => {
+    document.body.dataset.state = state;
+    status.hidden = state === "playing";
+    if (STATUS_MESSAGES[state]) status.textContent = STATUS_MESSAGES[state];
+  };
   const setMutedByPolicy = muted => {
     if (video.muted === muted) return;
     policyMuted = muted;
@@ -55,7 +87,7 @@
       if (data?.type === "claim" && data.tabId !== tabId) {
         if (running) {
           running = false;
-          document.body.dataset.state = "inactive";
+          setState("inactive");
           video.pause();
           if (currentAttempt) {
             void stopAttempt(currentAttempt);
@@ -79,9 +111,9 @@
     }
   }
 
-  function showError(error) {
+  function showError(error, state = "autoplay") {
     console.error("Viewer error:", error);
-    document.body.dataset.state = "error";
+    setState(state);
     document.body.dataset.error = error.message ?? String(error);
   }
 
@@ -230,7 +262,7 @@
       });
       if (response.status !== 425) return response;
       if (response.body) await response.body.cancel();
-      document.body.dataset.state = "waiting";
+      setState("waiting");
       await delay(500);
     }
     throw new Error("Share stopped");
@@ -280,9 +312,9 @@
 
   async function connect(attempt) {
     claimSession();
+    setState("connecting");
     while (running) {
       let failed = false;
-      document.body.dataset.state = "connecting";
       delete document.body.dataset.error;
       try {
         const response = await nextResponse(attempt);
@@ -291,7 +323,7 @@
           if (response.body) await response.body.cancel();
           attempt.response = null;
           running = false;
-          document.body.dataset.state = "ended";
+          setState("stopped");
           console.warn("This share has ended or the link is invalid.");
           return;
         }
@@ -300,8 +332,8 @@
           attempt.response = null;
           running = false;
           blockedByHost = true;
-          document.body.dataset.state = "blocked";
-          console.warn("Disconnected by the Host.");
+          setState("blocked");
+          console.warn("Blocked by the Host.");
           return;
         }
         if (!response.ok || !response.body) {
@@ -311,22 +343,20 @@
         if (!mime || !MediaSourceClass.isTypeSupported(mime)) {
           running = false;
           console.error("Unsupported Viewer media type:", mime ?? "missing");
-          throw new Error("This browser cannot play the shared media.");
+          showError(new Error("This browser cannot play the shared media."), "unsupported");
+          return;
         }
         console.log("Viewer media type:", mime);
         await consume(attempt, response, mime);
         if (running) {
-          document.body.dataset.state = "reconnecting";
+          setState("reconnecting");
           console.warn("Viewer stream ended; reconnecting.");
         }
       } catch (error) {
         failed = true;
         const cause = attempt.error ?? error;
-        if (!running) {
-          showError(cause);
-          return;
-        }
-        document.body.dataset.state = "reconnecting";
+        if (!running) return;
+        setState("reconnecting");
         document.body.dataset.error = cause.message;
         console.warn("Viewer reconnecting:", cause);
       } finally {
@@ -339,7 +369,7 @@
   }
 
   video.addEventListener("playing", () => {
-    document.body.dataset.state = "playing";
+    setState("playing");
     delete document.body.dataset.error;
   });
   video.addEventListener("play", () => {
@@ -383,7 +413,7 @@
     void connect(beginAttempt());
   } else {
     running = false;
-    showError(new Error("This browser does not support Media Source playback."));
+    showError(new Error("This browser does not support Media Source playback."), "unsupported");
   }
 </script>
 </html>

@@ -698,15 +698,21 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
         StatusCode::TOO_EARLY
     );
 
-    let audio = crate::AudioSettings {
-        enabled: false,
-        bitrate_kbps: 128,
-        exclude_communication: true,
-        exclusions: Vec::new(),
+    let share = crate::ShareSettings {
+        audio: crate::AudioSettings {
+            enabled: false,
+            bitrate_kbps: 128,
+            exclude_communication: true,
+            exclusions: Vec::new(),
+        },
+        video: crate::VideoPlan {
+            settings: crate::settings::VideoSettings::default(),
+            encoder: crate::Encoder::X264,
+        },
     };
     let (commands, mut receiver) = tokio::sync::mpsc::channel(1);
     commands
-        .send(crate::Command::Apply(audio.clone()))
+        .send(crate::Command::Apply(share.clone()))
         .await
         .unwrap();
     let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
@@ -722,7 +728,7 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
             None,
         )
         .await,
-        crate::ShareStop::Apply(current) if current == audio
+        crate::ShareStop::Apply(current) if current == share
     ));
     commands.send(crate::Command::End).await.unwrap();
     assert!(matches!(
@@ -816,7 +822,19 @@ async fn token_routes_wait_between_isolated_media_sessions() {
     for required in [
         b"href=\"/assets/aercast-icon.png\"".as_slice(),
         b"html, body, video { width: 100%; height: 100%; }".as_slice(),
-        b"<video playsinline></video>".as_slice(),
+        b"<video playsinline aria-label=\"Shared screen\"></video>".as_slice(),
+        b"<p id=\"status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">"
+            .as_slice(),
+        b"pointer-events: none;".as_slice(),
+        b"#status[hidden] { display: none; }".as_slice(),
+        b"status.hidden = state === \"playing\";".as_slice(),
+        b"setState(\"waiting\");".as_slice(),
+        b"setState(\"stopped\");".as_slice(),
+        b"setState(\"blocked\");".as_slice(),
+        b"setState(\"reconnecting\");".as_slice(),
+        b"setState(\"inactive\");".as_slice(),
+        b"setState(\"playing\");".as_slice(),
+        b"showError(error);".as_slice(),
         b"const MediaSourceClass = self.ManagedMediaSource ?? self.MediaSource;".as_slice(),
         b"const LIVE_EDGE_DELAY = 1.0;".as_slice(),
         b"const START_BUFFER = 1.5;".as_slice(),
@@ -840,7 +858,7 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"setMutedByPolicy(true)".as_slice(),
         b"attempt.controller.signal.aborted || currentAttempt !== attempt".as_slice(),
         b"if (MediaSourceClass) {\n    void connect(beginAttempt());".as_slice(),
-        b"showError(new Error(\"This browser does not support Media Source playback.\"))"
+        b"showError(new Error(\"This browser does not support Media Source playback.\"), \"unsupported\")"
             .as_slice(),
         b"video.addEventListener(\"play\"".as_slice(),
         b"video.addEventListener(\"seeking\"".as_slice(),
@@ -869,6 +887,21 @@ async fn token_routes_wait_between_isolated_media_sessions() {
                 .any(|window| window == required)
         );
     }
+    for message in [
+        "Connecting…",
+        "Waiting for the Host to start sharing…",
+        "Connection interrupted. Reconnecting…",
+        "This share has ended or the link is invalid.",
+        "Blocked by the Host.",
+        "Playback could not start. Press Play to try again.",
+        "This browser cannot play the shared media.",
+        "Playback moved to another tab. Press Play to resume here.",
+    ] {
+        assert!(
+            html.windows(message.len())
+                .any(|window| window == message.as_bytes())
+        );
+    }
     for removed in [
         b"border-radius: 10px".as_slice(),
         b"status.textContent = mime".as_slice(),
@@ -876,8 +909,6 @@ async fn token_routes_wait_between_isolated_media_sessions() {
         b"button.textContent".as_slice(),
         b"Unsupported media type: ${mime".as_slice(),
         b"<button".as_slice(),
-        b"id=\"status\"".as_slice(),
-        b"textContent".as_slice(),
         b"video.src = attempt.source;\n    void playAutomatically(attempt);".as_slice(),
         b"<video playsinline controls>".as_slice(),
         b"heldSource".as_slice(),

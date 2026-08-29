@@ -16,29 +16,30 @@ use iced::{
 
 // --- Color tokens ---
 
-const BG: Color = iced::color!(0x0B0D10);
-const SURFACE_1: Color = iced::color!(0x11151A);
-const SURFACE_2: Color = iced::color!(0x171C22);
-const SURFACE_3: Color = iced::color!(0x20262E);
+const BG: Color = iced::color!(0x282C34);
+const SURFACE_1: Color = iced::color!(0x21252B);
+const SURFACE_2: Color = iced::color!(0x2C313A);
+const SURFACE_3: Color = iced::color!(0x3E4451);
 const BORDER: Color = Color {
     r: 1.0,
     g: 1.0,
     b: 1.0,
-    a: 0.07,
+    a: 0.10,
 };
-const TEXT: Color = iced::color!(0xF4F6F8);
-const TEXT_SECONDARY: Color = iced::color!(0x929BA7);
-const TEXT_MUTED: Color = iced::color!(0x5C646E);
-const FALLBACK_ACCENT: Color = iced::color!(0x4C9AFF);
-const DANGER: Color = iced::color!(0xE54D4D);
-const DARK_ACCENT_TEXT: Color = iced::color!(0x1e1e1e);
+const TEXT: Color = iced::color!(0xABB2BF);
+const TEXT_SECONDARY: Color = iced::color!(0x9DA5B4);
+const TEXT_MUTED: Color = iced::color!(0x7F848E);
+const FALLBACK_ACCENT: Color = iced::color!(0x61AFEF);
+const DANGER: Color = iced::color!(0xE06C75);
+const SUCCESS: Color = iced::color!(0x98C379);
+const WARNING: Color = iced::color!(0xE5C07B);
+const DARK_ACCENT_TEXT: Color = iced::color!(0x21252B);
 
 // --- Geometry tokens ---
 
 pub(super) const RADIUS: f32 = 8.0;
-pub(super) const RADIUS_LG: f32 = 10.0;
-pub(super) const CONTROL_HEIGHT: f32 = 34.0;
-pub(super) const SIDEBAR_WIDTH: f32 = 220.0;
+pub(super) const CONTROL_HEIGHT: f32 = 36.0;
+pub(super) const SIDEBAR_WIDTH: f32 = 192.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Appearance {
@@ -60,7 +61,7 @@ impl Appearance {
         let accent_standalone = standalone(accent_bg);
         let accent_subtle = mix(SURFACE_1, accent_bg, 0.15);
         let theme = Theme::custom_with_fn(
-            "Aercast",
+            "Aercast One Dark",
             Palette {
                 background: BG,
                 text: TEXT,
@@ -97,6 +98,14 @@ impl Appearance {
         } else {
             TEXT_SECONDARY
         }
+    }
+
+    pub(super) fn success_text(&self) -> Color {
+        if self.high_contrast { TEXT } else { SUCCESS }
+    }
+
+    pub(super) fn warning_text(&self) -> Color {
+        if self.high_contrast { TEXT } else { WARNING }
     }
 
     pub(super) fn focus_ring(&self) -> Border {
@@ -161,7 +170,11 @@ impl Appearance {
     ) -> button::Style {
         let (background, text_color, border) = match status {
             button::Status::Hovered | button::Status::Pressed => (hover, foreground(hover), border),
-            button::Status::Disabled => (SURFACE_2, TEXT_MUTED, BORDER),
+            button::Status::Disabled => (
+                SURFACE_2,
+                if self.high_contrast { TEXT } else { TEXT_MUTED },
+                BORDER,
+            ),
             button::Status::Active => (background, text, border),
         };
         button::Style {
@@ -182,7 +195,7 @@ impl Appearance {
         } else {
             match status {
                 button::Status::Hovered | button::Status::Pressed => (SURFACE_2, TEXT),
-                _ => (Color::TRANSPARENT, TEXT_SECONDARY),
+                _ => (Color::TRANSPARENT, self.secondary_text()),
             }
         };
         button::Style {
@@ -234,7 +247,11 @@ impl Appearance {
                 width: if self.high_contrast { 2.0 } else { 1.0 },
                 radius: 4.0.into(),
             },
-            text_color: Some(if disabled { TEXT_MUTED } else { TEXT }),
+            text_color: Some(if disabled && !self.high_contrast {
+                TEXT_MUTED
+            } else {
+                TEXT
+            }),
         }
     }
 
@@ -261,12 +278,16 @@ impl Appearance {
                 radius: RADIUS.into(),
             },
             icon: self.secondary_text(),
-            placeholder: if disabled {
+            placeholder: if disabled && !self.high_contrast {
                 TEXT_MUTED
             } else {
                 self.secondary_text()
             },
-            value: if disabled { TEXT_MUTED } else { TEXT },
+            value: if disabled && !self.high_contrast {
+                TEXT_MUTED
+            } else {
+                TEXT
+            },
             selection: primary.weak.color,
         }
     }
@@ -278,7 +299,7 @@ impl Appearance {
             border: Border {
                 color: self.border_color(BORDER),
                 width: if self.high_contrast { 2.0 } else { 1.0 },
-                radius: RADIUS_LG.into(),
+                radius: RADIUS.into(),
             },
             ..container::Style::default()
         }

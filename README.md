@@ -12,7 +12,7 @@ just open a link—no account or app installation needed.
 - Exclude sound from specific apps without changing what you hear
 - Let viewers watch directly in Firefox-family and Chromium browsers
 - Share with several viewers without encoding a separate stream for each one
-- See who's connected and disconnect viewers from the Aercast window
+- See who's connected and block a Viewer until you refresh the share link
 
 ## Install
 
