@@ -22,6 +22,29 @@ fn test_audio(enabled: bool) -> AudioSettings {
     audio_settings(&settings)
 }
 
+fn gst_error<T: gst::message::MessageErrorDomain>(
+    source: &str,
+    error: T,
+    details: Option<gst::Structure>,
+) -> gst::Message {
+    let source = gst::ElementFactory::make("identity")
+        .name(source)
+        .build()
+        .unwrap();
+    gst::message::Error::builder(error, "test")
+        .src(&source)
+        .details_if_some(details)
+        .build()
+}
+
+fn flow_details(flow: gst::FlowReturn) -> Option<gst::Structure> {
+    Some(
+        gst::Structure::builder("details")
+            .field("flow-return", flow)
+            .build(),
+    )
+}
+
 #[test]
 #[ignore = "requires an isolated session bus"]
 fn a_later_instance_activates_the_primary() {
@@ -66,6 +89,8 @@ fn retry_policy_allows_exactly_three_media_recoveries() {
 
     for terminal in [
         ShareStop::Apply(test_audio(false)),
+        ShareStop::Sleep,
+        ShareStop::Wake,
         ShareStop::End,
         ShareStop::Quit,
         ShareStop::PortalClosed,
@@ -106,9 +131,226 @@ fn notifications_follow_user_visible_state_boundaries() {
 }
 
 #[test]
-fn media_eos_is_recoverable() {
+fn va_fallback_uses_only_the_structured_hardware_error_whitelist() {
     gst::init().unwrap();
-    assert!(media_outcome(Some(gst::message::Eos::new())).is_err());
+    let cases = [
+        gst_error("encoder", gst::StreamError::Encode, None),
+        gst_error("encoder", gst::LibraryError::Init, None),
+        gst_error("encoder", gst::LibraryError::Failed, None),
+        gst_error("encoder", gst::CoreError::Negotiation, None),
+        gst_error("video-converter", gst::LibraryError::Init, None),
+        gst_error("video-converter", gst::ResourceError::Settings, None),
+        gst_error("video-converter", gst::CoreError::Negotiation, None),
+        gst_error("video-converter", gst::CoreError::NotImplemented, None),
+        gst_error("portal-video", gst::StreamError::Format, None),
+        gst_error(
+            "portal-video",
+            gst::StreamError::Failed,
+            flow_details(gst::FlowReturn::NotNegotiated),
+        ),
+        gst_error("portal-format", gst::StreamError::Format, None),
+        gst_error("h264", gst::StreamError::Format, None),
+        gst_error("h264", gst::StreamError::Decode, None),
+        gst_error("h264", gst::StreamError::WrongType, None),
+        gst_error("h264", gst::StreamError::Failed, None),
+        gst_error(
+            "h264",
+            gst::StreamError::Failed,
+            flow_details(gst::FlowReturn::NotNegotiated),
+        ),
+    ];
+    for message in cases {
+        assert!(
+            hardware_video_error(&message),
+            "expected hardware fallback for {:?}",
+            message.src().map(|source| source.name())
+        );
+    }
+
+    let malformed_flow = Some(
+        gst::Structure::builder("details")
+            .field("flow-return", "not-a-flow-return")
+            .build(),
+    );
+    let rejected = [
+        gst_error("encoder", gst::LibraryError::Encode, None),
+        gst_error("video-converter", gst::ResourceError::Failed, None),
+        gst_error("portal-video", gst::ResourceError::NotFound, None),
+        gst_error("portal-video", gst::StreamError::Failed, None),
+        gst_error(
+            "portal-video",
+            gst::StreamError::Failed,
+            flow_details(gst::FlowReturn::Error),
+        ),
+        gst_error("portal-format", gst::CoreError::Negotiation, None),
+        gst_error(
+            "h264",
+            gst::StreamError::Failed,
+            flow_details(gst::FlowReturn::Error),
+        ),
+        gst_error("h264", gst::StreamError::Failed, malformed_flow),
+        gst_error("mux", gst::StreamError::Encode, None),
+        gst_error("system-audio", gst::StreamError::Encode, None),
+        gst_error("stream", gst::StreamError::Encode, None),
+        gst_error("unknown", gst::StreamError::Encode, None),
+    ];
+    for message in rejected {
+        assert!(
+            !hardware_video_error(&message),
+            "unexpected hardware fallback for {:?}",
+            message.src().map(|source| source.name())
+        );
+    }
+
+    let hardware = media_outcome([
+        gst_error("encoder", gst::StreamError::Encode, None),
+        gst_error("h264", gst::StreamError::Format, None),
+    ])
+    .err()
+    .unwrap();
+    assert!(hardware.is::<HardwareVideoFailure>());
+    let mixed = media_outcome([
+        gst_error("encoder", gst::StreamError::Encode, None),
+        gst_error("mux", gst::StreamError::Mux, None),
+    ])
+    .err()
+    .unwrap();
+    assert!(!mixed.is::<HardwareVideoFailure>());
+    let eos = media_outcome([
+        gst_error("encoder", gst::StreamError::Encode, None),
+        gst::message::Eos::new(),
+    ])
+    .err()
+    .unwrap();
+    assert!(!eos.is::<HardwareVideoFailure>());
+
+    let bus = gst::Bus::new();
+    let message_types = [gst::MessageType::Error, gst::MessageType::Eos];
+    let mut messages = bus.stream_filtered(&message_types);
+    bus.post(gst_error(
+        "video-converter",
+        gst::CoreError::Negotiation,
+        None,
+    ))
+    .unwrap();
+    let first = messages.next().now_or_never().flatten();
+    let queued = queued_media_outcome(first, &mut messages).err().unwrap();
+    assert!(queued.is::<HardwareVideoFailure>());
+
+    bus.post(gst_error("encoder", gst::StreamError::Encode, None))
+        .unwrap();
+    bus.post(gst_error("mux", gst::StreamError::Mux, None))
+        .unwrap();
+    let first = messages.next().now_or_never().flatten();
+    let queued = queued_media_outcome(first, &mut messages).err().unwrap();
+    assert!(!queued.is::<HardwareVideoFailure>());
+
+    let automatic = VideoPlan {
+        settings: settings::VideoSettings::default(),
+        encoder: Encoder::VaApi,
+    };
+    assert!(should_fallback(automatic, false, 0, &hardware));
+    assert!(!should_fallback(automatic, true, 0, &hardware));
+    assert!(!should_fallback(
+        automatic,
+        false,
+        MAX_MEDIA_RECOVERIES,
+        &hardware
+    ));
+    assert!(!should_fallback(
+        VideoPlan {
+            encoder: Encoder::X264,
+            ..automatic
+        },
+        false,
+        0,
+        &hardware
+    ));
+    assert!(!should_fallback(
+        VideoPlan {
+            settings: settings::VideoSettings {
+                encoder: settings::VideoEncoder::VaApi,
+                ..automatic.settings
+            },
+            ..automatic
+        },
+        false,
+        0,
+        &hardware
+    ));
+    assert!(!should_fallback(automatic, false, 0, &mixed));
+}
+
+#[test]
+fn idle_grace_starts_only_after_media_is_ready_and_does_not_slide() {
+    let start = Instant::now();
+    assert_eq!(idle_deadline(None, false, 0, start), None);
+    let deadline = idle_deadline(None, true, 0, start).unwrap();
+    assert_eq!(deadline, start + MEDIA_IDLE_GRACE);
+    assert_eq!(
+        idle_deadline(Some(deadline), true, 0, start + Duration::from_millis(999)),
+        Some(deadline)
+    );
+    assert_eq!(idle_deadline(Some(deadline), true, 1, start), None);
+    let disconnected = start + Duration::from_secs(3);
+    assert_eq!(
+        idle_deadline(None, true, 0, disconnected),
+        Some(disconnected + MEDIA_IDLE_GRACE)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn active_control_sleeps_after_the_fixed_ready_grace() {
+    let (_commands, mut receiver) = mpsc::channel(1);
+    let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
+    let host = web::Host::new().unwrap();
+    let (events, _) = iced::futures::channel::mpsc::unbounded();
+    let (ready_sender, ready) = watch::channel(true);
+    let started = Instant::now();
+    let stop = tokio::time::timeout(
+        MEDIA_IDLE_GRACE + Duration::from_secs(1),
+        share_control(
+            &mut receiver,
+            std::future::pending(),
+            &mut server,
+            &host,
+            "http://127.0.0.1:1",
+            &events,
+            Some(ready),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(stop, ShareStop::Sleep));
+    assert!(started.elapsed() >= MEDIA_IDLE_GRACE);
+    drop(ready_sender);
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sleeping_refresh_rotates_the_generation_without_waking() {
+    let (commands, mut receiver) = mpsc::channel(2);
+    commands.send(Command::Refresh(true)).await.unwrap();
+    commands.send(Command::End).await.unwrap();
+    let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
+    let host = web::Host::new().unwrap();
+    let old_path = host.path().unwrap();
+    let (events, _) = iced::futures::channel::mpsc::unbounded();
+    assert!(matches!(
+        share_control(
+            &mut receiver,
+            std::future::pending(),
+            &mut server,
+            &host,
+            "http://127.0.0.1:1",
+            &events,
+            None,
+        )
+        .await,
+        ShareStop::End
+    ));
+    assert_ne!(host.path().unwrap(), old_path);
+    server.abort();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -125,6 +367,7 @@ async fn server_failure_is_terminal_control() {
             &host,
             "http://127.0.0.1:1",
             &events,
+            Some(watch::channel(false).1),
         )
         .await,
         ShareStop::Failed(_)
@@ -149,6 +392,7 @@ async fn apply_requests_a_media_restart_without_reclassifying_control() {
             &host,
             "http://127.0.0.1:1",
             &events,
+            None,
         )
         .await,
         ShareStop::Apply(audio) if audio == test_audio(false)
@@ -183,6 +427,11 @@ fn ui_commands_follow_the_host_lifecycle() {
     let (commands, mut receiver) = mpsc::channel(2);
     let (notifications, _notification_requests) = iced::futures::channel::mpsc::unbounded();
     let window = window::Id::unique();
+    let settings = settings::Settings::default();
+    let video_plan = VideoPlan {
+        settings: settings.video,
+        encoder: Encoder::X264,
+    };
     let mut app = App {
         phase: Phase::Starting,
         link: String::new(),
@@ -191,13 +440,15 @@ fn ui_commands_follow_the_host_lifecycle() {
         window: Some(window),
         confirm_refresh: false,
         confirm_quit: false,
-        settings: settings::Settings::default(),
+        settings,
         page: Page::Main,
         copied_at: None,
         settings_error: None,
         audio_candidates: Vec::new(),
         audio_scanning: false,
         audio_scan_error: None,
+        video_plan: Some(video_plan),
+        video_probe: None,
         video_error: None,
         video_edit_error: None,
         video_preset: Quality::P720,
@@ -220,6 +471,43 @@ fn ui_commands_follow_the_host_lifecycle() {
         host_stopped: false,
         quitting: false,
     };
+
+    app.phase = Phase::Sharing;
+    app.confirm_refresh = true;
+    app.confirm_quit = true;
+    app.commands
+        .as_ref()
+        .unwrap()
+        .try_send(Command::End)
+        .unwrap();
+    app.commands
+        .as_ref()
+        .unwrap()
+        .try_send(Command::Refresh(false))
+        .unwrap();
+    drop(update(&mut app, Message::ConfirmRefresh));
+    assert_eq!(app.phase, Phase::Sharing);
+    assert!(app.confirm_refresh);
+    assert!(app.confirm_quit);
+    drop(update(&mut app, Message::End));
+    assert_eq!(app.phase, Phase::Sharing);
+    assert!(app.confirm_refresh);
+    assert!(app.confirm_quit);
+    assert_eq!(receiver.try_recv().unwrap(), Command::End);
+    assert_eq!(receiver.try_recv().unwrap(), Command::Refresh(false));
+    app.phase = Phase::Starting;
+    app.confirm_refresh = false;
+    app.confirm_quit = false;
+
+    app.viewers = test_viewers(1, true);
+    assert!(!viewer_tick_enabled(&app));
+    app.page = Page::Viewers;
+    assert!(viewer_tick_enabled(&app));
+    app.page = Page::Main;
+    app.window = None;
+    assert!(!viewer_tick_enabled(&app));
+    app.window = Some(window);
+    app.viewers.clear();
 
     drop(update(
         &mut app,
@@ -341,6 +629,86 @@ fn ui_commands_follow_the_host_lifecycle() {
     ));
     drop(update(&mut app, Message::VideoPreset(Quality::P1080)));
     assert_eq!(app.video_encoder, settings::VideoEncoder::X264);
+
+    let current_video = app.settings.video;
+    let current_plan = VideoPlan {
+        settings: current_video,
+        encoder: Encoder::X264,
+    };
+    app.video_plan = None;
+    app.video_probe = Some(VideoProbe::Current(current_video));
+    let stale_video = settings::VideoSettings {
+        fps: 30,
+        ..current_video
+    };
+    drop(update(
+        &mut app,
+        Message::VideoProbed(
+            VideoProbe::Current(stale_video),
+            Ok(VideoPlan {
+                settings: stale_video,
+                encoder: Encoder::X264,
+            }),
+        ),
+    ));
+    assert_eq!(app.video_probe, Some(VideoProbe::Current(current_video)));
+    assert_eq!(app.video_plan, None);
+    drop(update(
+        &mut app,
+        Message::VideoProbed(VideoProbe::Current(current_video), Ok(current_plan)),
+    ));
+    assert_eq!(app.video_probe, None);
+    assert_eq!(app.video_plan, Some(current_plan));
+
+    let saved_settings = app.settings.clone();
+    let saved_plan = app.video_plan;
+    let candidate = app
+        .settings
+        .with_video(
+            &app.video_width,
+            &app.video_height,
+            app.video_fps,
+            &app.video_bitrate,
+            app.video_encoder,
+        )
+        .unwrap()
+        .video;
+    assert_eq!(update(&mut app, Message::SaveVideo).units(), 1);
+    assert_eq!(app.video_probe, Some(VideoProbe::Save(candidate)));
+    assert_eq!(app.settings, saved_settings);
+    assert_eq!(app.video_plan, saved_plan);
+    drop(update(&mut app, Message::Start));
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(update(&mut app, Message::SaveVideo).units(), 0);
+    let network_port = app.network_port.clone();
+    app.network_port = "9002".to_owned();
+    drop(update(&mut app, Message::ApplyNetwork));
+    assert!(!app.applying_network);
+    assert!(receiver.try_recv().is_err());
+    app.network_port = network_port;
+    drop(update(
+        &mut app,
+        Message::VideoProbed(
+            VideoProbe::Save(stale_video),
+            Ok(VideoPlan {
+                settings: stale_video,
+                encoder: Encoder::X264,
+            }),
+        ),
+    ));
+    assert_eq!(app.video_probe, Some(VideoProbe::Save(candidate)));
+    drop(update(
+        &mut app,
+        Message::VideoProbed(VideoProbe::Save(candidate), Err("probe failed".to_owned())),
+    ));
+    assert_eq!(app.video_probe, None);
+    assert_eq!(app.settings, saved_settings);
+    assert_eq!(app.video_plan, saved_plan);
+    assert!(
+        app.video_edit_error
+            .as_deref()
+            .is_some_and(|error| error.contains("probe failed"))
+    );
     set_video_draft(&mut app, settings::VideoSettings::default());
 
     app.settings.system_audio = false;
@@ -353,13 +721,9 @@ fn ui_commands_follow_the_host_lifecycle() {
     app.video_error = None;
     let share = ShareSettings {
         audio: test_audio(false),
-        video: VideoPlan {
-            settings: app.settings.video,
-            encoder: Encoder::X264,
-        },
+        video: saved_plan.unwrap(),
     };
-    assert!(send_command(&mut app, Command::Start(share.clone())));
-    app.phase = Phase::Selecting;
+    drop(update(&mut app, Message::Start));
     assert_eq!(receiver.try_recv().unwrap(), Command::Start(share));
     assert_eq!(app.phase, Phase::Selecting);
     drop(update(&mut app, Message::Host(HostEvent::Source("Window"))));
@@ -491,6 +855,17 @@ fn ui_commands_follow_the_host_lifecycle() {
     assert_eq!(app.active_audio, None);
     assert_eq!(app.viewers, offline);
     assert_eq!(format_duration(app.viewers[0].duration()), "1:05");
+
+    drop(receiver);
+    app.confirm_refresh = true;
+    app.confirm_quit = true;
+    assert!(!send_command(&mut app, Command::Refresh(false)));
+    assert_eq!(
+        app.phase,
+        Phase::Error("Host control is unavailable".to_owned())
+    );
+    assert!(!app.confirm_refresh);
+    assert!(!app.confirm_quit);
 
     assert_eq!(
         update(&mut app, Message::Host(HostEvent::Stopped(Ok(())))).units(),
@@ -716,7 +1091,7 @@ fn av_pipeline_description_has_no_syntax_error() {
     assert!(description.contains("framerate=60/1"));
     assert!(description.contains("bitrate=6000 vbv-buf-capacity=100 nal-hrd=cbr key-int-max=60"));
     assert!(description.contains("avenc_aac bitrate=96000"));
-    assert!(description.contains("videoconvertscale add-borders=true"));
+    assert!(description.contains("videoconvertscale name=video-converter add-borders=true"));
     assert!(!description.contains("vapostproc"));
     let encoder_default = pipeline_description(
         1,
@@ -746,7 +1121,7 @@ fn av_pipeline_description_has_no_syntax_error() {
         160,
     );
     assert!(va_api.contains("video/x-raw(memory:VAMemory),format=NV12"));
-    assert!(va_api.contains("vapostproc add-borders=true"));
+    assert!(va_api.contains("vapostproc name=video-converter add-borders=true"));
     assert!(!va_api.contains("disable-passthrough=true"));
     assert!(va_api.contains(
         "vah264enc name=encoder rate-control=cbr target-usage=7 bitrate=6000 cpb-size=600"
@@ -861,6 +1236,8 @@ fn viewers_view_disambiguates_identical_ips() {
         audio_candidates: Vec::new(),
         audio_scanning: false,
         audio_scan_error: None,
+        video_plan: None,
+        video_probe: None,
         video_error: None,
         video_edit_error: None,
         video_preset: Quality::P720,

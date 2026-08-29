@@ -22,6 +22,7 @@ repeated the real Portal, PipeWire, Zen, Chromium, or iOS Safari workflow.
 | Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.2 behavior has not repeated that acceptance |
 | Cross-platform Viewer | User checks through `6a43fab`: desktop Chrome no longer stuttered, and iOS 27 Safari played on LAN at about two seconds behind live after buffering before playback | The short user checks do not record exact browser versions or acceptance duration; no platform is qualified by them |
 | Media pipeline optimization | 2026-08-28 working tree: generated pipeline contracts cover selectable 96/128/160 kbps AAC, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation without forced `vapostproc` copies, and immediate normal-EOF reconnect | No real encoder, DMA-BUF, Safari, or constrained-network measurement was run; zero-copy and latency remain unqualified |
+| Idle-media Host candidate | 2026-08-30 Host-only candidate: formatting, Clippy with warnings denied, all 45 runnable Rust tests, and diff whitespace checks passed; five environment-dependent tests remained ignored | No current Portal, VA-API, vkmark, Zen, Chromium, or external-Viewer run; AMD throughput, power savings, wake latency, and regression limits remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
 ## Recorded environment
@@ -82,6 +83,18 @@ ignored. This proves generated settings, pipeline, Viewer, tray, and
 notification contracts, not real capture, encoding, playback, or window
 activation. Real acceptance was explicitly skipped for this change.
 
+For the 2026-08-30 Host-only candidate, `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, all 45 runnable Rust tests, and
+`git diff --check` passed; five explicitly environment-dependent tests remained
+ignored. The restricted sandbox first produced 43 passes and two expected
+`EPERM` socket failures; the same complete suite passed with narrowly granted
+host socket permission. These checks cover the idle-media demand lifecycle,
+structured VA-to-x264 fallback, asynchronous video probing, bounded Viewer
+state, proxy trust, telemetry rate limiting, and control-queue behavior. They
+do not qualify real Portal capture, VA-API/VAMemory behavior, vkmark, Zen or
+Chromium playback, an external Viewer, AMD performance or power savings, a
+wake-fragment p95 of 500 ms or less, or a performance regression limit.
+
 The latest user Viewer check used the existing HTTPS path and 1080p60/12 Mbps
 VA-API stream. It reports Chrome playback without the earlier stutter and iOS
 27 Safari about two seconds behind live, but lacks exact browser versions and
@@ -103,6 +116,11 @@ tray-count, Viewer-notification, or window-activation checks.
 - Mobile 1440p or 120 FPS playback
 - Installation and launch from AUR, `.deb`, or a prebuilt release asset
 - GNOME, KDE, other distributions, stable desktop Firefox, or Google Chrome
+- Current no-Viewer sleep and wake on the real Portal/VA-API path, including a
+  wake-fragment p95 of 500 ms or less
+- Ryzen 7 5700X / RX 6650 XT A/B measurements for 1080p60 with 1, 3, and 8
+  Viewers, 1440p60 with one Viewer, three vkmark runs, VA/VAMemory negotiation,
+  Host CPU/GPU/power, and a performance regression no greater than 3%
 - Hardware encoding; 1080p60, 1440p60, or 120 FPS
 - A single Viewer at 1440p60/24 Mbps over 30 Mbps with 80 ms RTT, 20 ms jitter,
   and 0.1% loss; VA-API raw-frame zero-copy and Host CPU/GPU measurements

@@ -86,6 +86,12 @@ struct VideoPlan {
     encoder: Encoder,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum VideoProbe {
+    Current(settings::VideoSettings),
+    Save(settings::VideoSettings),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Encoder {
     VaApi,
@@ -154,11 +160,24 @@ impl std::fmt::Display for Quality {
 
 enum ShareStop {
     Apply(AudioSettings),
+    Sleep,
+    Wake,
     End,
     Quit,
     PortalClosed,
     Failed(Error),
 }
+
+#[derive(Debug)]
+struct HardwareVideoFailure(String);
+
+impl std::fmt::Display for HardwareVideoFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for HardwareVideoFailure {}
 
 #[derive(Clone, Debug)]
 enum HostEvent {
@@ -216,6 +235,7 @@ enum Message {
     VideoBitrate(String),
     VideoEncoder(settings::VideoEncoder),
     SaveVideo,
+    VideoProbed(VideoProbe, std::result::Result<VideoPlan, String>),
     Focus(bool),
     RevealFocus(f32),
     Tick,
@@ -288,6 +308,8 @@ struct App {
     audio_candidates: Vec<audio::PlaybackApplication>,
     audio_scanning: bool,
     audio_scan_error: Option<String>,
+    video_plan: Option<VideoPlan>,
+    video_probe: Option<VideoProbe>,
     video_error: Option<String>,
     video_edit_error: Option<String>,
     video_preset: Quality,
@@ -319,15 +341,16 @@ struct RunningServer {
     task: Server,
 }
 const STALLED_CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
+const MEDIA_IDLE_GRACE: Duration = Duration::from_secs(2);
 const MEDIA_RECOVERY_DELAY: Duration = Duration::from_millis(500);
 const MAX_MEDIA_RECOVERIES: u8 = 3;
 
 fn main() -> Result<()> {
+    validate_arguments(std::env::args().skip(1))?;
     let (activation, activations) = iced::futures::channel::mpsc::channel(0);
     let Some(instance) = claim_instance(activation, INSTANCE_NAME)? else {
         return Ok(());
     };
-    validate_arguments(std::env::args().skip(1))?;
     let settings = settings::Settings::load()?;
     gst::init()?;
     let instance = Cell::new(Some((activations, instance.into_inner())));
@@ -347,7 +370,7 @@ fn main() -> Result<()> {
     })
     .theme(|app: &App, _| app.appearance.theme.clone())
     .subscription(|app| {
-        let tick = if app.window.is_some() && app.viewers.iter().any(web::Viewer::online) {
+        let tick = if viewer_tick_enabled(app) {
             iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)
         } else {
             iced::Subscription::none()
@@ -371,6 +394,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn viewer_tick_enabled(app: &App) -> bool {
+    app.window.is_some() && app.page == Page::Viewers && app.viewers.iter().any(web::Viewer::online)
+}
+
 fn boot(
     settings: settings::Settings,
     activations: Receiver<Message>,
@@ -385,9 +412,7 @@ fn boot(
     let network_port = settings.listen_port.to_string();
     let share_base_url = settings.share_base_url.clone().unwrap_or_default();
     let video = settings.video;
-    let video_error = video_plan(&settings.video)
-        .err()
-        .map(|error| format!("Video quality unavailable: {error}"));
+    let video_probe = VideoProbe::Current(video);
     let (tray_updates, tray_state) = watch::channel(TrayState {
         phase: Phase::Starting,
         online_viewers: 0,
@@ -407,7 +432,9 @@ fn boot(
         audio_candidates: Vec::new(),
         audio_scanning: false,
         audio_scan_error: None,
-        video_error,
+        video_plan: None,
+        video_probe: Some(video_probe),
+        video_error: None,
         video_edit_error: None,
         video_preset: Quality::from_video(video),
         video_width: video.width.to_string(),
@@ -449,6 +476,9 @@ fn boot(
                 Message::TrayStopped(result.map_err(|error| error.to_string()))
             }),
             Task::run(incoming, Message::Host),
+            Task::perform(probe_video_plan(video), move |result| {
+                Message::VideoProbed(video_probe, result)
+            }),
             Task::perform(
                 run_host(host_settings, events, command_receiver),
                 |result| {
@@ -551,14 +581,16 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 iced::widget::operation::AbsoluteOffset { x: 0.0, y: delta },
             );
         }
-        Message::Start if app.phase != Phase::Waiting || app.applying_network => {}
+        Message::Start
+            if app.phase != Phase::Waiting || app.applying_network || app.video_probe.is_some() => {
+        }
         Message::Start => {
-            let video = match video_plan(&app.settings.video) {
-                Ok(video) => video,
-                Err(error) => {
-                    app.video_error = Some(format!("Video quality unavailable: {error}"));
-                    return Task::none();
-                }
+            let Some(video) = app
+                .video_plan
+                .filter(|plan| plan.settings == app.settings.video)
+            else {
+                app.video_error = Some("Video quality has not been checked".to_owned());
+                return Task::none();
             };
             let share = ShareSettings {
                 audio: audio_settings(&app.settings),
@@ -571,10 +603,10 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::End if !matches!(app.phase, Phase::Selecting | Phase::Sharing) => {}
         Message::End => {
-            app.confirm_refresh = false;
-            app.confirm_quit = false;
-            app.applying_audio = None;
             if send_command(app, Command::End) {
+                app.confirm_refresh = false;
+                app.confirm_quit = false;
+                app.applying_audio = None;
                 app.phase = Phase::Ending;
             }
         }
@@ -602,8 +634,9 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             let _ = send_command(app, Command::Disconnect(key));
         }
         Message::ConfirmRefresh => {
-            app.confirm_refresh = false;
-            let _ = send_command(app, Command::Refresh(true));
+            if send_command(app, Command::Refresh(true)) {
+                app.confirm_refresh = false;
+            }
         }
         Message::CancelRefresh => app.confirm_refresh = false,
         Message::Show => return show_window(app),
@@ -746,6 +779,7 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
         Message::ApplyNetwork => {
             if matches!(&app.phase, Phase::Waiting | Phase::NetworkError(_))
                 && !app.applying_network
+                && app.video_probe.is_none()
             {
                 match app.settings.with_network(
                     &app.network_address,
@@ -795,34 +829,93 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             app.video_encoder = encoder;
             app.video_edit_error = None;
         }
-        Message::SaveVideo if app.applying_network => {}
+        Message::SaveVideo if app.applying_network || app.video_probe.is_some() => {}
         Message::SaveVideo => {
-            let result = app
-                .settings
-                .with_video(
-                    &app.video_width,
-                    &app.video_height,
-                    app.video_fps,
-                    &app.video_bitrate,
-                    app.video_encoder,
-                )
-                .map_err(Error::from)
-                .and_then(|settings| {
-                    video_plan(&settings.video)?;
-                    settings.save()?;
-                    Ok(settings)
-                });
-            match result {
-                Ok(settings) => {
-                    let video = settings.video;
-                    app.settings = settings;
-                    app.settings_error = None;
-                    app.video_error = None;
-                    app.video_edit_error = None;
-                    set_video_draft(app, video);
-                }
+            let video = match app.settings.with_video(
+                &app.video_width,
+                &app.video_height,
+                app.video_fps,
+                &app.video_bitrate,
+                app.video_encoder,
+            ) {
+                Ok(settings) => settings.video,
                 Err(error) => {
                     app.video_edit_error = Some(format!("Video quality unchanged: {error}"));
+                    return Task::none();
+                }
+            };
+            let probe = VideoProbe::Save(video);
+            app.video_probe = Some(probe);
+            app.video_edit_error = None;
+            return Task::perform(probe_video_plan(video), move |result| {
+                Message::VideoProbed(probe, result)
+            });
+        }
+        Message::VideoProbed(probe, result) => {
+            if app.video_probe != Some(probe) {
+                return Task::none();
+            }
+            app.video_probe = None;
+            let video = match probe {
+                VideoProbe::Current(video) | VideoProbe::Save(video) => video,
+            };
+            let result = result.and_then(|plan| {
+                (plan.settings == video)
+                    .then_some(plan)
+                    .ok_or_else(|| "video encoder check returned the wrong settings".to_owned())
+            });
+            let plan = match result {
+                Ok(plan) => plan,
+                Err(error) => {
+                    match probe {
+                        VideoProbe::Current(_) => {
+                            app.video_error = Some(format!("Video quality unavailable: {error}"));
+                        }
+                        VideoProbe::Save(_) => {
+                            app.video_edit_error =
+                                Some(format!("Video quality unchanged: {error}"));
+                        }
+                    }
+                    return Task::none();
+                }
+            };
+            match probe {
+                VideoProbe::Current(_) if app.settings.video == video => {
+                    app.video_plan = Some(plan);
+                    app.video_error = None;
+                }
+                VideoProbe::Current(_) => {
+                    app.video_error = Some("Saved video quality has not been checked".to_owned());
+                }
+                VideoProbe::Save(_) => {
+                    let draft_matches = app
+                        .settings
+                        .with_video(
+                            &app.video_width,
+                            &app.video_height,
+                            app.video_fps,
+                            &app.video_bitrate,
+                            app.video_encoder,
+                        )
+                        .is_ok_and(|settings| settings.video == video);
+                    let mut settings = app.settings.clone();
+                    settings.video = video;
+                    match settings.save() {
+                        Ok(()) => {
+                            app.settings = settings;
+                            app.settings_error = None;
+                            app.video_plan = Some(plan);
+                            app.video_error = None;
+                            app.video_edit_error = None;
+                            if draft_matches {
+                                set_video_draft(app, video);
+                            }
+                        }
+                        Err(error) => {
+                            app.video_edit_error =
+                                Some(format!("Video quality unchanged: {error}"));
+                        }
+                    }
                 }
             }
         }
@@ -926,17 +1019,19 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
 }
 
 fn send_command(app: &mut App, command: Command) -> bool {
-    if app
+    let result = app
         .commands
         .as_ref()
-        .is_some_and(|commands| commands.try_send(command).is_ok())
-    {
-        true
-    } else {
-        app.confirm_refresh = false;
-        app.confirm_quit = false;
-        app.phase = Phase::Error("Host control is unavailable".to_owned());
-        false
+        .map(|commands| commands.try_send(command));
+    match result {
+        Some(Ok(())) => true,
+        Some(Err(mpsc::error::TrySendError::Full(_))) => false,
+        None | Some(Err(mpsc::error::TrySendError::Closed(_))) => {
+            app.confirm_refresh = false;
+            app.confirm_quit = false;
+            app.phase = Phase::Error("Host control is unavailable".to_owned());
+            false
+        }
     }
 }
 
@@ -1090,6 +1185,7 @@ fn share_view(app: &App) -> Element<'_, Message> {
     let status = match &app.phase {
         Phase::Starting => "Starting Aercast…",
         Phase::NetworkError(error) => error,
+        Phase::Waiting if app.video_probe.is_some() => "Checking video encoder…",
         Phase::Waiting => app
             .video_error
             .as_deref()
@@ -1101,8 +1197,13 @@ fn share_view(app: &App) -> Element<'_, Message> {
         Phase::Ending => "Ending share…",
         Phase::Error(error) => error,
     };
-    let can_start =
-        app.phase == Phase::Waiting && !app.applying_network && app.video_error.is_none();
+    let can_start = app.phase == Phase::Waiting
+        && !app.applying_network
+        && app.video_probe.is_none()
+        && app
+            .video_plan
+            .is_some_and(|plan| plan.settings == app.settings.video)
+        && app.video_error.is_none();
     let (share_label, share_message) = match app.phase {
         Phase::Selecting => ("Cancel", Some(Message::End)),
         Phase::Sharing => ("Stop Sharing", Some(Message::End)),
@@ -1602,16 +1703,20 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         Ok(settings) => settings.video != app.settings.video,
         Err(_) => true,
     };
-    let hint = match &app.phase {
-        Phase::Starting => "Starting Aercast…",
-        Phase::NetworkError(error) => error,
-        Phase::Waiting => "Used when the next share starts.",
-        Phase::Sharing if applying => "Restarting media with the requested setting…",
-        Phase::Sharing if dirty => "Saved. Apply it to the current share when ready.",
-        Phase::Sharing => "The current share uses this setting.",
-        Phase::Selecting => "This share uses the value selected before the Portal opened.",
-        Phase::Ending => "Ending share… The saved setting will be used next time.",
-        Phase::Error(error) => error,
+    let hint = if app.video_probe.is_some() {
+        "Checking video encoder…"
+    } else {
+        match &app.phase {
+            Phase::Starting => "Starting Aercast…",
+            Phase::NetworkError(error) => error,
+            Phase::Waiting => "Used when the next share starts.",
+            Phase::Sharing if applying => "Restarting media with the requested setting…",
+            Phase::Sharing if dirty => "Saved. Apply it to the current share when ready.",
+            Phase::Sharing => "The current share uses this setting.",
+            Phase::Selecting => "This share uses the value selected before the Portal opened.",
+            Phase::Ending => "Ending share… The saved setting will be used next time.",
+            Phase::Error(error) => error,
+        }
     };
     let fps_options = FPS_OPTIONS.into_iter().fold(row![], |options, fps| {
         options.push(settings_option(
@@ -1749,10 +1854,16 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         .push(encoder_options.spacing(8))
         .push(
             accessibility::button(
-                centered_button("Save quality")
+                centered_button(if app.video_probe.is_some() {
+                    "Checking quality…"
+                } else {
+                    "Save quality"
+                })
                     .style(|_, status| app.appearance.primary_button(status)),
-                ((video_dirty || app.video_error.is_some()) && !app.applying_network)
-                    .then_some(Message::SaveVideo),
+                ((video_dirty || app.video_error.is_some())
+                    && !app.applying_network
+                    && app.video_probe.is_none())
+                .then_some(Message::SaveVideo),
                 focus_ring,
             ),
         )
@@ -1967,8 +2078,9 @@ fn settings_view(app: &App) -> Element<'_, Message> {
             .style(|_, status| app.appearance.primary_button(status)),
             (((app.phase == Phase::Waiting && network_dirty)
                 || matches!(&app.phase, Phase::NetworkError(_)))
-                && !app.applying_network)
-                .then_some(Message::ApplyNetwork),
+                && !app.applying_network
+                && app.video_probe.is_none())
+            .then_some(Message::ApplyNetwork),
             focus_ring,
         ),
         text("Network changes apply only while stopped.")
@@ -2106,6 +2218,11 @@ async fn run_host(
                         ShareStop::Apply(_) | ShareStop::End | ShareStop::PortalClosed => {}
                         ShareStop::Quit => break,
                         ShareStop::Failed(error) => return Err(error),
+                        ShareStop::Sleep | ShareStop::Wake => {
+                            return Err(
+                                io::Error::other("internal media state escaped the share").into()
+                            );
+                        }
                     }
                 }
                 Command::Apply(_) => {}
@@ -2352,9 +2469,43 @@ async fn share_once(
     };
     let _ = events.unbounded_send(HostEvent::Source(source));
 
+    let mut video = video;
     let mut capture_caps = None;
     let mut recoveries = 0;
+    let mut fallback_attempted = false;
+    let mut sleeping = false;
     let result = loop {
+        if sleeping {
+            match share_control(
+                commands,
+                async {
+                    let _ = closed.next().await;
+                },
+                server,
+                host,
+                link_base,
+                events,
+                None,
+            )
+            .await
+            {
+                ShareStop::Apply(next) => {
+                    audio = next;
+                    let _ = events.unbounded_send(HostEvent::Sharing(audio.clone()));
+                    continue;
+                }
+                ShareStop::Wake => {
+                    if let Err(error) = host.clear_media_demand() {
+                        break Ok(ShareStop::Failed(error.into()));
+                    }
+                    sleeping = false;
+                }
+                ShareStop::Sleep => continue,
+                stop => break Ok(stop),
+            }
+        }
+
+        let (fragment_ready, ready) = watch::channel(false);
         let control = share_control(
             commands,
             async {
@@ -2364,70 +2515,144 @@ async fn share_once(
             host,
             link_base,
             events,
+            Some(ready),
         );
         tokio::pin!(control);
-        let remote = tokio::select! {
+        let mut media = None;
+        let mut attempt: Result<ShareStop> = tokio::select! {
             biased;
-            stop = control.as_mut() => match stop {
-                ShareStop::Apply(next) => {
-                    audio = next;
-                    continue;
-                }
-                stop => break Ok(stop),
-            },
+            stop = control.as_mut() => Ok(stop),
             remote = portal.open_pipe_wire_remote(&session, Default::default()) => match remote {
-                Ok(remote) => remote,
-                Err(error) => break Ok(ShareStop::Failed(error.into())),
+                Err(error) => Err(error.into()),
+                Ok(remote) => {
+                    if let Some(stop) = control.as_mut().now_or_never() {
+                        Ok(stop)
+                    } else {
+                        match host.start() {
+                            Err(error) => Err(error.into()),
+                            Ok(active) => {
+                                let description = pipeline_description(
+                                    node_id,
+                                    remote.as_raw_fd(),
+                                    video,
+                                    audio.bitrate_kbps,
+                                );
+                                media = Some(active.clone());
+                                serve_video(
+                                    &description,
+                                    &mut capture_caps,
+                                    audio.clone(),
+                                    active,
+                                    fragment_ready,
+                                    control.as_mut(),
+                                    events,
+                                )
+                                .await
+                            }
+                        }
+                    }
+                }
             },
         };
-        if let Some(stop) = control.as_mut().now_or_never() {
-            match stop {
-                ShareStop::Apply(next) => {
-                    audio = next;
-                    continue;
-                }
-                stop => break Ok(stop),
+
+        if matches!(&attempt, Ok(ShareStop::Sleep))
+            && let Err(error) = host.clear_media_demand()
+        {
+            attempt = Ok(ShareStop::Failed(error.into()));
+        }
+        if let Some(media) = media {
+            let stopped = host.stop(&media).and_then(|()| host.viewers());
+            if let Ok(viewers) = &stopped {
+                let _ = events.unbounded_send(HostEvent::Viewers(viewers.clone()));
             }
-        }
-        let media = match host.start() {
-            Ok(media) => media,
-            Err(error) => break Ok(ShareStop::Failed(error.into())),
-        };
-        let description =
-            pipeline_description(node_id, remote.as_raw_fd(), video, audio.bitrate_kbps);
-        let attempt = serve_video(
-            &description,
-            &mut capture_caps,
-            audio.clone(),
-            media.clone(),
-            control.as_mut(),
-            events,
-        )
-        .await;
-        let stopped = host.stop(&media).and_then(|()| host.viewers());
-        if let Ok(viewers) = &stopped {
-            let _ = events.unbounded_send(HostEvent::Viewers(viewers.clone()));
-        }
-        let attempt = match stopped {
-            Ok(_) => attempt,
-            Err(error) => {
+            if let Err(error) = stopped {
                 eprintln!("Failed to stop media session: {error}");
-                Ok(ShareStop::Failed(error.into()))
+                attempt = Ok(ShareStop::Failed(error.into()));
             }
-        };
+        }
+
         if let Ok(ShareStop::Apply(next)) = &attempt {
             audio = next.clone();
             continue;
         }
-        let mut apply = None;
+        if matches!(&attempt, Ok(ShareStop::Sleep)) {
+            recoveries = 0;
+            sleeping = true;
+            continue;
+        }
+        if matches!(&attempt, Ok(ShareStop::Wake)) {
+            attempt = Ok(ShareStop::Failed(
+                io::Error::other("media woke while already active").into(),
+            ));
+        }
         if attempt.is_err()
             && let Some(stop) = control.as_mut().now_or_never()
         {
             match stop {
-                ShareStop::Apply(next) => apply = Some(next),
+                ShareStop::Apply(next) => {
+                    audio = next;
+                    continue;
+                }
+                ShareStop::Sleep => {
+                    recoveries = 0;
+                    sleeping = true;
+                    continue;
+                }
+                ShareStop::Wake => {}
                 stop => break Ok(stop),
             }
         }
+
+        if attempt
+            .as_ref()
+            .err()
+            .is_some_and(|error| should_fallback(video, fallback_attempted, recoveries, error))
+        {
+            fallback_attempted = true;
+            eprintln!(
+                "VA-API media path failed; probing x264 for recovery {}/{MAX_MEDIA_RECOVERIES}",
+                recoveries + 1,
+            );
+            let settings = video.settings;
+            let mut probe =
+                tokio::task::spawn_blocking(move || plan_encoder(settings, Encoder::X264));
+            enum Fallback<T> {
+                Control(ShareStop),
+                Probe(T),
+            }
+            let fallback = tokio::select! {
+                biased;
+                stop = control.as_mut() => Fallback::Control(stop),
+                result = &mut probe => Fallback::Probe(result),
+            };
+            match fallback {
+                Fallback::Control(ShareStop::Apply(next)) => {
+                    fallback_attempted = false;
+                    audio = next;
+                    continue;
+                }
+                Fallback::Control(ShareStop::Sleep) => {
+                    fallback_attempted = false;
+                    recoveries = 0;
+                    sleeping = true;
+                    continue;
+                }
+                Fallback::Control(ShareStop::Wake) => {}
+                Fallback::Control(stop) => break Ok(stop),
+                Fallback::Probe(Ok(Ok(plan))) => {
+                    recoveries += 1;
+                    video = plan;
+                    capture_caps = None;
+                    continue;
+                }
+                Fallback::Probe(Ok(Err(error))) => attempt = Err(error),
+                Fallback::Probe(Err(error)) => {
+                    attempt =
+                        Err(io::Error::other(format!("x264 encoder check failed: {error}")).into());
+                }
+            }
+        }
+
         if !should_retry(&attempt, recoveries) {
             break attempt;
         }
@@ -2437,10 +2662,6 @@ async fn share_once(
                 "Media attempt failed; recovery {recoveries}/{MAX_MEDIA_RECOVERIES}: {error}"
             );
         }
-        if let Some(next) = apply {
-            audio = next;
-            continue;
-        }
         tokio::select! {
             biased;
             stop = control.as_mut() => match stop {
@@ -2448,6 +2669,12 @@ async fn share_once(
                     audio = next;
                     continue;
                 }
+                ShareStop::Sleep => {
+                    recoveries = 0;
+                    sleeping = true;
+                    continue;
+                }
+                ShareStop::Wake => {}
                 stop => break Ok(stop),
             },
             _ = tokio::time::sleep(MEDIA_RECOVERY_DELAY) => {}
@@ -2464,6 +2691,9 @@ async fn share_once(
     }
     match result {
         Ok(ShareStop::Failed(error)) | Err(error) => Err(error),
+        Ok(ShareStop::Sleep | ShareStop::Wake) => {
+            Err(io::Error::other("internal media state escaped the share").into())
+        }
         Ok(stop) => {
             close_result?;
             Ok(stop)
@@ -2478,33 +2708,86 @@ async fn share_control(
     host: &web::Host,
     link_base: &str,
     events: &Events,
+    mut media_ready: Option<watch::Receiver<bool>>,
 ) -> ShareStop {
     let mut viewer_updates = match host.viewer_updates() {
         Ok(viewers) => viewers,
         Err(error) => return ShareStop::Failed(error.into()),
     };
-    match host.viewers() {
-        Ok(viewers) => {
-            let _ = events.unbounded_send(HostEvent::Viewers(viewers));
-        }
+    let mut media_demand = match host.media_demand() {
+        Ok(demand) => demand,
         Err(error) => return ShareStop::Failed(error.into()),
-    }
+    };
+    let viewers = match host.viewers() {
+        Ok(viewers) => viewers,
+        Err(error) => return ShareStop::Failed(error.into()),
+    };
+    let mut online = viewers.iter().filter(|viewer| viewer.online()).count();
+    let _ = events.unbounded_send(HostEvent::Viewers(viewers));
+    let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+    let mut deadline = idle_deadline(None, ready, online, Instant::now());
     tokio::pin!(session_closed);
     loop {
-        tokio::select! {
-            signal = tokio::signal::ctrl_c() => return match signal {
-                Ok(()) => {
-                    println!("Stopping Aercast.");
-                    ShareStop::Quit
+        enum ControlEvent {
+            Command(Option<Command>),
+            Signal(io::Result<()>),
+            Viewers(bool),
+            Ready(bool),
+            Demand(bool),
+            Idle,
+            PortalClosed,
+            Server(std::result::Result<io::Result<()>, tokio::task::JoinError>),
+        }
+        let sleeping = media_ready.is_none();
+        let idle_at = deadline;
+        let event = tokio::select! {
+            biased;
+            command = commands.recv() => ControlEvent::Command(command),
+            _ = &mut session_closed => ControlEvent::PortalClosed,
+            result = &mut *server => ControlEvent::Server(result),
+            signal = tokio::signal::ctrl_c() => ControlEvent::Signal(signal),
+            changed = viewer_updates.changed() => ControlEvent::Viewers(changed.is_ok()),
+            changed = async {
+                match media_ready.as_mut() {
+                    Some(ready) => ready.changed().await.is_ok(),
+                    None => std::future::pending().await,
                 }
-                Err(error) => ShareStop::Failed(error.into()),
-            },
-            command = commands.recv() => match command.unwrap_or(Command::Quit) {
+            } => ControlEvent::Ready(changed),
+            changed = async {
+                if sleeping {
+                    let requested = *media_demand.borrow() != 0;
+                    if requested {
+                        true
+                    } else {
+                        media_demand.changed().await.is_ok()
+                    }
+                } else {
+                    std::future::pending().await
+                }
+            } => ControlEvent::Demand(changed),
+            _ = async {
+                match idle_at {
+                    Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                    None => std::future::pending().await,
+                }
+            } => ControlEvent::Idle,
+        };
+        match event {
+            ControlEvent::Signal(signal) => {
+                return match signal {
+                    Ok(()) => {
+                        println!("Stopping Aercast.");
+                        ShareStop::Quit
+                    }
+                    Err(error) => ShareStop::Failed(error.into()),
+                };
+            }
+            ControlEvent::Command(command) => match command.unwrap_or(Command::Quit) {
                 Command::Start(..) => println!("A share is already active."),
                 Command::Apply(audio) => return ShareStop::Apply(audio),
                 Command::Network(_) => {
                     let _ = events.unbounded_send(HostEvent::NetworkApplied(Err(
-                        "Stop sharing before applying network settings".to_owned()
+                        "Stop sharing before applying network settings".to_owned(),
                     )));
                 }
                 Command::End => {
@@ -2517,8 +2800,20 @@ async fn share_control(
                             Ok(viewers) => viewers,
                             Err(error) => return ShareStop::Failed(error.into()),
                         };
-                        let _ = events
-                            .unbounded_send(HostEvent::Link(format!("{link_base}{path}")));
+                        media_demand = match host.media_demand() {
+                            Ok(demand) => demand,
+                            Err(error) => return ShareStop::Failed(error.into()),
+                        };
+                        let viewers = match host.viewers() {
+                            Ok(viewers) => viewers,
+                            Err(error) => return ShareStop::Failed(error.into()),
+                        };
+                        online = viewers.iter().filter(|viewer| viewer.online()).count();
+                        let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+                        deadline = idle_deadline(deadline, ready, online, Instant::now());
+                        let _ = events.unbounded_send(HostEvent::Viewers(viewers));
+                        let _ =
+                            events.unbounded_send(HostEvent::Link(format!("{link_base}{path}")));
                     }
                     Ok(None) => {
                         let _ = events.unbounded_send(HostEvent::ConfirmRefresh);
@@ -2535,33 +2830,95 @@ async fn share_control(
                     return ShareStop::Quit;
                 }
             },
-            changed = viewer_updates.changed() => {
-                if changed.is_err() {
-                    return ShareStop::Failed(io::Error::other(
-                        "Viewer update channel closed"
-                    ).into());
+            ControlEvent::Viewers(open) => {
+                if !open {
+                    return ShareStop::Failed(
+                        io::Error::other("Viewer update channel closed").into(),
+                    );
                 }
                 viewer_updates.borrow_and_update();
                 match host.viewers() {
                     Ok(viewers) => {
+                        online = viewers.iter().filter(|viewer| viewer.online()).count();
+                        let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+                        deadline = idle_deadline(deadline, ready, online, Instant::now());
                         let _ = events.unbounded_send(HostEvent::Viewers(viewers));
                     }
                     Err(error) => return ShareStop::Failed(error.into()),
                 }
-            },
-            _ = &mut session_closed => {
+            }
+            ControlEvent::Ready(open) => {
+                let Some(ready) = media_ready.as_mut() else {
+                    return ShareStop::Failed(
+                        io::Error::other("sleeping media received a ready event").into(),
+                    );
+                };
+                if !open {
+                    return ShareStop::Failed(
+                        io::Error::other("Media readiness channel closed").into(),
+                    );
+                }
+                ready.borrow_and_update();
+                deadline = idle_deadline(deadline, *ready.borrow(), online, Instant::now());
+            }
+            ControlEvent::Demand(open) => {
+                if !open {
+                    return ShareStop::Failed(
+                        io::Error::other("Media demand channel closed").into(),
+                    );
+                }
+                let requested = *media_demand.borrow_and_update() != 0;
+                if requested {
+                    return ShareStop::Wake;
+                }
+            }
+            ControlEvent::Idle => {
+                let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+                let viewers = match host.viewers() {
+                    Ok(viewers) => viewers,
+                    Err(error) => return ShareStop::Failed(error.into()),
+                };
+                online = viewers.iter().filter(|viewer| viewer.online()).count();
+                if ready && online == 0 {
+                    return ShareStop::Sleep;
+                }
+                deadline = idle_deadline(None, ready, online, Instant::now());
+                let _ = events.unbounded_send(HostEvent::Viewers(viewers));
+            }
+            ControlEvent::PortalClosed => {
                 println!("Portal session closed; stopping stream.");
                 return ShareStop::PortalClosed;
             }
-            result = &mut *server => {
+            ControlEvent::Server(result) => {
                 return server_outcome(result).unwrap_or_else(ShareStop::Failed);
-            },
+            }
         }
+    }
+}
+
+fn idle_deadline(
+    current: Option<Instant>,
+    ready: bool,
+    online: usize,
+    now: Instant,
+) -> Option<Instant> {
+    if ready && online == 0 {
+        current.or(Some(now + MEDIA_IDLE_GRACE))
+    } else {
+        None
     }
 }
 
 fn should_retry<T, E>(outcome: &std::result::Result<T, E>, recoveries: u8) -> bool {
     outcome.is_err() && recoveries < MAX_MEDIA_RECOVERIES
+}
+
+fn should_fallback(video: VideoPlan, attempted: bool, recoveries: u8, error: &Error) -> bool {
+    video.settings.encoder == settings::VideoEncoder::Auto
+        && video.encoder == Encoder::VaApi
+        && !attempted
+        && recoveries < MAX_MEDIA_RECOVERIES
+        && error.is::<HardwareVideoFailure>()
 }
 
 fn validate_arguments(mut args: impl Iterator<Item = String>) -> io::Result<()> {
@@ -2591,6 +2948,7 @@ async fn serve_video(
     capture_caps: &mut Option<gst::Caps>,
     audio: AudioSettings,
     media: web::MediaSession,
+    fragment_ready: watch::Sender<bool>,
     mut control: Pin<&mut impl Future<Output = ShareStop>>,
     events: &Events,
 ) -> Result<ShareStop> {
@@ -2649,6 +3007,7 @@ async fn serve_video(
         AppSinkCallbacks::builder()
             .new_sample({
                 let media = media.clone();
+                let fragment_ready = fragment_ready.clone();
                 let mut first_fragment = true;
                 move |sink| {
                     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Error)?;
@@ -2661,6 +3020,7 @@ async fn serve_video(
                     if first_fragment && fragment {
                         println!("First fMP4 fragment: {} ms", started.elapsed().as_millis());
                         first_fragment = false;
+                        fragment_ready.send_replace(true);
                     }
                     Ok(gst::FlowSuccess::Ok)
                 }
@@ -2683,7 +3043,10 @@ async fn serve_video(
         return Ok(stop);
     }
     let outcome: Result<ShareStop> = match pipeline.set_state(gst::State::Playing) {
-        Err(error) => Err(error.into()),
+        Err(error) => match messages.next().now_or_never().flatten() {
+            Some(message) => queued_media_outcome(Some(message), &mut messages),
+            None => Err(error.into()),
+        },
         Ok(_) => match audio_exclusions
             .map(|exclusions| audio::start(audio_source, audio.exclude_communication, exclusions))
             .transpose()
@@ -2693,10 +3056,9 @@ async fn serve_video(
                 println!("Browser stream running.");
                 let _ = events.unbounded_send(HostEvent::Sharing(audio.clone()));
                 let mut audio_failure_reported = false;
-                let running = tokio::select! {
+                let mut running = tokio::select! {
                     biased;
                     stop = control.as_mut() => Ok(stop),
-                    message = messages.next() => media_outcome(message),
                     error = async {
                         match audio_capture.as_mut() {
                             Some((_, errors)) => errors.recv().await,
@@ -2708,9 +3070,20 @@ async fn serve_video(
                             "selective-audio thread stopped unexpectedly".to_owned()
                         )).into())
                     },
+                    message = messages.next() => {
+                        queued_media_outcome(message, &mut messages)
+                    },
                 };
-                if !matches!(&running, Err(_) | Ok(ShareStop::Apply(_))) {
+                if matches!(
+                    &running,
+                    Ok(ShareStop::End | ShareStop::Quit | ShareStop::PortalClosed)
+                ) {
                     let _ = events.unbounded_send(HostEvent::Ending);
+                }
+                if matches!(&running, Ok(ShareStop::Sleep))
+                    && let Err(error) = pipeline.set_state(gst::State::Paused)
+                {
+                    running = Ok(ShareStop::Failed(error.into()));
                 }
                 let stopped: Result<()> = audio_capture
                     .map_or(Ok(()), |(audio, _)| audio.stop(audio_failure_reported))
@@ -2740,6 +3113,14 @@ async fn serve_video(
         Ok(_) => outcome,
         Err(error) => Ok(ShareStop::Failed(error.into())),
     }
+}
+
+async fn probe_video_plan(
+    video: settings::VideoSettings,
+) -> std::result::Result<VideoPlan, String> {
+    tokio::task::spawn_blocking(move || video_plan(&video).map_err(|error| error.to_string()))
+        .await
+        .map_err(|error| format!("video encoder check failed: {error}"))?
 }
 
 fn video_plan(video: &settings::VideoSettings) -> Result<VideoPlan> {
@@ -2825,7 +3206,7 @@ fn pipeline_description(
                 format!(" bitrate={bitrate} cpb-size={}", bitrate / 10)
             });
             format!(
-                "vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=7{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
+                "vapostproc name=video-converter add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=7{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
                 width = video.width,
                 height = video.height,
                 fps = video.fps,
@@ -2839,7 +3220,7 @@ fn pipeline_description(
                 )
             });
             format!(
-                "videoconvertscale add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps}",
+                "videoconvertscale name=video-converter add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps}",
                 width = video.width,
                 height = video.height,
                 fps = video.fps,
@@ -2877,25 +3258,95 @@ fn server_outcome(
     }
 }
 
-fn media_outcome(message: Option<gst::Message>) -> Result<ShareStop> {
-    match message {
-        Some(message) => match message.view() {
-            gst::MessageView::Eos(..) => Err(io::Error::other("capture stream ended").into()),
+fn queued_media_outcome(
+    first: Option<gst::Message>,
+    messages: &mut (impl futures_util::Stream<Item = gst::Message> + Unpin),
+) -> Result<ShareStop> {
+    media_outcome(first.into_iter().chain(std::iter::from_fn(|| {
+        messages.next().now_or_never().flatten()
+    })))
+}
+
+fn media_outcome(messages: impl IntoIterator<Item = gst::Message>) -> Result<ShareStop> {
+    let mut descriptions = Vec::new();
+    let mut all_hardware_video = true;
+    let mut saw_error = false;
+    for message in messages {
+        match message.view() {
+            gst::MessageView::Eos(..) => {
+                descriptions.push("capture stream ended".to_owned());
+                all_hardware_video = false;
+            }
             gst::MessageView::Error(error) => {
+                saw_error = true;
+                all_hardware_video &= hardware_video_error(&message);
                 let source = message
                     .src()
                     .map(|source| source.path_string().to_string())
                     .unwrap_or_else(|| "unknown".to_owned());
-                Err(io::Error::other(format!(
+                descriptions.push(format!(
                     "GStreamer error from {source}: {} ({})",
                     error.error(),
                     error.debug().unwrap_or_default(),
-                ))
-                .into())
+                ));
             }
-            _ => unreachable!(),
-        },
-        None => Err(io::Error::other("GStreamer bus closed").into()),
+            _ => {
+                descriptions.push("unexpected GStreamer bus message".to_owned());
+                all_hardware_video = false;
+            }
+        }
+    }
+    if descriptions.is_empty() {
+        return Err(io::Error::other("GStreamer bus closed").into());
+    }
+    let description = descriptions.join("; ");
+    if saw_error && all_hardware_video {
+        Err(HardwareVideoFailure(description).into())
+    } else {
+        Err(io::Error::other(description).into())
+    }
+}
+
+fn hardware_video_error(message: &gst::Message) -> bool {
+    let gst::MessageView::Error(message_error) = message.view() else {
+        return false;
+    };
+    let Some(source) = message.src().map(|source| source.name().to_string()) else {
+        return false;
+    };
+    let error = message_error.error();
+    let details = message_error.details();
+    let flow = details
+        .filter(|details| details.has_field("flow-return"))
+        .and_then(|details| details.get::<gst::FlowReturn>("flow-return").ok());
+    let missing_flow = details.is_none_or(|details| !details.has_field("flow-return"));
+    match source.as_str() {
+        "encoder" => {
+            error.matches(gst::StreamError::Encode)
+                || error.matches(gst::LibraryError::Init)
+                || error.matches(gst::LibraryError::Failed)
+                || error.matches(gst::CoreError::Negotiation)
+        }
+        "video-converter" => {
+            error.matches(gst::LibraryError::Init)
+                || error.matches(gst::ResourceError::Settings)
+                || error.matches(gst::CoreError::Negotiation)
+                || error.matches(gst::CoreError::NotImplemented)
+        }
+        "portal-video" => {
+            error.matches(gst::StreamError::Format)
+                || (error.matches(gst::StreamError::Failed)
+                    && flow == Some(gst::FlowReturn::NotNegotiated))
+        }
+        "portal-format" => error.matches(gst::StreamError::Format),
+        "h264" => {
+            error.matches(gst::StreamError::Format)
+                || error.matches(gst::StreamError::Decode)
+                || error.matches(gst::StreamError::WrongType)
+                || (error.matches(gst::StreamError::Failed)
+                    && (missing_flow || flow == Some(gst::FlowReturn::NotNegotiated)))
+        }
+        _ => false,
     }
 }
 

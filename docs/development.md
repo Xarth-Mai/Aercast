@@ -78,22 +78,49 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
   return the same `404`.
 - Copy briefly changes to a check mark. Process exit is the only other token
   invalidation boundary.
+- After the first complete media fragment, zero online Viewers starts a fixed
+  two-second grace period. A Viewer connection cancels it; the transition from
+  the last online Viewer to zero starts it again, while telemetry does not
+  extend it. Expiry pauses and removes the media pipeline and selective-audio
+  links but retains the Portal session, selected source, token, video plan, and
+  negotiated capture caps. The Host UI, tray, and notifications remain in the
+  Sharing state.
+- While media sleeps, only a valid, unblocked `GET /stream` for the current
+  token generation requests a wake, and the request still receives the normal
+  `425` polling response. Concurrent requests merge into one wake that reopens
+  the restricted PipeWire remote and rebuilds the same media pipeline. Page,
+  HEAD, telemetry, invalid-token, invalid-identity, blocked-identity, and old
+  generation requests do not wake it.
+- Applying audio while asleep updates the active-share snapshot without waking
+  media. Refresh Link rotates the token and remains asleep. Stop, Quit, Portal
+  closure, and HTTP server failure remain terminal controls. Successful sleep
+  consumes no media-recovery attempt; wake failures use the existing bounded
+  recovery policy.
 
 ### Viewer management and playback
 
 - The Viewers page shows online/total count and rows containing IP, accumulated
   connection duration, RTT, playback lag, and Disconnect. Online rows precede
   offline history.
-- Displayed IP prefers `X-Real-IP`, then the first `X-Forwarded-For` value, then
-  the TCP peer. A trusted reverse proxy must replace client-supplied headers.
-  Sequential indices distinguish Viewers sharing an IP.
+- For a loopback TCP peer, displayed IP prefers `X-Real-IP`, then the first
+  `X-Forwarded-For` value, then the peer. Non-loopback peers ignore both headers
+  completely, so a trusted reverse proxy must connect from `127/8` or `::1` and
+  replace client-supplied forwarding headers. Sequential indices distinguish
+  Viewers sharing an IP.
 - Telemetry reports the previous request RTT and buffered-end playback lag every
-  two seconds; offline or six-second-old values are unavailable.
-- Each token keeps at most 100 in-memory Viewer records. Viewer IDs, IPs, and
-  telemetry are neither persisted nor written to ordinary logs.
+  two seconds; the Host accepts at most one state-changing report per online
+  Viewer per second, and faster valid reports still return `204` without
+  changing state or notifying the GUI. Offline or six-second-old values are
+  unavailable.
+- Each token keeps at most 100 in-memory Viewer records. At capacity, only an
+  offline, unblocked record may be evicted; if all records are online or blocked,
+  a new identity receives `429`. Viewer IDs, IPs, and telemetry are neither
+  persisted nor written to ordinary logs.
 - A random browser-scoped Viewer ID merges reconnects. A second tab takes over
-  the active session. Host Disconnect permanently blocks that Viewer until
-  Refresh Link or process exit; there is no manual retry.
+  the active session. Host Disconnect is cooperative identity control: that
+  presented ID stays blocked across Stop and Start until Refresh Link or process
+  exit, but a client can present a different ID. Refresh Link is the only Host
+  control that revokes a token already held by a malicious client.
 - Connection duration accumulates from the Host's monotonic clock and pauses
   while offline.
 - The Viewer is one square-cornered, viewport-filling `contain` video using only
@@ -133,6 +160,10 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
 | Notifications | Enabled by default |
 
 Unsupported saved quality blocks Start instead of being repaired or downgraded.
+Encoder capability probing runs off the GUI thread at startup and before a video
+save. The cached `VideoPlan` is valid only for the exact saved video settings;
+Start, Save Video, and Apply Network are disabled while a probe is pending, and
+a failed or stale save probe cannot replace the prior settings or cached plan.
 Saved quality changes apply to the next Start; an active share and its media-only
 recoveries keep the snapshot taken before Portal selection. Audio edits apply
 to an active share only through **Apply to Current Share**, which coordinates
@@ -154,15 +185,19 @@ Settings are replace-written internal state at
   superseded routes all return `404` without revealing prior state.
 - Tokens, Viewer IDs, IP addresses, and telemetry must not enter ordinary logs
   or third-party requests. Reverse proxies must redact tokenized paths.
+- Forwarded client-IP headers are a loopback-proxy convention, not an
+  authentication boundary. A non-loopback TCP peer can never override its
+  observed address with those headers.
 - Loopback is the safe default. Trusted-LAN binding is explicit. Untrusted or
   public access requires an external HTTPS reverse proxy; Aercast owns no
   domains, certificates, tunnels, port forwarding, or NAT traversal.
 
 ## Engineering decisions
 
-- One Rust process owns one Portal source and one GStreamer capture, encode, and
-  mux pipeline per share regardless of Viewer count. Completed fMP4 fragments
-  fan out through Axum; bounded per-Viewer delivery drops lagging readers.
+- One Rust process owns one Portal source and, while media is awake, one
+  GStreamer capture, encode, and mux pipeline per share regardless of Viewer
+  count. Completed fMP4 fragments fan out through Axum; bounded per-Viewer
+  delivery drops lagging readers.
 - Video uses the Portal's restricted PipeWire remote. Audio observes the regular
   PipeWire graph, taps only safe allowed stereo playback streams, and preserves
   their existing sink routes. Audio-off and no-source states keep a silent track
@@ -183,6 +218,15 @@ Settings are replace-written internal state at
   raw frames in VA memory through `vah264enc`; x264 remains the CPU fallback.
   This is a zero-copy-capable raw video path, not an end-to-end zero-copy claim,
   and remains unqualified until measured on the target hardware.
+- For an Auto share that selected VA-API and has not already fallen back, one
+  hardware-path failure may consume one media recovery and switch that share to
+  a freshly probed x264 plan. Eligibility uses the named
+  GStreamer source, structured error domain/code, and `flow-return`: the
+  whitelist covers the encoder, video converter, Portal video/format, and H.264
+  parser negotiation cases defined in code. EOS, Portal resource failure,
+  audio, mux, appsink, unknown sources, and any concurrent non-whitelisted error
+  do not trigger fallback. Explicit VA-API never falls back; a successful switch
+  clears VA capture caps so x264 renegotiates.
 - HTTP state owns the token separately from replaceable media state. Viewer
   telemetry and Host controls use ordinary HTTP, not WebSocket.
 - Desktop integration uses iced Wayland/wgpu, `ksni`, direct `zbus`, ashpd, and

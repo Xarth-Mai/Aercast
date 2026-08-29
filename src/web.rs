@@ -29,6 +29,7 @@ const MAX_CACHED_GOP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VIEWERS: usize = 8;
 const MAX_VIEWER_RECORDS: usize = 100;
 const MAX_TELEMETRY_MS: u32 = 60_000;
+const TELEMETRY_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const TELEMETRY_STALE_AFTER: Duration = Duration::from_secs(6);
 const VIEWER_ID_HEADER: &str = "aercast-viewer-id";
 
@@ -80,6 +81,7 @@ struct ViewerGuard {
 struct ViewerGeneration {
     inner: Mutex<ViewerState>,
     changed: watch::Sender<()>,
+    demand: watch::Sender<u64>,
     revoked: watch::Sender<bool>,
 }
 
@@ -170,6 +172,15 @@ impl Host {
 
     pub(crate) fn viewer_updates(&self) -> io::Result<watch::Receiver<()>> {
         Ok(lock(&self.inner)?.viewers.changed.subscribe())
+    }
+
+    pub(crate) fn media_demand(&self) -> io::Result<watch::Receiver<u64>> {
+        Ok(lock(&self.inner)?.viewers.demand.subscribe())
+    }
+
+    pub(crate) fn clear_media_demand(&self) -> io::Result<()> {
+        lock(&self.inner)?.viewers.demand.send_replace(0);
+        Ok(())
     }
 
     pub(crate) fn disconnect_viewer(&self, key: u64) -> io::Result<()> {
@@ -327,6 +338,7 @@ impl ViewerGeneration {
 
     fn with_next_key(next_key: u64) -> Self {
         let (changed, _) = watch::channel(());
+        let (demand, _) = watch::channel(0);
         let (revoked, _) = watch::channel(false);
         Self {
             inner: Mutex::new(ViewerState {
@@ -335,8 +347,41 @@ impl ViewerGeneration {
                 next_epoch: 0,
             }),
             changed,
+            demand,
             revoked,
         }
+    }
+
+    fn request_media(&self, id: [u8; 16]) -> io::Result<()> {
+        let state = lock(&self.inner)?;
+        if *self.revoked.borrow() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "link revoked"));
+        }
+        if state
+            .records
+            .iter()
+            .any(|record| record.id == id && record.blocked)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Viewer blocked",
+            ));
+        }
+        if !state.records.iter().any(|record| record.id == id)
+            && state.records.len() >= MAX_VIEWER_RECORDS
+            && !state
+                .records
+                .iter()
+                .any(|record| !record.viewer.online() && !record.blocked)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Viewer limit reached",
+            ));
+        }
+        self.demand
+            .send_modify(|demand| *demand = demand.saturating_add(1));
+        Ok(())
     }
 
     fn snapshots(&self) -> io::Result<Vec<Viewer>> {
@@ -386,7 +431,7 @@ impl ViewerGeneration {
                 .records
                 .iter()
                 .enumerate()
-                .filter(|(_, record)| !record.viewer.online())
+                .filter(|(_, record)| !record.viewer.online() && !record.blocked)
                 .min_by_key(|(_, record)| (record.last_seen, record.viewer.key))
                 .map(|(position, _)| position)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "Viewer limit reached"))?;
@@ -406,7 +451,6 @@ impl ViewerGeneration {
             record.viewer.online_since = Some(now);
             record.viewer.rtt = None;
             record.viewer.playback_lag = None;
-            record.viewer.telemetry_at = None;
             record.last_seen = now;
             record.epoch = epoch;
             record.close = close;
@@ -498,6 +542,13 @@ impl ViewerGeneration {
         else {
             return Ok(());
         };
+        if record
+            .viewer
+            .telemetry_at
+            .is_some_and(|updated| now.saturating_duration_since(updated) < TELEMETRY_MIN_INTERVAL)
+        {
+            return Ok(());
+        }
         record.viewer.rtt = telemetry
             .rtt_ms
             .map(|milliseconds| Duration::from_millis(milliseconds.into()));
@@ -684,20 +735,23 @@ async fn media_stream(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
     let Some(media) = media else {
-        return waiting();
+        return media_waiting(&viewers, id);
     };
-    let subscription = match media.subscribe(viewers, id, viewer_ip(&headers, peer.ip())) {
-        Ok(Some(subscription)) => subscription,
-        Ok(None) => return waiting(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return blocked(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let subscription =
+        match media.subscribe(Arc::clone(&viewers), id, viewer_ip(&headers, peer.ip())) {
+            Ok(Some(subscription)) => subscription,
+            Ok(None) => {
+                return media_waiting(&viewers, id);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return StatusCode::TOO_MANY_REQUESTS.into_response();
+            }
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return blocked(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
     let mime = subscription.mime.clone();
     let body = Body::from_stream(stream::unfold(
         subscription,
@@ -732,6 +786,20 @@ async fn media_stream(
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .body(body)
         .expect("generated media headers are valid")
+}
+
+fn media_waiting(viewers: &ViewerGeneration, id: [u8; 16]) -> Response {
+    match viewers.request_media(id) {
+        Ok(()) => waiting(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            StatusCode::TOO_MANY_REQUESTS.into_response()
+        }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => blocked(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 async fn media_head(Path(token): Path<String>, State(host): State<Host>) -> StatusCode {
@@ -814,6 +882,9 @@ fn identified_access(
 }
 
 fn viewer_ip(headers: &HeaderMap, peer: IpAddr) -> IpAddr {
+    if !peer.is_loopback() {
+        return peer;
+    }
     headers
         .get("x-real-ip")
         .and_then(|value| value.to_str().ok())
