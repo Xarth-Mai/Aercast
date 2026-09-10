@@ -34,6 +34,8 @@
   const MUTED_KEY = "aercast-viewer-muted";
   const LIVE_EDGE_DELAY = 1.0;
   const START_BUFFER = 1.5;
+  const CONNECT_TIMEOUT = 10000;
+  const PROGRESS_TIMEOUT = 15000;
   const STATUS_MESSAGES = {
     connecting: "Connecting…",
     waiting: "Waiting for the Host to start sharing…",
@@ -49,7 +51,6 @@
   let policyMuted = null;
   let running = true;
   let blockedByHost = false;
-  let automaticPlay = false;
   let currentAttempt = null;
   let permittedSeek = null;
   const setState = state => {
@@ -168,6 +169,57 @@
     });
   }
 
+  async function withDeadline(promise, attempt, milliseconds, message) {
+    const timer = setTimeout(() => {
+      attempt.error = new Error(message);
+      attempt.controller.abort(attempt.error);
+    }, milliseconds);
+    try {
+      return await withAbort(promise, attempt.controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function retryDelay(failures) {
+    const ceiling = Math.min(10000, 500 * 2 ** Math.min(failures - 1, 5));
+    return ceiling * (0.5 + Math.random() * 0.5);
+  }
+
+  function watchPlayback(attempt) {
+    let progressAt = performance.now();
+    let healthySince = progressAt;
+    let previous = null;
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const quality = video.getVideoPlaybackQuality?.();
+      const progress = quality
+        ? quality.totalVideoFrames - quality.droppedVideoFrames
+        : video.currentTime;
+      if (document.hidden || (attempt.positioned && video.paused && !attempt.automaticPlay)) {
+        progressAt = now;
+        healthySince = now;
+      } else if (progress !== previous && previous !== null) {
+        progressAt = now;
+        if (now - healthySince >= 30000) attempt.healthy = true;
+      } else if (now - progressAt >= PROGRESS_TIMEOUT) {
+        attempt.error = new Error("Playback made no progress");
+        attempt.controller.abort(attempt.error);
+      }
+      previous = progress;
+    }, 1000);
+    const reset = () => {
+      progressAt = performance.now();
+      healthySince = progressAt;
+      previous = null;
+    };
+    document.addEventListener("visibilitychange", reset);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", reset);
+    };
+  }
+
   async function reportTelemetry(buffer, signal) {
     let rtt = null;
     while (!signal.aborted) {
@@ -207,7 +259,10 @@
       source: URL.createObjectURL(media),
       response: null,
       reader: null,
-      error: null
+      error: null,
+      positioned: false,
+      healthy: false,
+      automaticPlay: false
     };
     currentAttempt = attempt;
     video.controls = false;
@@ -217,7 +272,7 @@
   }
 
   async function playAutomatically(attempt) {
-    automaticPlay = true;
+    attempt.automaticPlay = true;
     try {
       await video.play();
     } catch (error) {
@@ -235,7 +290,7 @@
       if (attempt.controller.signal.aborted || currentAttempt !== attempt) return;
       showError(error);
     } finally {
-      automaticPlay = false;
+      attempt.automaticPlay = false;
     }
   }
 
@@ -255,57 +310,60 @@
 
   async function nextResponse(attempt) {
     while (running) {
-      const response = await fetch(`${location.pathname}/stream`, {
+      const response = await withDeadline(fetch(`${location.pathname}/stream`, {
         cache: "no-store",
         headers: { "Aercast-Viewer-ID": viewerId },
         signal: attempt.controller.signal
-      });
+      }), attempt, CONNECT_TIMEOUT, "Stream connection timed out");
       if (response.status !== 425) return response;
       if (response.body) await response.body.cancel();
       setState("waiting");
-      await delay(500);
+      await withAbort(delay(500), attempt.controller.signal);
     }
     throw new Error("Share stopped");
   }
 
   async function consume(attempt, response, mime) {
-    await withAbort(attempt.opened, attempt.controller.signal);
+    await withDeadline(attempt.opened, attempt, CONNECT_TIMEOUT, "Media source did not open");
     const buffer = attempt.media.addSourceBuffer(mime);
     void reportTelemetry(buffer, attempt.controller.signal);
     const reader = response.body.getReader();
     attempt.reader = reader;
-    let positioned = false;
-
-    while (true) {
-      const { done, value } = await withAbort(reader.read(), attempt.controller.signal);
-      if (done) break;
-      await withAbort(append(buffer, value), attempt.controller.signal);
-      if (buffer.buffered.length) {
-        const range = buffer.buffered.length - 1;
-        const start = buffer.buffered.start(range);
-        const end = buffer.buffered.end(range);
-        if (!positioned) {
-          if (end - start < START_BUFFER) continue;
-          seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
-          video.playbackRate = 1.0;
-        } else if (!automaticPlay && !video.paused) {
-          const lag = end - video.currentTime;
-          if (lag > 3.0) {
-            if (!video.seeking) seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
+    const stopWatching = watchPlayback(attempt);
+    try {
+      while (true) {
+        const { done, value } = await withDeadline(reader.read(), attempt, PROGRESS_TIMEOUT, "Stream received no data");
+        if (done) break;
+        await withDeadline(append(buffer, value), attempt, PROGRESS_TIMEOUT, "Media append made no progress");
+        if (buffer.buffered.length) {
+          const range = buffer.buffered.length - 1;
+          const start = buffer.buffered.start(range);
+          const end = buffer.buffered.end(range);
+          if (!attempt.positioned) {
+            if (end - start < START_BUFFER) continue;
+            seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
             video.playbackRate = 1.0;
-          } else if (lag > 1.5) {
-            video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08);
-          } else if (video.playbackRate !== 1.0) {
-            video.playbackRate = 1.0;
+          } else if (!attempt.automaticPlay && !video.paused) {
+            const lag = end - video.currentTime;
+            if (lag > 3.0) {
+              if (!video.seeking) seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
+              video.playbackRate = 1.0;
+            } else if (lag > 1.5) {
+              video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08);
+            } else if (video.playbackRate !== 1.0) {
+              video.playbackRate = 1.0;
+            }
+          }
+          if (!attempt.positioned) {
+            attempt.positioned = true;
+            setMutedByPolicy(preferredMuted);
+            video.controls = true;
+            void playAutomatically(attempt);
           }
         }
-        if (!positioned) {
-          positioned = true;
-          setMutedByPolicy(preferredMuted);
-          video.controls = true;
-          void playAutomatically(attempt);
-        }
       }
+    } finally {
+      stopWatching();
     }
     if (attempt.media.readyState === "open" && !buffer.updating) attempt.media.endOfStream();
   }
@@ -313,6 +371,7 @@
   async function connect(attempt) {
     claimSession();
     setState("connecting");
+    let failures = 0;
     while (running) {
       let failed = false;
       delete document.body.dataset.error;
@@ -363,7 +422,9 @@
         await stopAttempt(attempt);
       }
       if (!running) return;
-      if (failed) await delay(500);
+      if (attempt.healthy) failures = 0;
+      if (failed) await delay(retryDelay(++failures));
+      if (!running || currentAttempt) return;
       attempt = beginAttempt();
     }
   }
@@ -373,7 +434,7 @@
     delete document.body.dataset.error;
   });
   video.addEventListener("play", () => {
-    if (automaticPlay || blockedByHost) return;
+    if (currentAttempt?.automaticPlay || blockedByHost) return;
     if (!running) {
       video.pause();
       running = true;

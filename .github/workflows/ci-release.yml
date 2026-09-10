@@ -53,6 +53,14 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+
+      - name: Check Viewer recovery
+        run: bun tests/viewer-recovery.mjs
+
       - name: Run tests
         run: cargo test
 

@@ -176,13 +176,9 @@ of the Viewer document. The status layer's visual and ARIA rules are defined in
   source without requiring an AirPlay alternative. Missing media-source support
   fails before requesting the stream. Starting playback never blocks continued
   fragment download and append.
-- Playback starts after 1.5 seconds are buffered and stays about one second
-  behind the live edge. Lag from 1.5 through 3 seconds catches up gradually at
-  up to 1.15×; larger lag and manual seeking return to that live position once
-  playback has started, without issuing another seek while one is in progress.
-  Normal media replacement reconnects immediately; a failed request waits 500
-  ms, and a waiting `425` response polls after 500 ms. Automatic reconnect
-  continues until the share ends or the Host blocks the Viewer.
+- Playback starts after 1.5 seconds are buffered and stays about one second behind the live edge. Lag from 1.5 through 3 seconds catches up gradually at up to 1.15×; larger lag and manual seeking return to that live position once playback has started, without issuing another seek while one is in progress
+- Each stream request has a 10-second connection deadline. Once streaming, 15 seconds without data, media append completion, or playback progress aborts that attempt and reconnects. Media-source opening has its own 10-second deadline. Playback progress uses presented-frame counts when available and playback time otherwise; paused playback, rejected autoplay, and hidden pages suspend only the playback-progress detector. Waiting `425` responses poll after 500 ms without a total waiting deadline
+- Failed attempts use exponential retry ceilings from 500 ms to 10 seconds with a random delay between half and all of the ceiling; 30 seconds of playback progress resets the failure streak. Normal media replacement reconnects immediately. A healthy live connection has no fixed lifetime. Automatic reconnect continues until the share ends, the Host blocks the Viewer, or another tab takes over
 - Bounded per-Viewer delivery may end and replace a lagging response so the
   Viewer jumps forward as one synchronized stream. If sustained throughput is
   below the configured video-plus-audio rate, continuous audio is not
