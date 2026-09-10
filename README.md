@@ -6,6 +6,8 @@ Aercast shares one screen or window and its sound directly from your computer.
 You can leave out the sound from apps such as Discord or Steam Voice. Viewers
 just open a link—no account or app installation needed.
 
+![Aercast overview showing an active screen share and Viewer health](assets/aercast-overview.webp)
+
 ## Why Aercast
 
 - Choose a screen or window with the standard Wayland sharing dialog
