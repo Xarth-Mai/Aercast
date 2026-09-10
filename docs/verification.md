@@ -21,6 +21,7 @@ threshold and restored the smooth 3.0 s policy.
 | Cross-platform Viewer | In the 2026-08-29 real iOS A/B described below, the 1.8 s correction reduced reported lag but made playback fall below one frame per second; restoring 3.0 s produced smooth playback with 1.3 s Host-reported lag and about 2 s perceived delay | No safe unified lag reduction was found; exact OS/browser builds and duration remain incomplete, Windows Firefox was not rerun, and neither platform is qualified |
 | Media pipeline optimization | Generated pipeline contracts cover selectable AAC rates, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation, and immediate normal-EOF reconnect; the 2026-08-29 real A/B reached iOS playback at 1080p60/16 Mbps with VA-API | DMA-BUF/zero-copy, Host CPU/GPU, and constrained-network measurements remain unrecorded; zero-copy and latency are unqualified |
 | Stability fixes | The [2026-09-10 checks](#stability-checks) cover sleeping Apply, last-successful-snapshot retention, authorized HTTP wake, and Viewer timeout/retry behavior | Real Portal, audio, desktop-browser, iPhone, and clean-install acceptance was explicitly skipped; no new platform or performance qualification |
+| Host module split | The [module-split checks](#module-split-checks) at `f83a658` cover all runnable Rust tests and a real niri Portal capture start/stop | Partial source-build smoke only; selective audio and browser playback remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
 On 2026-08-30, `makepkg --verifysource` passed against the v0.1.4 tag archive,
@@ -44,7 +45,23 @@ Environment: CachyOS, Linux `7.2.3-1-cachyos`, Rust/Cargo `1.98.1`, Bun `1.4.0`
 | Downloaded v0.1.4 tarball; `tar -xzf aercast-*.tar.gz` then `cd aercast-v*-x86_64-unknown-linux-gnu`; executable-mode and `ldd ./aercast` checks | Archive directory and executable match the corrected README; no missing dynamic libraries on this host | Extraction and local dependency resolution only; `./aercast` from the release package and clean installation were not accepted |
 | CI YAML trigger check | `main` and `v*` pushes enabled; release restricted to version-tag push; Bun test command configured | Local configuration inspection, not a hosted CI run |
 
-A source GUI was launched with `WAYLAND_DISPLAY=wayland-1 cargo run`, but the desktop was locked before interactive Portal selection. The user requested skipping this part; the process was stopped with SIGINT, and absence of the process and port `8877` listener was confirmed. AUR, `.deb`, archive GUI startup, Portal/PipeWire capture, desktop-browser/iPhone playback, multi-Viewer and slow-client real checks, same-link stop/start, wake failure rollback, long-duration playback, frame drops, and end-to-end latency remain unverified for the current revision. No screenshot or demonstration was captured
+Real acceptance was skipped for the stability-fix batch at the user’s request. The later partial source-build capture check is recorded below; it does not qualify package installation, selective audio, browser playback, or recovery
+
+## Module-split checks
+
+Source revision: `f83a658` (2026-09-10), following media/Portal extraction at `59ca401`; the executable entry point and shared contracts remain in `main.rs`, with UI and share-session implementations tested separately
+
+Environment: CachyOS, Linux `7.2.3-1-cachyos`, niri with ScreenCast Portal v5, PipeWire `1.6.8`, GStreamer `1.28.7`, Rust/Cargo `1.98.1`, Bun `1.4.0`; the existing saved profile selected 1920×1080 at 60 FPS, 12 Mbps VA-API video and 160 kbps audio
+
+| Command or scenario | Observed result | Evidence boundary |
+| --- | --- | --- |
+| `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and `git diff --cached --check` | Passed; Rust tests: 58 passed, 5 explicitly ignored | Existing contracts retained under their owning modules; no new platform qualification |
+| `cargo test share_session -- --nocapture` | 11 passed, including sleeping Apply followed by a valid Viewer wake, rollback snapshots, idle grace, and bounded recovery | Control-loop and local HTTP checks; no real failed-pipeline rollback injection |
+| `bun test tests/viewer-recovery.test.js` | 12 passed, 225 assertions | Viewer script unchanged; browser API doubles only |
+| `WAYLAND_DISPLAY=wayland-1 cargo run`; Start Sharing; select Display and approve Share through the real Portal chooser | Selected Screen, opened the PipeWire source, and produced the first encoded frame at 46 ms and first fMP4 fragment at 171 ms | Single startup sample, with no Viewer connected; these are startup timings, not end-to-end latency |
+| Stop Sharing, then SIGINT to the test process; inspect `pw-dump` and `ss -ltnp` | GUI returned to Ready with no active media; test process, port `8877` listener, and Aercast-named PipeWire nodes were absent after cleanup; desktop lock restored | Normal stop and process cleanup only |
+
+Audio initialization logged `capture node did not retain node.passive=in` and `waiting for exactly one FL and one FR port`. This run did not establish whether those diagnostics were transient, and did not execute the allowed/Communication stereo-signal graph checks. Selective-audio correctness, real Viewer wake, same-link restart, failure rollback, desktop/iPhone playback, long-duration stability, and release-package installation remain unverified at this revision
 
 ## Recorded environment
 
