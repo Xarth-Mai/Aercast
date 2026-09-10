@@ -59,7 +59,7 @@ jobs:
           bun-version: "1.4.0"
 
       - name: Check Viewer recovery
-        run: bun tests/viewer-recovery.mjs
+        run: bun test tests/viewer-recovery.test.js
 
       - name: Run tests
         run: cargo test

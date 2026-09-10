@@ -1,8 +1,7 @@
-import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { expect, test } from 'bun:test';
 import vm from 'node:vm';
 
-const script = readFileSync(new URL('../src/viewer.html', import.meta.url), 'utf8')
+const script = (await Bun.file(new URL('../src/viewer.html', import.meta.url)).text())
   .split('<script>')[1].split('</script>')[0];
 function browser() {
   let now = 0;
@@ -48,16 +47,16 @@ function browser() {
   return { context, video, document, run, advance, timers };
 }
 
-{
+test('connection timeout aborts the request and clears its timer', async () => {
   const b = browser();
   b.context.fetch = () => new Promise(() => {});
   const result = b.run('nextResponse(attempt)').catch(e => e);
   await b.advance(10000);
-  assert.match((await result).message, /connection timed out/);
-  assert.equal(b.run('attempt.controller.signal.aborted'), true);
-  assert.equal(b.timers.size, 0);
-}
-{
+  expect((await result).message).toMatch(/connection timed out/);
+  expect(b.run('attempt.controller.signal.aborted')).toBe(true);
+  expect(b.timers.size).toBe(0);
+});
+test('425 responses keep polling without a total waiting deadline', async () => {
   const b = browser();
   let calls = 0;
   b.context.fetch = async () => {
@@ -66,11 +65,11 @@ function browser() {
   };
   const result = b.run('nextResponse(attempt)');
   await b.advance(20000);
-  assert.equal((await result).status, 200);
-  assert.equal(b.run('attempt.controller.signal.aborted'), false);
-  assert.equal(calls, 41);
-}
-{
+  expect((await result).status).toBe(200);
+  expect(b.run('attempt.controller.signal.aborted')).toBe(false);
+  expect(calls).toBe(41);
+});
+test('stalled reads abort consumption and stop the playback watchdog', async () => {
   const b = browser();
   const buffer = Object.assign(new EventTarget(), { buffered: { length: 0 } });
   b.context.buffer = buffer;
@@ -78,54 +77,53 @@ function browser() {
   b.context.response = { body: { getReader: () => ({ read: () => new Promise(() => {}) }) } };
   const result = b.run('consume(attempt, response, "video/mp4")').catch(e => e);
   await b.advance(15000);
-  assert.match((await result).message, /no (data|progress)/);
-  assert.equal(b.run('attempt.controller.signal.aborted'), true);
-  assert.equal([...b.timers.values()].filter(t => t.interval).length, 0);
-}
-{
+  expect((await result).message).toMatch(/no (data|progress)/);
+  expect(b.run('attempt.controller.signal.aborted')).toBe(true);
+  expect([...b.timers.values()].filter(t => t.interval)).toHaveLength(0);
+});
+test('decoder stalls cannot be hidden by advancing playback time', async () => {
   const b = browser();
   b.run('attempt.positioned = true; globalThis.stop = watchPlayback(attempt)');
   // Clock seeks alone must not disguise a decoder that presents no frames
   for (let i = 0; i < 15; i++) { b.video.currentTime++; await b.advance(1000); }
-  assert.match(b.run('attempt.error.message'), /Playback made no progress/);
+  expect(b.run('attempt.error.message')).toMatch(/Playback made no progress/);
   b.run('stop()');
-  assert.equal(b.timers.size, 0);
-}
-for (const mode of ['paused', 'hidden']) {
+  expect(b.timers.size).toBe(0);
+});
+test.each(['paused', 'hidden'])('%s playback suspends progress detection', async mode => {
   const b = browser();
   b.run('attempt.positioned = true; globalThis.stop = watchPlayback(attempt)');
   if (mode === 'paused') b.video.paused = true;
   else b.document.hidden = true;
   await b.advance(60000);
-  assert.equal(b.run('attempt.controller.signal.aborted'), false, mode);
+  expect(b.run('attempt.controller.signal.aborted')).toBe(false);
   b.video.paused = false;
   b.document.hidden = false;
   await b.advance(15000);
-  assert.equal(b.run('attempt.controller.signal.aborted'), true, `${mode} resumed`);
+  expect(b.run('attempt.controller.signal.aborted')).toBe(true);
   b.run('stop()');
-}
-{
+});
+test('healthy playback has no fixed lifetime and retry jitter stays bounded', async () => {
   const b = browser();
   b.run('globalThis.stop = watchPlayback(attempt)');
   for (let i = 0; i < 60; i++) {
     b.video.getVideoPlaybackQuality = () => ({ totalVideoFrames: i + 1, droppedVideoFrames: 0 });
     await b.advance(1000);
   }
-  assert.equal(b.run('attempt.controller.signal.aborted'), false);
-  assert.equal(b.run('attempt.healthy'), true);
+  expect(b.run('attempt.controller.signal.aborted')).toBe(false);
+  expect(b.run('attempt.healthy')).toBe(true);
   b.run('stop()');
   for (let failures = 1; failures <= 100; failures++) {
     b.run('Math.random = () => 0');
     const min = b.run(`retryDelay(${failures})`);
     b.run('Math.random = () => 1');
     const max = b.run(`retryDelay(${failures})`);
-    assert.equal(min, max / 2);
-    assert.ok(max <= 10000);
+    expect(min).toBe(max / 2);
+    expect(max).toBeLessThanOrEqual(10000);
   }
-}
-console.log('Viewer recovery checks passed: connection, 425 polling, stalled reads, decoder stalls, pause/visibility, healthy stream, bounded jitter');
+});
 
-for (const failed of [false, true]) {
+test.each([false, true])('reconnect delay applies only to failure: %p', async failed => {
   const b = browser();
   b.run(`
     let attempts = 0;
@@ -138,16 +136,15 @@ for (const failed of [false, true]) {
   `);
   const result = b.run('connect(attempt)');
   await b.advance(0);
-  assert.equal(b.run('restartedAt'), failed ? null : 0);
+  expect(b.run('restartedAt')).toBe(failed ? null : 0);
   if (failed) {
     await b.advance(500);
-    assert.equal(b.run('restartedAt'), 500);
+    expect(b.run('restartedAt')).toBe(500);
   }
   await result;
-}
-console.log('Normal EOF reconnects immediately; failure follows backoff');
+});
 
-{
+test('an inactive tab does not restart after backoff', async () => {
   const b = browser();
   b.run(`
     nextResponse = async () => { throw new Error('injected failure'); };
@@ -159,13 +156,12 @@ console.log('Normal EOF reconnects immediately; failure follows backoff');
   b.run('running = false');
   await b.advance(1000);
   await result;
-}
-{
+});
+test('an unopened media source times out and clears its timer', async () => {
   const b = browser();
   b.run('attempt.opened = new Promise(() => {})');
   const result = b.run('consume(attempt, {}, "video/mp4")').catch(e => e);
   await b.advance(10000);
-  assert.match((await result).message, /source did not open/);
-  assert.equal(b.timers.size, 0);
-}
-console.log('Inactive retry stays stopped; unopened media source times out and clears its timer');
+  expect((await result).message).toMatch(/source did not open/);
+  expect(b.timers.size).toBe(0);
+});
