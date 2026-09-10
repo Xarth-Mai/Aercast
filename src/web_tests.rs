@@ -707,10 +707,10 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
         },
         video: crate::VideoPlan {
             settings: crate::settings::VideoSettings::default(),
-            encoder: crate::Encoder::X264,
+            encoder: crate::media::Encoder::X264,
         },
     };
-    let mut media = crate::MediaSettings::new(share.clone());
+    let mut media = crate::share_session::MediaSettings::new(share.clone());
     let (commands, mut receiver) = tokio::sync::mpsc::channel(1);
     commands
         .send(crate::Command::Apply(share.clone()))
@@ -719,14 +719,14 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
     let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
     let (events, _) = iced::futures::channel::mpsc::unbounded();
     assert!(matches!(
-        crate::share_control(
+        crate::share_session::share_control(
             &mut receiver,
             std::future::pending(),
             &mut server,
             &host,
             "http://127.0.0.1:1",
             &events,
-            crate::ControlMedia::Sleeping(&mut media),
+            crate::share_session::ControlMedia::Sleeping(&mut media),
         )
         .await,
         crate::ShareStop::Wake
@@ -734,41 +734,41 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
     assert_eq!(media.current, share);
     commands.send(crate::Command::End).await.unwrap();
     assert!(matches!(
-        crate::share_control(
+        crate::share_session::share_control(
             &mut receiver,
             std::future::pending(),
             &mut server,
             &host,
             "http://127.0.0.1:1",
             &events,
-            crate::ControlMedia::Sleeping(&mut media),
+            crate::share_session::ControlMedia::Sleeping(&mut media),
         )
         .await,
         crate::ShareStop::End
     ));
     commands.send(crate::Command::Quit).await.unwrap();
     assert!(matches!(
-        crate::share_control(
+        crate::share_session::share_control(
             &mut receiver,
             std::future::pending(),
             &mut server,
             &host,
             "http://127.0.0.1:1",
             &events,
-            crate::ControlMedia::Sleeping(&mut media),
+            crate::share_session::ControlMedia::Sleeping(&mut media),
         )
         .await,
         crate::ShareStop::Quit
     ));
     assert!(matches!(
-        crate::share_control(
+        crate::share_session::share_control(
             &mut receiver,
             std::future::pending(),
             &mut server,
             &host,
             "http://127.0.0.1:1",
             &events,
-            crate::ControlMedia::Sleeping(&mut media),
+            crate::share_session::ControlMedia::Sleeping(&mut media),
         )
         .await,
         crate::ShareStop::Wake

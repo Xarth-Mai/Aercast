@@ -272,7 +272,7 @@ as Block.
 
 ## Engineering decisions
 
-`media.rs` owns encoder probing, GStreamer pipeline construction, execution, and media error classification; `portal.rs` owns ScreenCast capability negotiation and the source-selection request. They exchange the existing share snapshots, commands, and events without changing the single-process runtime or Portal consent boundary
+`main.rs` holds the executable entry point and shared command/event contract. `ui.rs` owns GUI state, settings drafts, updates, views, and desktop lifecycle; it sends commands and consumes Host events. `share_session.rs` owns the HTTP server and Portal session lifetime, media sleep/wake, settings application, rollback, and bounded recovery. `media.rs` owns encoder probing, GStreamer pipeline construction/execution, and media error classification; `portal.rs` owns ScreenCast capability negotiation and source-selection requests. Backend modules do not import GUI state or call UI functions; they retain the existing single-process command/event model and Portal consent boundary
 
 - One Rust process owns one Portal source and, while media is awake, one
   GStreamer capture, encode, and mux pipeline per share regardless of Viewer

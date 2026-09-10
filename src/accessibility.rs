@@ -14,8 +14,8 @@ use iced::{
     widget::{Button, Checkbox, Id, TextInput, container},
 };
 
-use super::Message;
 use super::appearance::CONTROL_HEIGHT;
+use crate::ui::Message;
 
 enum Keys {
     None,

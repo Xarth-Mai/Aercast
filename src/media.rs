@@ -1,4 +1,6 @@
-use crate::{Events, HostEvent, Result, ShareSettings, ShareStop, audio, settings, web};
+use crate::{
+    AudioSettings, Events, HostEvent, Result, ShareSettings, ShareStop, audio, settings, web,
+};
 use futures_util::{FutureExt, StreamExt};
 use gst::prelude::*;
 use gst_app::AppSinkCallbacks;
@@ -429,10 +431,28 @@ fn hardware_video_error(message: &gst::Message) -> bool {
     }
 }
 
+pub(crate) fn audio_settings(settings: &settings::Settings) -> AudioSettings {
+    AudioSettings {
+        enabled: settings.system_audio,
+        bitrate_kbps: settings.audio_bitrate_kbps,
+        exclude_communication: settings.exclude_communication_audio,
+        exclusions: settings
+            .audio_exclusions
+            .iter()
+            .filter(|exclusion| exclusion.enabled)
+            .map(|exclusion| exclusion.identity.clone())
+            .collect(),
+    }
+}
+
+pub(crate) fn same_saved_media(left: &ShareSettings, right: &ShareSettings) -> bool {
+    left.audio == right.audio && left.video.settings == right.video.settings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MAX_MEDIA_RECOVERIES, should_fallback};
+    use crate::share_session::{MAX_MEDIA_RECOVERIES, should_fallback};
     fn gst_error<T: gst::message::MessageErrorDomain>(
         source: &str,
         error: T,

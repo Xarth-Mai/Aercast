@@ -4,7 +4,7 @@ use iced::futures::channel::mpsc::UnboundedSender;
 use ksni::{MenuItem, ToolTip, TrayMethods as _, menu::StandardItem};
 use tokio::sync::watch;
 
-use super::{Message, Phase, TrayState};
+use crate::ui::{Message, Phase, TrayState};
 
 const ICON_SIZE: usize = 64;
 
