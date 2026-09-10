@@ -710,6 +710,7 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
             encoder: crate::Encoder::X264,
         },
     };
+    let mut media = crate::MediaSettings::new(share.clone());
     let (commands, mut receiver) = tokio::sync::mpsc::channel(1);
     commands
         .send(crate::Command::Apply(share.clone()))
@@ -725,11 +726,12 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            None,
+            crate::ControlMedia::Sleeping(&mut media),
         )
         .await,
-        crate::ShareStop::Apply(current) if current == share
+        crate::ShareStop::Wake
     ));
+    assert_eq!(media.current, share);
     commands.send(crate::Command::End).await.unwrap();
     assert!(matches!(
         crate::share_control(
@@ -739,7 +741,7 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            None,
+            crate::ControlMedia::Sleeping(&mut media),
         )
         .await,
         crate::ShareStop::End
@@ -753,7 +755,7 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            None,
+            crate::ControlMedia::Sleeping(&mut media),
         )
         .await,
         crate::ShareStop::Quit
@@ -766,7 +768,7 @@ async fn sleeping_controls_win_without_consuming_the_pending_wake() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            None,
+            crate::ControlMedia::Sleeping(&mut media),
         )
         .await,
         crate::ShareStop::Wake

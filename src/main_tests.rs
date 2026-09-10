@@ -372,7 +372,7 @@ async fn active_control_sleeps_after_the_fixed_ready_grace() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            Some(ready),
+            ControlMedia::Active(ready),
         ),
     )
     .await
@@ -400,7 +400,7 @@ async fn sleeping_refresh_rotates_the_generation_without_waking() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            None,
+            ControlMedia::Sleeping(&mut MediaSettings::new(test_share(true))),
         )
         .await,
         ShareStop::End
@@ -423,7 +423,7 @@ async fn server_failure_is_terminal_control() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            Some(watch::channel(false).1),
+            ControlMedia::Active(watch::channel(false).1),
         )
         .await,
         ShareStop::Failed(_)
@@ -448,7 +448,7 @@ async fn apply_requests_a_media_restart_without_reclassifying_control() {
             &host,
             "http://127.0.0.1:1",
             &events,
-            None,
+            ControlMedia::Active(watch::channel(false).1),
         )
         .await,
         ShareStop::Apply(share) if share == test_share(false)
@@ -839,43 +839,25 @@ fn media_apply_preserves_the_previous_full_snapshot_for_one_attempt() {
     next.video.settings.width = 1920;
     next.video.settings.height = 1080;
     next.video.settings.bitrate_mbps = Some(12);
-    let mut current = old.clone();
-    let mut rollback = None;
-    let mut recoveries = MAX_MEDIA_RECOVERIES;
-    let mut fallback_attempted = true;
-    let mut capture_caps = Some(gst::Caps::new_any());
+    let mut state = MediaSettings::new(old.clone());
+    state.recoveries = MAX_MEDIA_RECOVERIES;
+    state.fallback_attempted = true;
+    state.capture_caps = Some(gst::Caps::new_any());
+    state.apply(next.clone());
+    assert_eq!(state.current, next);
+    assert_eq!(state.rollback, Some(old));
+    assert_eq!(state.recoveries, 0);
+    assert!(!state.fallback_attempted);
+    assert!(state.capture_caps.is_none());
 
-    begin_media_apply(
-        &mut current,
-        &mut rollback,
-        next.clone(),
-        &mut recoveries,
-        &mut fallback_attempted,
-        &mut capture_caps,
-    );
-
-    assert_eq!(current, next);
-    assert_eq!(rollback, Some(old));
-    assert_eq!(recoveries, 0);
-    assert!(!fallback_attempted);
-    assert!(capture_caps.is_none());
-
-    let mut sleeping = test_share(true);
-    let previous = sleeping.clone();
+    let previous = test_share(true);
+    let mut sleeping = MediaSettings::new(previous.clone());
+    sleeping.capture_caps = Some(gst::Caps::new_any());
     let audio_only = test_share(false);
-    let mut sleeping_rollback = None;
-    let mut retained_caps = Some(gst::Caps::new_any());
-    begin_media_apply(
-        &mut sleeping,
-        &mut sleeping_rollback,
-        audio_only.clone(),
-        &mut recoveries,
-        &mut fallback_attempted,
-        &mut retained_caps,
-    );
-    assert_eq!(sleeping, audio_only);
-    assert_eq!(sleeping_rollback, Some(previous));
-    assert!(retained_caps.is_some());
+    sleeping.apply(audio_only.clone());
+    assert_eq!(sleeping.current, audio_only);
+    assert_eq!(sleeping.rollback, Some(previous));
+    assert!(sleeping.capture_caps.is_some());
 }
 
 #[test]
@@ -1169,4 +1151,88 @@ fn viewers_view_handles_identical_ips() {
     app.viewers = test_viewers(2, true);
     app.viewers[1].ip = "192.0.2.1".parse().unwrap();
     let _ = viewers_view(&app);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sleeping_apply_waits_for_a_valid_viewer_before_media_can_restart() {
+    let host = web::Host::new().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown, stopped) = oneshot::channel();
+    let mut server = tokio::spawn(web::serve(listener, host.clone(), stopped));
+    let (commands, mut receiver) = mpsc::channel(2);
+    let (events, mut received) = iced::futures::channel::mpsc::unbounded();
+    let (ready_sender, ready) = watch::channel(true);
+    assert!(matches!(
+        share_control(
+            &mut receiver,
+            std::future::pending(),
+            &mut server,
+            &host,
+            "http://127.0.0.1",
+            &events,
+            ControlMedia::Active(ready)
+        )
+        .await,
+        ShareStop::Sleep
+    ));
+    drop(ready_sender);
+
+    let previous = test_share(true);
+    let mut state = MediaSettings::new(previous.clone());
+    let mut next = test_share(false);
+    next.audio.bitrate_kbps = 160;
+    commands
+        .send(Command::Apply(test_share(false)))
+        .await
+        .unwrap();
+    commands.send(Command::Apply(next.clone())).await.unwrap();
+    {
+        let sleeping = share_control(
+            &mut receiver,
+            std::future::pending(),
+            &mut server,
+            &host,
+            "http://127.0.0.1",
+            &events,
+            ControlMedia::Sleeping(&mut state),
+        );
+        tokio::pin!(sleeping);
+        // The production caller cannot open the remote or construct media until this returns
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), sleeping.as_mut())
+                .await
+                .is_err()
+        );
+        let mut applied = Vec::new();
+        while let Some(Some(event)) = received.next().now_or_never() {
+            if let HostEvent::Sharing(settings) = event {
+                applied.push(settings);
+            }
+        }
+        assert_eq!(applied, vec![test_share(false), next.clone()]);
+        let path = host.path().unwrap();
+        let request = tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Write};
+            let mut socket = std::net::TcpStream::connect(address).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(socket, "GET {path}/stream HTTP/1.1\r\nHost: localhost\r\nAercast-Viewer-ID: 11111111111111111111111111111111\r\nConnection: close\r\n\r\n").unwrap();
+            let mut response = String::new();
+            socket.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 425"));
+        });
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), sleeping.as_mut())
+                .await
+                .unwrap(),
+            ShareStop::Wake
+        ));
+        request.await.unwrap();
+    }
+    assert_eq!(state.current, next);
+    assert_eq!(state.rollback, Some(previous));
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
 }

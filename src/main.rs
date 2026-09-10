@@ -2914,21 +2914,39 @@ fn link_base(base_url: Option<&str>, address: SocketAddr) -> String {
     }
 }
 
-fn begin_media_apply(
-    current: &mut ShareSettings,
-    rollback: &mut Option<ShareSettings>,
-    next: ShareSettings,
-    recoveries: &mut u8,
-    fallback_attempted: &mut bool,
-    capture_caps: &mut Option<gst::Caps>,
-) {
-    *rollback = Some(current.clone());
-    if current.video != next.video {
-        *capture_caps = None;
+struct MediaSettings {
+    current: ShareSettings,
+    rollback: Option<ShareSettings>,
+    recoveries: u8,
+    fallback_attempted: bool,
+    capture_caps: Option<gst::Caps>,
+}
+
+impl MediaSettings {
+    fn apply(&mut self, next: ShareSettings) {
+        self.rollback.get_or_insert_with(|| self.current.clone());
+        if self.current.video != next.video {
+            self.capture_caps = None;
+        }
+        self.current = next;
+        self.recoveries = 0;
+        self.fallback_attempted = false;
     }
-    *current = next;
-    *recoveries = 0;
-    *fallback_attempted = false;
+
+    fn new(current: ShareSettings) -> Self {
+        Self {
+            current,
+            rollback: None,
+            recoveries: 0,
+            fallback_attempted: false,
+            capture_caps: None,
+        }
+    }
+}
+
+enum ControlMedia<'a> {
+    Active(watch::Receiver<bool>),
+    Sleeping(&'a mut MediaSettings),
 }
 
 fn same_saved_media(left: &ShareSettings, right: &ShareSettings) -> bool {
@@ -2955,7 +2973,6 @@ async fn share_once(
     server: &mut Server,
     events: &Events,
 ) -> Result<ShareStop> {
-    let mut current = share;
     let portal = Screencast::new().await?;
     let available_sources = portal.available_source_types().await?;
     let available_cursors = portal.available_cursor_modes().await?;
@@ -3071,11 +3088,8 @@ async fn share_once(
     };
     let _ = events.unbounded_send(HostEvent::Source(source));
 
-    let mut capture_caps = None;
-    let mut recoveries = 0;
-    let mut fallback_attempted = false;
+    let mut media_settings = MediaSettings::new(share);
     let mut sleeping = false;
-    let mut rollback = None;
     let result = loop {
         if sleeping {
             match share_control(
@@ -3087,21 +3101,10 @@ async fn share_once(
                 host,
                 link_base,
                 events,
-                None,
+                ControlMedia::Sleeping(&mut media_settings),
             )
             .await
             {
-                ShareStop::Apply(next) => {
-                    begin_media_apply(
-                        &mut current,
-                        &mut rollback,
-                        next,
-                        &mut recoveries,
-                        &mut fallback_attempted,
-                        &mut capture_caps,
-                    );
-                    sleeping = false;
-                }
                 ShareStop::Wake => {
                     if let Err(error) = host.clear_media_demand() {
                         break Ok(ShareStop::Failed(error.into()));
@@ -3123,7 +3126,7 @@ async fn share_once(
             host,
             link_base,
             events,
-            Some(ready),
+            ControlMedia::Active(ready),
         );
         tokio::pin!(control);
         let mut media = None;
@@ -3143,14 +3146,14 @@ async fn share_once(
                                 let description = pipeline_description(
                                     node_id,
                                     remote.as_raw_fd(),
-                                    current.video,
-                                    current.audio.bitrate_kbps,
+                                    media_settings.current.video,
+                                    media_settings.current.audio.bitrate_kbps,
                                 );
                                 media = Some(active.clone());
                                 serve_video(
                                     &description,
-                                    &mut capture_caps,
-                                    current.clone(),
+                                    &mut media_settings.capture_caps,
+                                    media_settings.current.clone(),
                                     active,
                                     fragment_ready,
                                     &mut reached_sharing,
@@ -3182,21 +3185,14 @@ async fn share_once(
         }
 
         if reached_sharing {
-            rollback = None;
+            media_settings.rollback = None;
         }
         if let Ok(ShareStop::Apply(next)) = &attempt {
-            begin_media_apply(
-                &mut current,
-                &mut rollback,
-                next.clone(),
-                &mut recoveries,
-                &mut fallback_attempted,
-                &mut capture_caps,
-            );
+            media_settings.apply(next.clone());
             continue;
         }
         if matches!(&attempt, Ok(ShareStop::Sleep)) {
-            recoveries = 0;
+            media_settings.recoveries = 0;
             sleeping = true;
             continue;
         }
@@ -3210,18 +3206,11 @@ async fn share_once(
         {
             match stop {
                 ShareStop::Apply(next) => {
-                    begin_media_apply(
-                        &mut current,
-                        &mut rollback,
-                        next,
-                        &mut recoveries,
-                        &mut fallback_attempted,
-                        &mut capture_caps,
-                    );
+                    media_settings.apply(next);
                     continue;
                 }
                 ShareStop::Sleep => {
-                    recoveries = 0;
+                    media_settings.recoveries = 0;
                     sleeping = true;
                     continue;
                 }
@@ -3230,12 +3219,18 @@ async fn share_once(
             }
         }
 
-        if let Some(error) = media_apply_failure(&attempt, reached_sharing, rollback.is_some()) {
+        if let Some(error) =
+            media_apply_failure(&attempt, reached_sharing, media_settings.rollback.is_some())
+        {
             let error = error.to_string();
-            current = rollback.take().expect("rollback checked above");
-            capture_caps = None;
-            recoveries = 0;
-            fallback_attempted = false;
+            media_settings.current = media_settings
+                .rollback
+                .take()
+                .expect("media_settings.rollback checked above");
+            media_settings.capture_caps = None;
+            media_settings.recoveries = 0;
+            media_settings.fallback_attempted = false;
+            let _ = events.unbounded_send(HostEvent::Sharing(media_settings.current.clone()));
             let _ = events.unbounded_send(HostEvent::ApplyFailed(format!(
                 "Could not apply the saved media settings: {error}. Restored the previous active settings."
             )));
@@ -3243,14 +3238,19 @@ async fn share_once(
         }
 
         if attempt.as_ref().err().is_some_and(|error| {
-            should_fallback(current.video, fallback_attempted, recoveries, error)
+            should_fallback(
+                media_settings.current.video,
+                media_settings.fallback_attempted,
+                media_settings.recoveries,
+                error,
+            )
         }) {
-            fallback_attempted = true;
+            media_settings.fallback_attempted = true;
             eprintln!(
                 "VA-API media path failed; probing x264 for recovery {}/{MAX_MEDIA_RECOVERIES}",
-                recoveries + 1,
+                media_settings.recoveries + 1,
             );
-            let settings = current.video.settings;
+            let settings = media_settings.current.video.settings;
             let mut probe =
                 tokio::task::spawn_blocking(move || plan_encoder(settings, Encoder::X264));
             enum Fallback<T> {
@@ -3264,28 +3264,21 @@ async fn share_once(
             };
             match fallback {
                 Fallback::Control(ShareStop::Apply(next)) => {
-                    begin_media_apply(
-                        &mut current,
-                        &mut rollback,
-                        next,
-                        &mut recoveries,
-                        &mut fallback_attempted,
-                        &mut capture_caps,
-                    );
+                    media_settings.apply(next);
                     continue;
                 }
                 Fallback::Control(ShareStop::Sleep) => {
-                    fallback_attempted = false;
-                    recoveries = 0;
+                    media_settings.fallback_attempted = false;
+                    media_settings.recoveries = 0;
                     sleeping = true;
                     continue;
                 }
                 Fallback::Control(ShareStop::Wake) => {}
                 Fallback::Control(stop) => break Ok(stop),
                 Fallback::Probe(Ok(Ok(plan))) => {
-                    recoveries += 1;
-                    current.video = plan;
-                    capture_caps = None;
+                    media_settings.recoveries += 1;
+                    media_settings.current.video = plan;
+                    media_settings.capture_caps = None;
                     continue;
                 }
                 Fallback::Probe(Ok(Err(error))) => attempt = Err(error),
@@ -3296,31 +3289,25 @@ async fn share_once(
             }
         }
 
-        if !should_retry(&attempt, recoveries) {
+        if !should_retry(&attempt, media_settings.recoveries) {
             break attempt;
         }
-        recoveries += 1;
+        media_settings.recoveries += 1;
         if let Err(error) = &attempt {
             eprintln!(
-                "Media attempt failed; recovery {recoveries}/{MAX_MEDIA_RECOVERIES}: {error}"
+                "Media attempt failed; recovery {}/{MAX_MEDIA_RECOVERIES}: {error}",
+                media_settings.recoveries
             );
         }
         tokio::select! {
             biased;
             stop = control.as_mut() => match stop {
                 ShareStop::Apply(next) => {
-                    begin_media_apply(
-                        &mut current,
-                        &mut rollback,
-                        next,
-                        &mut recoveries,
-                        &mut fallback_attempted,
-                        &mut capture_caps,
-                    );
+                    media_settings.apply(next);
                     continue;
                 }
                 ShareStop::Sleep => {
-                    recoveries = 0;
+                    media_settings.recoveries = 0;
                     sleeping = true;
                     continue;
                 }
@@ -3358,7 +3345,7 @@ async fn share_control(
     host: &web::Host,
     link_base: &str,
     events: &Events,
-    mut media_ready: Option<watch::Receiver<bool>>,
+    mut media_state: ControlMedia<'_>,
 ) -> ShareStop {
     let mut viewer_updates = match host.viewer_updates() {
         Ok(viewers) => viewers,
@@ -3374,7 +3361,7 @@ async fn share_control(
     };
     let mut online = viewers.iter().filter(|viewer| viewer.online()).count();
     let _ = events.unbounded_send(HostEvent::Viewers(viewers));
-    let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+    let ready = matches!(&media_state, ControlMedia::Active(ready) if *ready.borrow());
     let mut deadline = idle_deadline(None, ready, online, Instant::now());
     tokio::pin!(session_closed);
     loop {
@@ -3388,7 +3375,7 @@ async fn share_control(
             PortalClosed,
             Server(std::result::Result<io::Result<()>, tokio::task::JoinError>),
         }
-        let sleeping = media_ready.is_none();
+        let sleeping = matches!(media_state, ControlMedia::Sleeping(_));
         let idle_at = deadline;
         let event = tokio::select! {
             biased;
@@ -3398,9 +3385,9 @@ async fn share_control(
             signal = tokio::signal::ctrl_c() => ControlEvent::Signal(signal),
             changed = viewer_updates.changed() => ControlEvent::Viewers(changed.is_ok()),
             changed = async {
-                match media_ready.as_mut() {
-                    Some(ready) => ready.changed().await.is_ok(),
-                    None => std::future::pending().await,
+                match &mut media_state {
+                    ControlMedia::Active(ready) => ready.changed().await.is_ok(),
+                    ControlMedia::Sleeping(_) => std::future::pending().await,
                 }
             } => ControlEvent::Ready(changed),
             changed = async {
@@ -3434,7 +3421,13 @@ async fn share_control(
             }
             ControlEvent::Command(command) => match command.unwrap_or(Command::Quit) {
                 Command::Start(..) => println!("A share is already active."),
-                Command::Apply(audio) => return ShareStop::Apply(audio),
+                Command::Apply(next) => match &mut media_state {
+                    ControlMedia::Active(_) => return ShareStop::Apply(next),
+                    ControlMedia::Sleeping(state) => {
+                        state.apply(next);
+                        let _ = events.unbounded_send(HostEvent::Sharing(state.current.clone()));
+                    }
+                },
                 Command::Network(_) => {
                     let _ = events.unbounded_send(HostEvent::NetworkApplied(Err(
                         "Stop sharing before applying network settings".to_owned(),
@@ -3459,7 +3452,8 @@ async fn share_control(
                             Err(error) => return ShareStop::Failed(error.into()),
                         };
                         online = viewers.iter().filter(|viewer| viewer.online()).count();
-                        let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+                        let ready =
+                            matches!(&media_state, ControlMedia::Active(ready) if *ready.borrow());
                         deadline = idle_deadline(deadline, ready, online, Instant::now());
                         let _ = events.unbounded_send(HostEvent::Viewers(viewers));
                         let _ =
@@ -3490,7 +3484,8 @@ async fn share_control(
                 match host.viewers() {
                     Ok(viewers) => {
                         online = viewers.iter().filter(|viewer| viewer.online()).count();
-                        let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+                        let ready =
+                            matches!(&media_state, ControlMedia::Active(ready) if *ready.borrow());
                         deadline = idle_deadline(deadline, ready, online, Instant::now());
                         let _ = events.unbounded_send(HostEvent::Viewers(viewers));
                     }
@@ -3498,7 +3493,7 @@ async fn share_control(
                 }
             }
             ControlEvent::Ready(open) => {
-                let Some(ready) = media_ready.as_mut() else {
+                let ControlMedia::Active(ready) = &mut media_state else {
                     return ShareStop::Failed(
                         io::Error::other("sleeping media received a ready event").into(),
                     );
@@ -3523,7 +3518,7 @@ async fn share_control(
                 }
             }
             ControlEvent::Idle => {
-                let ready = media_ready.as_ref().is_some_and(|ready| *ready.borrow());
+                let ready = matches!(&media_state, ControlMedia::Active(ready) if *ready.borrow());
                 let viewers = match host.viewers() {
                     Ok(viewers) => viewers,
                     Err(error) => return ShareStop::Failed(error.into()),

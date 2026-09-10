@@ -113,11 +113,7 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
   the restricted PipeWire remote and rebuilds the same media pipeline. Page,
   HEAD, telemetry, invalid-token, invalid-identity, blocked-identity, and old
   generation requests do not wake it.
-- Applying current-share quality or audio while asleep updates the Active
-  snapshot without waking media. Refresh Link rotates the token and remains
-  asleep. Stop, Quit, Portal closure, and HTTP server failure remain terminal
-  controls. Successful sleep consumes no media-recovery attempt; wake failures
-  use the existing bounded recovery policy.
+- Applying current-share quality or audio while asleep updates the Active snapshot without waking media. Repeated sleeping applies retain the last successfully running snapshot for rollback; the latest candidate receives its single startup attempt only when a valid Viewer requests a wake. If it fails, Active immediately returns to that successful snapshot while Saved remains unchanged, and restoration uses the bounded recovery policy. Refresh Link rotates the token and remains asleep. Stop, Quit, Portal closure, and HTTP server failure remain terminal controls. Successful sleep consumes no media-recovery attempt; wake failures use the existing bounded recovery policy
 
 ### Viewer management and playback
 
