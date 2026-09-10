@@ -16,7 +16,7 @@ just open a link—no account or app installation needed.
 
 ## Install
 
-Aercast v0.1.4 is an early release for x86-64 Linux.
+Aercast v0.1.5 is an early release for x86-64 Linux.
 
 ### Arch Linux
 
