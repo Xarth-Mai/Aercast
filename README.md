@@ -36,21 +36,24 @@ sudo apt install ./aercast_*.deb
 
 ### Other Linux distributions
 
-Download the prebuilt `.tar` from the [latest release], extract it, and run the
+Download the prebuilt `.tar.gz` from the [latest release], extract it, and run the
 included program:
 
 ```sh
-tar -xf aercast-*.tar
+tar -xzf aercast-*.tar.gz
+cd aercast-v*-x86_64-unknown-linux-gnu
 ./aercast
 ```
 
 [latest release]: https://github.com/Xarth-Mai/Aercast/releases/latest
 
-## Try it
+## Test on this computer
 
 1. Open Aercast and select **Start Sharing**.
 2. Approve one screen or window in the system Portal.
 3. Open the displayed link in a browser on the same computer.
+
+## Share with another device
 
 Aercast listens only on `127.0.0.1` by default. To share across a trusted LAN,
 open **Settings → Network**, use the Host's unicast LAN IP as the listen

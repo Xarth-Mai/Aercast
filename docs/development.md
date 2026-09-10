@@ -320,7 +320,4 @@ as Block.
 - Desktop integration uses iced Wayland/wgpu, `ksni`, direct `zbus`, ashpd, and
   serde. Prefer current dependencies and platform APIs; do not add speculative
   abstraction or cross-platform layers.
-- Pull requests run the canonical static checks on `ubuntu-latest`. A pushed
-  stable `vX.Y.Z` tag must match the Cargo package version before the same
-  checks build and publish x86-64 `.deb` and binary tarball assets.
-  Workflow actions use their latest major release; Arch remains source-built.
+- Pull requests and pushes to `main` run the canonical static checks on `ubuntu-latest`. Release jobs run only for pushed version tags; a stable `vX.Y.Z` tag must match the Cargo package version before checks build and publish x86-64 `.deb` and binary tarball assets. Workflow actions use their latest major release; Arch remains source-built
