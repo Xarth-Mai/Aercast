@@ -272,6 +272,8 @@ as Block.
 
 ## Engineering decisions
 
+`media.rs` owns encoder probing, GStreamer pipeline construction, execution, and media error classification; `portal.rs` owns ScreenCast capability negotiation and the source-selection request. They exchange the existing share snapshots, commands, and events without changing the single-process runtime or Portal consent boundary
+
 - One Rust process owns one Portal source and, while media is awake, one
   GStreamer capture, encode, and mux pipeline per share regardless of Viewer
   count. Completed fMP4 fragments fan out through Axum; bounded per-Viewer
