@@ -6,28 +6,28 @@ or a product specification.
 
 ## Current qualification
 
-Aercast v0.1.4 is distributed through GitHub packages, a prebuilt program
-archive, and AUR, but no artifact install has been recorded here. The latest
-complete real Host/Viewer qualification remains the niri run at revision
-`073169b`. Later changes have not repeated that complete workflow. A partial
-2026-08-29 Portal, PipeWire, and iOS Safari run rejected a lower Viewer-lag
-threshold and restored the smooth 3.0 s policy.
+Aercast v0.1.5 is tagged and its AUR package has passed a local upgrade install on CachyOS. GitHub binary-asset publication is still pending in run `34497535046`. The latest complete real Host/Viewer qualification remains the niri run at revision `073169b`. Later changes have not repeated that complete workflow. A partial 2026-08-29 Portal, PipeWire, and iOS Safari run rejected a lower Viewer-lag threshold and restored the smooth 3.0 s policy
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
 | Idle startup and token rejection | Revision `478f129`: one niri window, loopback-only listener, no Portal or Aercast PipeWire objects, invalid page and stream routes returned `404` | Does not qualify capture, audio, playback, recovery, or current HEAD |
-| Release artifacts | GitHub Actions run `33267353244` passed checks and published the v0.1.4 `.deb` and tarball with asset digests; `makepkg --verifysource` passed and AUR master advanced to v0.1.4-1 at `1bd11b4` | No clean install and launch check from either artifact source |
-| Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.4 behavior has not repeated that acceptance |
+| Release artifacts | v0.1.5 source checksum and `makepkg --noconfirm` passed; AUR `master` is `3df00bd`; local upgrade reports `aercast 0.1.5-1`, eight intact files, and no missing dynamic libraries | Upgrade install only; the existing process was left running, so new-version GUI launch and clean installation remain unqualified; GitHub run `34497535046` is pending |
+| Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.5 behavior has not repeated that acceptance |
 | Cross-platform Viewer | In the 2026-08-29 real iOS A/B described below, the 1.8 s correction reduced reported lag but made playback fall below one frame per second; restoring 3.0 s produced smooth playback with 1.3 s Host-reported lag and about 2 s perceived delay | No safe unified lag reduction was found; exact OS/browser builds and duration remain incomplete, Windows Firefox was not rerun, and neither platform is qualified |
 | Media pipeline optimization | Generated pipeline contracts cover selectable AAC rates, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation, and immediate normal-EOF reconnect; the 2026-08-29 real A/B reached iOS playback at 1080p60/16 Mbps with VA-API | DMA-BUF/zero-copy, Host CPU/GPU, and constrained-network measurements remain unrecorded; zero-copy and latency are unqualified |
 | Stability fixes | The [2026-09-10 checks](#stability-checks) cover sleeping Apply, last-successful-snapshot retention, authorized HTTP wake, and Viewer timeout/retry behavior | Real Portal, audio, desktop-browser, iPhone, and clean-install acceptance was explicitly skipped; no new platform or performance qualification |
 | Host module split | The [module-split checks](#module-split-checks) at `f83a658` cover all runnable Rust tests and a real niri Portal capture start/stop | Partial source-build smoke only; selective audio and browser playback remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
-On 2026-08-30, `makepkg --verifysource` passed against the v0.1.4 tag archive,
-the AUR SSH push advanced `master` to `1bd11b4`, and an HTTPS `git ls-remote`
-returned the same commit. This confirms remote metadata publication, not package
-installation or launch.
+## v0.1.5 package verification
+
+On 2026-09-10, release revision `29d8c48` passed `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (58 passed, five explicitly ignored environment-dependent tests), `bun test tests/viewer-recovery.test.js` (12 passed, 225 assertions), and `git diff --check`
+
+In `aur/aercast`, `makepkg --verifysource` validated the GitHub v0.1.5 tag archive and `CARGO_TARGET_DIR=/home/lzzz/MyProjects/Aercast/target makepkg --noconfirm` built the release binary and passed the same 58 Rust tests; the extracted source's `target` symlink pointed to that shared build directory for packaging
+
+`sudo -n pacman -U --noconfirm /home/lzzz/MyProjects/Aercast/aur/aercast/aercast-0.1.5-1-x86_64.pkg.tar.zst` upgraded the installed 0.1.4-1 package; `pacman -Q aercast` returned `aercast 0.1.5-1`, `pacman -Qkk aercast` reported eight files and zero altered files, and `ldd /usr/bin/aercast` had no missing libraries
+
+AUR publication used `git -c core.sshCommand='ssh -4 -o StrictHostKeyChecking=yes' push origin master`, and remote readback matched `3df00bd`. The existing Aercast process was preserved; these checks establish source build, package tests, publication, and local upgrade integrity, not a new-version GUI launch or real capture/playback acceptance
 
 ## Stability checks
 
@@ -159,7 +159,7 @@ qualification.
 - Windows Chrome, Edge, and Firefox; macOS Safari; and Android Chrome and
   Firefox
 - Mobile 1440p or 120 FPS playback
-- Installation and launch from AUR, `.deb`, or a prebuilt release asset
+- Clean installation and new-version launch from AUR; installation and launch from `.deb` or a prebuilt release asset
 - GNOME, KDE, other distributions, stable desktop Firefox, or Google Chrome
 - Current no-Viewer sleep and wake on the real Portal/VA-API path, including a
   wake-fragment p95 of 500 ms or less
