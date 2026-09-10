@@ -69,15 +69,20 @@ test('425 responses keep polling without a total waiting deadline', async () => 
   expect(b.run('attempt.controller.signal.aborted')).toBe(false);
   expect(calls).toBe(41);
 });
-test('stalled reads abort consumption and stop the playback watchdog', async () => {
+test.each(['read', 'append'])('stalled %s aborts consumption and stops the watchdog', async stalled => {
   const b = browser();
-  const buffer = Object.assign(new EventTarget(), { buffered: { length: 0 } });
+  const buffer = Object.assign(new EventTarget(), { buffered: { length: 0 }, appendBuffer() {} });
+  b.video.paused = true;
+  b.run('attempt.positioned = true');
   b.context.buffer = buffer;
   b.run('attempt.opened = Promise.resolve(); attempt.media = { addSourceBuffer: () => buffer }');
-  b.context.response = { body: { getReader: () => ({ read: () => new Promise(() => {}) }) } };
+  b.context.response = { body: { getReader: () => ({ read: () => stalled === 'read'
+    ? new Promise(() => {})
+    : Promise.resolve({ done: false, value: new Uint8Array([1]) }) }) } };
   const result = b.run('consume(attempt, response, "video/mp4")').catch(e => e);
   await b.advance(15000);
-  expect((await result).message).toMatch(/no (data|progress)/);
+  expect((await result).message).toBe(stalled === 'read'
+    ? 'Stream received no data' : 'Media append made no progress');
   expect(b.run('attempt.controller.signal.aborted')).toBe(true);
   expect([...b.timers.values()].filter(t => t.interval)).toHaveLength(0);
 });

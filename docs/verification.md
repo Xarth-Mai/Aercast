@@ -20,13 +20,31 @@ threshold and restored the smooth 3.0 s policy.
 | Full product workflow | Revision `073169b` passed the recorded niri workflow | Current v0.1.4 behavior has not repeated that acceptance |
 | Cross-platform Viewer | In the 2026-08-29 real iOS A/B described below, the 1.8 s correction reduced reported lag but made playback fall below one frame per second; restoring 3.0 s produced smooth playback with 1.3 s Host-reported lag and about 2 s perceived delay | No safe unified lag reduction was found; exact OS/browser builds and duration remain incomplete, Windows Firefox was not rerun, and neither platform is qualified |
 | Media pipeline optimization | Generated pipeline contracts cover selectable AAC rates, 100 ms x264 VBV and VA-API CPB constraints, VA-memory negotiation, and immediate normal-EOF reconnect; the 2026-08-29 real A/B reached iOS playback at 1080p60/16 Mbps with VA-API | DMA-BUF/zero-copy, Host CPU/GPU, and constrained-network measurements remain unrecorded; zero-copy and latency are unqualified |
-| Idle-media Host candidate | 2026-08-30 current working tree: formatting, Clippy with warnings denied, all 57 runnable Rust tests, and diff whitespace checks passed; five environment-dependent tests remained ignored | No current Portal, VA-API, vkmark, Zen, Chromium, or external-Viewer run; AMD throughput, power savings, wake latency, and regression limits remain unqualified |
+| Stability fixes | The [2026-09-10 checks](#stability-checks) cover sleeping Apply, last-successful-snapshot retention, authorized HTTP wake, and Viewer timeout/retry behavior | Real Portal, audio, desktop-browser, iPhone, and clean-install acceptance was explicitly skipped; no new platform or performance qualification |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
 On 2026-08-30, `makepkg --verifysource` passed against the v0.1.4 tag archive,
 the AUR SSH push advanced `master` to `1bd11b4`, and an HTTPS `git ls-remote`
 returned the same commit. This confirms remote metadata publication, not package
 installation or launch.
+
+## Stability checks
+
+Production revision: `7ad834c` (2026-09-10), comprising the sleeping-Apply fix `97f38fc`, archive/CI fix `2d29e7c`, Viewer recovery `a225517`, and Bun runner conversion `7ad834c`. The final bundled test revision additionally isolates read and append timeout assertions from the playback watchdog
+
+Environment: CachyOS, Linux `7.2.3-1-cachyos`, Rust/Cargo `1.98.1`, Bun `1.4.0`
+
+| Command or scenario | Observed result | Evidence boundary |
+| --- | --- | --- |
+| `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` | Passed | Static Rust checks |
+| `cargo test` | 58 passed, 0 failed, 5 explicitly ignored environment-dependent tests | Includes the real local HTTP route and control loop, with permission to bind temporary loopback ports; no Portal or media-pipeline acceptance |
+| `cargo test sleeping -- --nocapture` and `cargo test media_apply -- --nocapture` | 3 sleeping checks and 2 apply checks passed | Ready grace reaches Sleep; repeated Apply emits the new Active snapshot while control stays pending; a valid HTTP stream request returns `425` and releases Wake with the latest candidate and original rollback snapshot |
+| `bun test tests/viewer-recovery.test.js` | 12 passed, 0 failed, 225 assertions | Uses the shipped Viewer script with browser API doubles and a virtual clock; separately exercises connection, read, append, decoder, media-source opening, waiting, pause/visibility, bounded jitter, normal EOF, and inactive retry; no real-browser playback claim |
+| `git diff --check` and staged whitespace checks | Passed | Local patches only; GitHub Actions has not run these new commits |
+| Downloaded v0.1.4 tarball; `tar -xzf aercast-*.tar.gz` then `cd aercast-v*-x86_64-unknown-linux-gnu`; executable-mode and `ldd ./aercast` checks | Archive directory and executable match the corrected README; no missing dynamic libraries on this host | Extraction and local dependency resolution only; `./aercast` from the release package and clean installation were not accepted |
+| CI YAML trigger check | `main` and `v*` pushes enabled; release restricted to version-tag push; Bun test command configured | Local configuration inspection, not a hosted CI run |
+
+A source GUI was launched with `WAYLAND_DISPLAY=wayland-1 cargo run`, but the desktop was locked before interactive Portal selection. The user requested skipping this part; the process was stopped with SIGINT, and absence of the process and port `8877` listener was confirmed. AUR, `.deb`, archive GUI startup, Portal/PipeWire capture, desktop-browser/iPhone playback, multi-Viewer and slow-client real checks, same-link stop/start, wake failure rollback, long-duration playback, frame drops, and end-to-end latency remain unverified for the current revision. No screenshot or demonstration was captured
 
 ## Recorded environment
 
