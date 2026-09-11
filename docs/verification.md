@@ -6,7 +6,7 @@ or a product specification.
 
 ## Current qualification
 
-Aercast v0.1.5 is tagged and its AUR package has passed a local upgrade install on CachyOS. GitHub binary-asset publication is still pending in run `34497535046`. The latest complete real Host/Viewer qualification remains the niri run at revision `073169b`. Later changes have not repeated that complete workflow. A partial 2026-08-29 Portal, PipeWire, and iOS Safari run rejected a lower Viewer-lag threshold and restored the smooth 3.0 s policy
+Aercast v0.1.6 passed local automated checks and release compilation; GitHub publication and AUR installation are pending. The latest complete real Host/Viewer qualification remains the niri run at revision `073169b`; this release does not add real Portal, audio, browser, or device qualification
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
@@ -18,6 +18,10 @@ Aercast v0.1.5 is tagged and its AUR package has passed a local upgrade install 
 | Stability fixes | The [2026-09-10 checks](#stability-checks) cover sleeping Apply, last-successful-snapshot retention, authorized HTTP wake, and Viewer timeout/retry behavior | Real Portal, audio, desktop-browser, iPhone, and clean-install acceptance was explicitly skipped; no new platform or performance qualification |
 | Host module split | The [module-split checks](#module-split-checks) at `f83a658` cover all runnable Rust tests and a real niri Portal capture start/stop | Partial source-build smoke only; selective audio and browser playback remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
+
+## v0.1.6 release verification
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (61 passed, seven environment-dependent tests ignored), `bun test tests/viewer-recovery.test.js` (13 passed, 251 assertions), `cargo build --locked --release`, and `git diff --check` passed on the versioned v0.1.6 source. Publication and installation remain pending; no GUI or real sharing check was performed
 
 ## Host readability check
 
