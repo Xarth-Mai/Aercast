@@ -55,6 +55,7 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
   defined in [UI design](ui-design.md#window-and-layout).
 - Its icon-and-text sidebar switches among **Overview**, **Viewers**, and
   **Settings**.
+- The sidebar footer labels both network and terminal failures as **Error**; Overview retains the detailed cause
 - Closing the Host window from the compositor hides it without stopping a
   share, discarding a Settings draft, or exiting. `iced::daemon` keeps the
   process alive. The compositor title bar is the only window-close control.

@@ -1733,12 +1733,11 @@ fn sidebar(app: &App) -> Element<'_, Message> {
     };
     let status_text = match &app.phase {
         Phase::Starting => "Starting…",
-        Phase::NetworkError(_) => "Network error",
         Phase::Waiting => "Ready",
         Phase::Selecting => "Selecting…",
         Phase::Sharing => "Sharing",
         Phase::Ending => "Stopping…",
-        Phase::Error(_) => "Error",
+        Phase::NetworkError(_) | Phase::Error(_) => "Error",
     };
     let status_color = if app.phase == Phase::Sharing {
         app.appearance.theme.extended_palette().primary.strong.color
