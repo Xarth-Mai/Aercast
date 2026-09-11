@@ -41,7 +41,7 @@ cargo build --locked --release
 git diff --check
 ```
 
-Any failure blocks publication. Diagnose environmental failures and obtain the needed tool permission before rerunning; do not skip failing checks. Record ignored tests and the scope of the result. Changes after validation require the affected checks again; use `docs/verification.md` for current evidence without adding a run diary or claiming unperformed real checks
+Any failure in these local checks blocks publication. Diagnose environmental failures and obtain the needed tool permission before rerunning; do not skip failing checks. Record ignored tests and the scope of the result. Changes after validation require the affected checks again; use `docs/verification.md` for current evidence without adding a run diary or claiming unperformed real checks
 
 Stage only the release changes. Follow the repository's `ponytail-review` and staged validation gate, then commit as `chore(release): prepare vX.Y.Z`. Verify that the commit contains the tested version and the working tree is clean
 
@@ -54,9 +54,11 @@ git tag -a vX.Y.Z -m "Release vX.Y.Z"
 git push --atomic origin main refs/tags/vX.Y.Z
 ```
 
-Verify the remote branch and peeled tag commit. Locate the Actions run for this tag's push and exact commit, not merely the newest main-branch run. Wait for its checks and release job to succeed, then verify the GitHub Release contains `aercast-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` and `aercast_X.Y.Z_amd64.deb`, or the corresponding names defined by the current workflow
+Verify the remote branch and peeled tag commit, then continue to AUR without waiting for GitHub Actions by default. The AUR source is the pushed tag archive and does not depend on GitHub Release binary assets. Local release checks and the AUR source, build, and test checks remain required
 
-Do not publish AUR until GitHub release completion is established. A main-branch CI success alone is insufficient. Report a failed or still-running release accurately; do not manually create a competing release or replace an existing tag to bypass the workflow
+Query the tag-push run for the exact commit once for reporting; if it is not yet listed or the status query fails, report that status as unverified and continue without polling. Pending or failed GitHub Actions do not block independently validated AUR publication and local installation; report GitHub publication separately. Do not manually create a competing release or replace the tag
+
+If the user explicitly asks to wait for GitHub, wait for the tag checks and release job to succeed before publishing AUR, then verify the expected `.tar.gz` and `.deb` assets from the current workflow. Main-branch CI success is not evidence of tag release completion
 
 ## 4. Build and publish AUR
 
@@ -70,7 +72,7 @@ Identify the exact newly built package via `makepkg --packagelist`; inspect its 
 
 After build and tests pass, review and commit only `PKGBUILD` and `.SRCINFO` as `chore(release): bump AUR package to X.Y.Z`, following the repository's commit gate. Push AUR `master` and verify its remote commit
 
-Return to the main repository, stage only the new `aur/aercast` gitlink, review and commit as `chore(aur): track aercast X.Y.Z`, then push `main`. Keep the release tag on the original release commit; this follow-up records the package publication without retagging. Observe the follow-up CI result separately from the tag release run
+Return to the main repository, stage only the new `aur/aercast` gitlink, review and commit as `chore(aur): track aercast X.Y.Z`, then push `main`. Keep the release tag on the original release commit; this follow-up records the package publication without retagging. Report the follow-up CI status separately from the tag release run without waiting by default
 
 ## 5. Install and report
 
@@ -78,12 +80,12 @@ Install the exact package built and inspected above with `sudo pacman -U <packag
 
 Verify `pacman -Q aercast` matches the intended `X.Y.Z-1` and use package ownership/file checks to confirm `/usr/bin/aercast`, the desktop entry, and icon are installed. Installation does not replace an already-running process and does not require launching the program
 
-Report the version, release commit and tag, tag Actions run and Release URL, AUR commit, main-repository gitlink commit and CI result, installed package version, actual checks, ignored tests, and any unfinished step. Retain the verified package for installation retry
+Report the version, release commit and tag, tag Actions run and last observed status, Release URL only if confirmed, AUR commit, main-repository gitlink commit and CI result, installed package version, actual checks, ignored tests, and any unfinished step. Retain the verified package for installation retry
 
 ## Resume and failure handling
 
-Stop downstream publication on failure and report the last completed stage. Before retrying, inspect remote state and existing artifacts; a failed connection may have completed its push
+Stop dependent steps on local validation, source verification, build, or push failure and report the last completed stage. GitHub Actions follows the non-waiting default above; its result is a separate publication outcome. Before retrying, inspect remote state and existing artifacts; a failed connection may have completed its push
 
 For an existing tag, verify its peeled commit and version before resuming Actions or AUR work. Reuse a matching release instead of creating another version. A conflicting tag or immutable published source requires an explicit resolution; never move or overwrite it
 
-If AUR publication succeeds but installation fails, report publication and installation separately and retry installation of the same verified package. If the gitlink push or its CI fails, retain and report that outstanding step rather than claiming the full workflow completed
+If AUR publication succeeds but installation fails, report publication and installation separately and retry installation of the same verified package. If the gitlink push fails, retain and report that outstanding step. Report pending, failed, or unverified CI and Release assets separately from completed AUR publication and installation; do not wait for them unless requested
