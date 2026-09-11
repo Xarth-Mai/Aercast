@@ -290,6 +290,7 @@ pub(crate) fn pipeline_description(
     audio_bitrate_kbps: u32,
 ) -> String {
     let video = plan.settings;
+    // GStreamer colorimetry is range:matrix:transfer:primaries; 1:3:5:1 is full-range BT.709
     let video_pipeline = match plan.encoder {
         Encoder::VaApi => {
             let bitrate = video.bitrate_mbps.map_or_else(String::new, |bitrate| {
@@ -297,13 +298,14 @@ pub(crate) fn pipeline_description(
                 format!(" bitrate={bitrate} cpb-size={}", bitrate / 10)
             });
             format!(
-                "vapostproc name=video-converter add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=7{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
+                "vapostproc name=video-converter add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,colorimetry=1:3:5:1,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,colorimetry=1:3:5:1,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=4{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
                 width = video.width,
                 height = video.height,
                 fps = video.fps,
             )
         }
         Encoder::X264 => {
+            // RGB input avoids the same-format YUV fast path skipping range conversion in GStreamer 1.28
             let bitrate = video.bitrate_mbps.map_or_else(String::new, |bitrate| {
                 format!(
                     " bitrate={} vbv-buf-capacity=100 nal-hrd=cbr",
@@ -311,7 +313,7 @@ pub(crate) fn pipeline_description(
                 )
             });
             format!(
-                "videoconvertscale name=video-converter add-borders=true ! video/x-raw,format=I420,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast{bitrate} key-int-max={fps}",
+                "videoconvert ! video/x-raw,format=RGBx ! videoconvertscale name=video-converter add-borders=true gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,colorimetry=1:3:5:1,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,colorimetry=1:3:5:1,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=superfast{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline",
                 width = video.width,
                 height = video.height,
                 fps = video.fps,
@@ -681,7 +683,7 @@ mod tests {
             128,
         );
         assert!(encoder_default.contains(
-            "x264enc name=encoder tune=zerolatency speed-preset=ultrafast key-int-max=30"
+            "x264enc name=encoder tune=zerolatency speed-preset=superfast key-int-max=30"
         ));
         let va_api = pipeline_description(
             1,
@@ -696,17 +698,74 @@ mod tests {
         assert!(va_api.contains("vapostproc name=video-converter add-borders=true"));
         assert!(!va_api.contains("disable-passthrough=true"));
         assert!(va_api.contains(
-            "vah264enc name=encoder rate-control=cbr target-usage=7 bitrate=6000 cpb-size=600"
+            "vah264enc name=encoder rate-control=cbr target-usage=4 bitrate=6000 cpb-size=600"
         ));
         assert!(va_api.contains("avenc_aac bitrate=160000"));
         assert!(va_api.contains("profile=constrained-baseline,stream-format=byte-stream"));
         for description in [description, va_api] {
+            assert!(description.contains("profile=constrained-baseline"));
+            assert_eq!(description.matches("colorimetry=1:3:5:1").count(), 2);
             if let Err(error) = gst::parse::launch(&description) {
                 assert_ne!(
                     error.kind::<gst::ParseError>(),
                     Some(gst::ParseError::Syntax)
                 );
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local GStreamer software video conversion plugins"]
+    fn software_video_expands_limited_range_pixels() {
+        gst::init().unwrap();
+        let description = pipeline_description(
+            1,
+            0,
+            VideoPlan {
+                settings: settings::VideoSettings {
+                    width: 16,
+                    height: 16,
+                    ..Default::default()
+                },
+                encoder: Encoder::X264,
+            },
+            128,
+        );
+        let conversion = description
+            .split("capsfilter name=portal-format ! ")
+            .nth(1)
+            .unwrap()
+            .split(" ! imagefreeze")
+            .next()
+            .unwrap();
+        for (pattern, expected) in [("black", 0..=1), ("white", 250..=255)] {
+            let pipeline = build_pipeline(&format!(
+                "videotestsrc num-buffers=1 pattern={pattern} ! video/x-raw,format=I420,colorimetry=bt709,width=16,height=16 ! {conversion} ! appsink name=pixels"
+            )).unwrap();
+            let sink = pipeline
+                .by_name("pixels")
+                .unwrap()
+                .downcast::<gst_app::AppSink>()
+                .unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            let sample = sink.try_pull_sample(gst::ClockTime::from_seconds(5));
+            pipeline.set_state(gst::State::Null).unwrap();
+            let sample = sample.expect("converted frame");
+            let pixels = sample.buffer().unwrap().map_readable().unwrap();
+            assert!(
+                pixels[..256].iter().all(|value| expected.contains(value)),
+                "{pattern} luma"
+            );
+            assert_eq!(
+                sample
+                    .caps()
+                    .unwrap()
+                    .structure(0)
+                    .unwrap()
+                    .get::<String>("colorimetry")
+                    .unwrap(),
+                "1:3:5:1"
+            );
         }
     }
 
@@ -749,7 +808,7 @@ mod tests {
         let encoder = pipeline.by_name("encoder").unwrap();
         assert_eq!(encoder.property::<u32>("bitrate"), 6_000);
         assert_eq!(encoder.property::<u32>("key-int-max"), 60);
-        assert_eq!(encoder.property::<u32>("target-usage"), 7);
+        assert_eq!(encoder.property::<u32>("target-usage"), 4);
         let pipeline = build_pipeline(&pipeline_description(
             1,
             0,

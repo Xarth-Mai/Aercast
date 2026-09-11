@@ -304,6 +304,8 @@ as Block.
   raw frames in VA memory through `vah264enc`; x264 remains the CPU fallback.
   This is a zero-copy-capable raw video path, not an end-to-end zero-copy claim,
   and remains unqualified until measured on the target hardware.
+- Both video converters negotiate full-range BT.709 output before encoding, using GStreamer `colorimetry=1:3:5:1` (range, matrix, transfer, primaries). The same caps persist through frame repetition; source caps retain their negotiated input interpretation. The software path normalizes input through RGBx to avoid the GStreamer 1.28 same-format YUV fast path skipping range conversion, and enables transfer and primary conversion in the output converter. This adds conversion work for YUV sources. This is an SDR output contract, with HDR tone mapping outside the supported flow
+- Video retains 8-bit 4:2:0 and explicitly constrains both encoders to H.264 Constrained Baseline for the existing Viewer decoding boundary. VA-API uses balanced `target-usage=4`; x264 uses `superfast` with `zerolatency`. These settings favor compression quality over the previous fastest presets while retaining the existing bitrate, one-second maximum keyframe interval, and buffer limits; actual quality and encoding cost depend on content and hardware
 - For an Auto share that selected VA-API and has not already fallen back, one
   hardware-path failure may consume one media recovery and switch that share to
   a freshly probed x264 plan. Eligibility uses the named

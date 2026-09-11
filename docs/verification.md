@@ -19,6 +19,27 @@ Aercast v0.1.5 is tagged and its AUR package has passed a local upgrade install 
 | Host module split | The [module-split checks](#module-split-checks) at `f83a658` cover all runnable Rust tests and a real niri Portal capture start/stop | Partial source-build smoke only; selective audio and browser playback remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
+## Encoder quality check
+
+Before the explicit full-range conversion change on 2026-09-12, GStreamer `1.28.7` and FFmpeg `n9.0.1` encoded the same 120-frame synthetic `testsrc2` input at 1280×720, 60 FPS, and 6 Mbps using x264 `ultrafast` and `superfast`. Both outputs decoded as Constrained Baseline, `yuv420p`, and zero B frames. Overall SSIM against the raw reference rose from `0.969337` to `0.969998`; luma SSIM slightly fell from `0.962865` to `0.962628`, so this is a small aggregate improvement on one synthetic sample, not a general visual-quality claim
+
+Reproduce the sample and comparison with:
+
+```sh
+ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=1280x720:rate=60 -frames:v 120 -pix_fmt yuv420p -f rawvideo -y /tmp/aercast-quality-reference.yuv
+for preset in ultrafast superfast; do
+  gst-launch-1.0 -q filesrc location=/tmp/aercast-quality-reference.yuv ! rawvideoparse format=i420 width=1280 height=720 framerate=60/1 ! x264enc tune=zerolatency speed-preset="$preset" bitrate=6000 vbv-buf-capacity=100 nal-hrd=cbr key-int-max=60 ! video/x-h264,profile=constrained-baseline ! h264parse ! mp4mux fragment-duration=100 ! filesink location="/tmp/aercast-quality-$preset.mp4"
+  ffprobe -v error -select_streams v:0 -show_entries stream=profile,pix_fmt,has_b_frames -of compact "/tmp/aercast-quality-$preset.mp4"
+  ffmpeg -hide_banner -i "/tmp/aercast-quality-$preset.mp4" -f rawvideo -pixel_format yuv420p -video_size 1280x720 -framerate 60 -i /tmp/aercast-quality-reference.yuv -lavfi ssim -f null -
+done
+```
+
+`cargo test media::tests -- --nocapture` passed 3 tests with 2 environment-dependent tests ignored; the additional `cargo test software_video_expands_limited_range_pixels -- --ignored --nocapture` passed 1 real software-conversion test; `cargo fmt --check` and `git diff --check` passed. The tool environment did not expose `vah264enc`. Balanced VA-API quality, sustained encoder load, real Portal capture, and browser playback with these presets remain unverified
+
+The final software pipeline was additionally exercised with 60 RGBx SMPTE frames at 1280×720/60 FPS, its generated converter and encoder chain, `h264parse`, and `mp4mux fragment-duration=100`. `ffprobe -v error -select_streams v:0 -show_entries stream=profile,pix_fmt,has_b_frames,color_range,color_space,color_transfer,color_primaries -of compact /tmp/aercast-full-bt709.mp4` reported Constrained Baseline, `yuvj420p` (FFmpeg's full-range 8-bit 4:2:0 representation), zero B frames, `color_range=pc`, and BT.709 for matrix, transfer, and primaries
+
+The pixel test feeds Limited BT.709 I420 black/white frames through the generated software conversion chain. The original direct I420 conversion retained 16/235 despite full-range output caps; normalization through RGBx produced black 0 and white 251, within the test's rounding tolerance. This verifies actual range expansion in addition to metadata, with rounding loss in the YUV-to-RGB-to-YUV conversion. It does not establish colorimetric accuracy, HDR handling, hardware range conversion, or browser display fidelity. The preceding SSIM comparison isolates encoder presets and does not measure the final full-range conversion chain
+
 ## v0.1.5 package verification
 
 On 2026-09-10, release revision `29d8c48` passed `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (58 passed, five explicitly ignored environment-dependent tests), `bun test tests/viewer-recovery.test.js` (12 passed, 225 assertions), and `git diff --check`
