@@ -6,7 +6,7 @@ or a product specification.
 
 ## Current qualification
 
-Aercast v0.1.6 passed local automated checks and release compilation; GitHub publication and AUR installation are pending. The latest complete real Host/Viewer qualification remains the niri run at revision `073169b`; this release does not add real Portal, audio, browser, or device qualification
+Aercast v0.1.6 is tagged at `ace00fe` and AUR `944cdf0` has been published and installed locally as `0.1.6-1`. GitHub Release completion remains unverified because the user requested proceeding without waiting for Actions. The latest complete real Host/Viewer qualification remains the niri run at revision `073169b`; this release does not add real Portal, audio, browser, or device qualification
 
 | Current claim | Latest evidence | Current gap |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ Aercast v0.1.6 passed local automated checks and release compilation; GitHub pub
 
 ## v0.1.6 release verification
 
-`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (61 passed, seven environment-dependent tests ignored), `bun test tests/viewer-recovery.test.js` (13 passed, 251 assertions), `cargo build --locked --release`, and `git diff --check` passed on the versioned v0.1.6 source. Publication and installation remain pending; no GUI or real sharing check was performed
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (61 passed, seven environment-dependent tests ignored), `bun test tests/viewer-recovery.test.js` (13 passed, 251 assertions), `cargo build --locked --release`, and `git diff --check` passed on the versioned v0.1.6 source. The AUR source checksum and clean build passed, including 61 Rust tests with seven ignored; `pacman -U` installed the resulting `aercast-0.1.6-1-x86_64.pkg.tar.zst`, `pacman -Q aercast` reported `0.1.6-1`, and `pacman -Qk aercast` reported zero missing files. The tagged [GitHub run](https://github.com/Xarth-Mai/Aercast/actions/runs/34640059971) was still running when the user requested proceeding without waiting; GitHub release assets are not verified. No GUI or real sharing check was performed
 
 ## Host readability check
 

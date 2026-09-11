@@ -22,6 +22,8 @@ Require a clean, understood release tree and a synchronized AUR checkout. Preser
 
 `aur/aercast` is a Git submodule with a separate history. Initialize it through `.gitmodules` if missing, and verify its checkout and writable remote before editing. Do not stage its package files as ordinary main-repository files
 
+Use IPv4 for AUR Git-over-SSH operations on this host, including fetch, push, dry-run, and remote verification: `git -c core.sshCommand='ssh -4' -C aur/aercast <operation>`. Keep normal SSH host-key verification enabled; do not replace trusted keys or disable checking to work around an IPv6 endpoint mismatch. Apply this per command without changing global SSH configuration
+
 Check availability of Rust/rustfmt/Clippy, Bun, GitHub CLI authentication, `makepkg`, `updpkgsums`, `pacman`, and AUR push access before beginning publication. Use the versions and dependencies required by the checked-out project rather than copying old versions into this Skill
 
 ## 2. Prepare and verify the version
