@@ -42,7 +42,7 @@ pub(crate) async fn run_host(
         Ok((listener, address)) => Some(start_server(listener, address, &host)),
         Err(error) => {
             let _ = events.unbounded_send(HostEvent::NetworkUnavailable(format!(
-                "Could not listen on {bind}: {error}. Change Network settings and apply them."
+                "Could not listen on {bind}: {error}. Change Network settings and apply them"
             )));
             None
         }
@@ -494,7 +494,7 @@ async fn share_once(
             media_settings.fallback_attempted = false;
             let _ = events.unbounded_send(HostEvent::Sharing(media_settings.current.clone()));
             let _ = events.unbounded_send(HostEvent::ApplyFailed(format!(
-                "Could not apply the saved media settings: {error}. Restored the previous active settings."
+                "Could not apply the saved media settings: {error}. Restored the previous active settings"
             )));
             continue;
         }
@@ -623,6 +623,10 @@ pub(crate) async fn share_control(
     };
     let mut online = viewers.iter().filter(|viewer| viewer.online()).count();
     let _ = events.unbounded_send(HostEvent::Viewers(viewers));
+    let _ = events.unbounded_send(HostEvent::MediaIdle(matches!(
+        media_state,
+        ControlMedia::Sleeping(_)
+    )));
     let ready = matches!(&media_state, ControlMedia::Active(ready) if *ready.borrow());
     let mut deadline = idle_deadline(None, ready, online, Instant::now());
     tokio::pin!(session_closed);

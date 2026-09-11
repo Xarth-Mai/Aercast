@@ -61,6 +61,7 @@ enum HostEvent {
     Link(String),
     ConfirmRefresh,
     Sharing(ShareSettings),
+    MediaIdle(bool),
     ApplyFailed(String),
     Ending,
     Viewers(Vec<web::Viewer>),

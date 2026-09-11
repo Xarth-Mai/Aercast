@@ -66,6 +66,7 @@ fn test_app() -> (App, mpsc::Receiver<Command>) {
             pending_settings: None,
             appearance: appearance::Appearance::default(),
             approved_source: None,
+            media_idle: false,
             active_share: None,
             applying_share: None,
             apply_share_error: None,
@@ -586,4 +587,66 @@ fn terminal_host_failure_allows_one_restart_without_discarding_draft() {
     let _ = update_app(&mut quitting, Message::RestartHost);
     assert!(quitting.commands.is_none());
     assert!(quitting.host_stopped);
+}
+
+#[test]
+fn overview_tracks_source_and_actual_media_idle() {
+    let (mut app, _commands) = test_app();
+    drop(update_app(&mut app, Message::Start));
+    for source in ["Screen", "Window"] {
+        app.phase = Phase::Selecting;
+        drop(update_app(
+            &mut app,
+            Message::Host(HostEvent::Source(source)),
+        ));
+        drop(update_app(
+            &mut app,
+            Message::Host(HostEvent::Sharing(test_share(true))),
+        ));
+        assert_eq!(overview_status(&app), format!("Sharing: {source}"));
+        drop(update_app(
+            &mut app,
+            Message::Host(HostEvent::Viewers(vec![])),
+        ));
+        assert!(!app.media_idle);
+        drop(update_app(
+            &mut app,
+            Message::Host(HostEvent::MediaIdle(true)),
+        ));
+        assert_eq!(overview_status(&app), format!("Sharing: {source} · idle"));
+        drop(update_app(
+            &mut app,
+            Message::Host(HostEvent::Sharing(test_share(false))),
+        ));
+        assert!(app.media_idle);
+        drop(update_app(
+            &mut app,
+            Message::Host(HostEvent::MediaIdle(false)),
+        ));
+        assert_eq!(overview_status(&app), format!("Sharing: {source}"));
+    }
+    app.approved_source = None;
+    assert_eq!(overview_status(&app), "Sharing");
+    app.media_idle = true;
+    drop(update_app(&mut app, Message::Host(HostEvent::Ending)));
+    assert!(!app.media_idle);
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::MediaIdle(true)),
+    ));
+    assert!(!app.media_idle);
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::Waiting("link".into())),
+    ));
+    drop(update_app(&mut app, Message::Start));
+    assert_eq!(app.phase, Phase::Selecting);
+    assert!(!app.media_idle);
+    app.media_idle = true;
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::Stopped(Err("failure.".into()))),
+    ));
+    assert!(!app.media_idle);
+    assert_eq!(overview_status(&app), "failure.");
 }

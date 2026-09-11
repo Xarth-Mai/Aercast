@@ -19,6 +19,18 @@ Aercast v0.1.5 is tagged and its AUR package has passed a local upgrade install 
 | Host module split | The [module-split checks](#module-split-checks) at `f83a658` cover all runnable Rust tests and a real niri Portal capture start/stop | Partial source-build smoke only; selective audio and browser playback remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
+## Host readability check
+
+The brighter Host text palette passed `cargo test appearance::tests --quiet` (one passed, one isolated-session-bus test ignored), including WCAG AA contrast checks for primary and secondary text against all four neutral surfaces in normal and high-contrast modes. `cargo test ui::tests --quiet` passed 15 tests with one isolated-session-bus test ignored; `cargo fmt --check` and `git diff --check` passed
+
+Visual checks at `640×480` and `960×640`, text fit across selected controls, and real keyboard-focus checks remain unverified. The command environment exposes neither `WAYLAND_DISPLAY` nor `NIRI_SOCKET`, and the available desktop tool cannot target niri windows; automated checks do not establish rendered readability or absence of overflow
+
+## Overview status check
+
+`cargo test ui::tests --quiet` passed 16 tests with one isolated-session-bus test ignored. Coverage includes combined Screen/Window labels, actual idle state, sleeping settings updates, wake, stop, new sharing, and unmodified error text. `cargo test share_session --quiet` passed all 11 tests with local socket permission, including active-versus-sleeping events and the fixed idle grace; the sandbox-only run had three `EPERM` bind failures. `cargo fmt --check` and `git diff --check` passed
+
+Real niri verification of the combined status, idle transitions, and relocated Share link guidance remains pending under the desktop-access limitation described in the Host readability check
+
 ## Concurrent media failure recovery check
 
 On 2026-09-12, `cargo test media::tests -- --nocapture` passed four tests with two host-stack tests ignored; `cargo test audio -- --nocapture` passed six matching tests; `cargo test share_session -- --nocapture` passed 11 tests with local socket permission. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `git diff --check` passed. The regression verifies that concurrent video failure and audio `Flushing` retain both messages as a retryable error, controls remain authoritative, and actual audio cleanup failures remain terminal. The existing recovery-policy check verifies the three-attempt limit. These checks do not reproduce a real live-stream fault or qualify automatic Portal/PipeWire/browser recovery

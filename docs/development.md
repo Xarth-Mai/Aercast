@@ -89,6 +89,8 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
 - Refresh Link and Quit confirmations remain in place in the page rather than
   opening a modal window.
 
+Overview combines the share state and approved source as `Sharing: Screen` or `Sharing: Window`, with `Sharing` as the unknown-source fallback. Actual media sleep appends ` · idle`; waking clears it when media rebuilding starts. Settings snapshot updates while asleep retain the marker. Startup, settings application, stopping, and errors retain their own status wording. The marker is display-only and does not change tray or notification behavior
+
 ### Sharing and links
 
 - **Start Sharing** opens the Portal picker. The same primary action becomes

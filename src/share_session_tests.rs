@@ -59,7 +59,7 @@ async fn active_control_sleeps_after_the_fixed_ready_grace() {
     let (_commands, mut receiver) = mpsc::channel(1);
     let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
     let host = web::Host::new().unwrap();
-    let (events, _) = iced::futures::channel::mpsc::unbounded();
+    let (events, mut received) = iced::futures::channel::mpsc::unbounded();
     let (ready_sender, ready) = watch::channel(true);
     let started = Instant::now();
     let stop = tokio::time::timeout(
@@ -78,6 +78,13 @@ async fn active_control_sleeps_after_the_fixed_ready_grace() {
     .unwrap();
     assert!(matches!(stop, ShareStop::Sleep));
     assert!(started.elapsed() >= MEDIA_IDLE_GRACE);
+    let mut idle_states = Vec::new();
+    while let Some(Some(event)) = received.next().now_or_never() {
+        if let HostEvent::MediaIdle(idle) = event {
+            idle_states.push(idle);
+        }
+    }
+    assert_eq!(idle_states, vec![false]);
     drop(ready_sender);
     server.abort();
 }
@@ -90,7 +97,7 @@ async fn sleeping_refresh_rotates_the_generation_without_waking() {
     let mut server = tokio::spawn(std::future::pending::<io::Result<()>>());
     let host = web::Host::new().unwrap();
     let old_path = host.path().unwrap();
-    let (events, _) = iced::futures::channel::mpsc::unbounded();
+    let (events, mut received) = iced::futures::channel::mpsc::unbounded();
     assert!(matches!(
         share_control(
             &mut receiver,
@@ -104,6 +111,13 @@ async fn sleeping_refresh_rotates_the_generation_without_waking() {
         .await,
         ShareStop::End
     ));
+    let mut idle_states = Vec::new();
+    while let Some(Some(event)) = received.next().now_or_never() {
+        if let HostEvent::MediaIdle(idle) = event {
+            idle_states.push(idle);
+        }
+    }
+    assert_eq!(idle_states, vec![true]);
     assert_ne!(host.path().unwrap(), old_path);
     server.abort();
 }
@@ -338,12 +352,16 @@ async fn sleeping_apply_waits_for_a_valid_viewer_before_media_can_restart() {
                 .is_err()
         );
         let mut applied = Vec::new();
+        let mut idle_states = Vec::new();
         while let Some(Some(event)) = received.next().now_or_never() {
-            if let HostEvent::Sharing(settings) = event {
-                applied.push(settings);
+            match event {
+                HostEvent::Sharing(settings) => applied.push(settings),
+                HostEvent::MediaIdle(idle) => idle_states.push(idle),
+                _ => {}
             }
         }
         assert_eq!(applied, vec![test_share(false), next.clone()]);
+        assert_eq!(idle_states, vec![false, true]);
         let path = host.path().unwrap();
         let request = tokio::task::spawn_blocking(move || {
             use std::io::{Read, Write};

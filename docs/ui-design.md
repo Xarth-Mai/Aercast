@@ -39,7 +39,7 @@ Aercast always renders a dark interface and ignores the system light/dark
 preference. It still reads the standardized XDG Settings Portal accent,
 contrast, and reduced-motion preferences independently.
 
-The default neutral palette follows One Dark:
+The neutral surfaces follow One Dark with brighter text for readability
 
 | Token | Value | Use |
 | --- | ---: | --- |
@@ -48,8 +48,8 @@ The default neutral palette follows One Dark:
 | `control` | `#2C313A` | inputs and neutral buttons |
 | `hover` | `#3E4451` | hovered and raised control states |
 | `border` | `white 10%` | ordinary boundaries and separators |
-| `text` | `#ABB2BF` | primary text |
-| `secondary` | `#9DA5B4` | labels, descriptions, inactive navigation |
+| `text` | `#ECEFF4` | primary text |
+| `secondary` | `#C4CBD5` | labels, descriptions, inactive navigation |
 | `muted` | `#7F848E` | unavailable and disabled controls |
 | `danger` | `#E06C75` | destructive actions |
 | `success` | `#98C379` | positive status |
@@ -122,12 +122,11 @@ Use the first available system font from `Adwaita Sans`, `Cantarell`,
 
 | Role | Size | Treatment |
 | --- | ---: | --- |
-| Body and controls | about `14px` | regular |
-| Supporting text | `12–13px` | secondary or muted, not low-contrast |
+| Body and controls | `15px` | regular body and inputs; medium navigation and buttons |
+| Field labels, supporting text, status, and version | `14px` | regular; medium group headings |
 | Page title | `20px` | bold, primary text, uppercase not used |
 
-Use sentence case. Prefer short labels over reduced font size. Numeric telemetry
-may use tabular figures when the active system font provides them.
+Use sentence case. Prefer short labels over reduced font size. Primary actions retain bold text; disabled text retains the muted color. Numeric telemetry may use tabular figures when the active system font provides them
 
 ## Components
 
@@ -180,6 +179,8 @@ competing with page content.
   operation rather than another settings card.
 
 Frame rate and bitrate remain side by side; the frame-rate heading is **Frame rate (FPS)** and its buttons show **30 / 60 / 120**. Encoder buttons remain in one row with **Auto / VA-API / x264** labels
+
+Host fixed copy omits terminal periods while preserving punctuation within sentences and progress ellipses; backend error text remains verbatim. Overview places its trusted-LAN and external-HTTPS guidance inside the Share link group, after link controls and loopback guidance and before refresh confirmation
 
 ## Browser Viewer
 

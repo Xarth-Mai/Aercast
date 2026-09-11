@@ -26,8 +26,8 @@ const BORDER: Color = Color {
     b: 1.0,
     a: 0.10,
 };
-const TEXT: Color = iced::color!(0xABB2BF);
-const TEXT_SECONDARY: Color = iced::color!(0x9DA5B4);
+const TEXT: Color = iced::color!(0xECEFF4);
+const TEXT_SECONDARY: Color = iced::color!(0xC4CBD5);
 const TEXT_MUTED: Color = iced::color!(0x7F848E);
 const FALLBACK_ACCENT: Color = iced::color!(0x61AFEF);
 const DANGER: Color = iced::color!(0xE06C75);
@@ -547,6 +547,10 @@ mod tests {
             assert_eq!(appearance.high_contrast, high_contrast);
             assert_eq!(appearance.reduced_motion, reduced_motion);
             assert!(primary.strong.color.relative_contrast(BG) >= 4.5);
+            for background in [BG, SURFACE_1, SURFACE_2, SURFACE_3] {
+                assert!(TEXT.relative_contrast(background) >= 4.5);
+                assert!(appearance.secondary_text().relative_contrast(background) >= 4.5);
+            }
             let selected = appearance.selected_button(button::Status::Active);
             assert_eq!(
                 selected.background,
