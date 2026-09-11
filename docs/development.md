@@ -234,11 +234,7 @@ from Saved. Apply atomically commits the whole page:
   commit retains the prior Saved value and the user's Draft.
 
 After a successful commit, if Saved quality or audio differs from Active,
-Settings offers one primary **Apply to current share** action. With no online
-Viewer it executes directly; with an online Viewer the same control requires a
-second in-place confirmation and does not open a modal. Quality and audio are
-rebuilt together while retaining the Portal session, selected source, link
-token, Viewer identities, and Viewer history.
+Settings offers one primary **Apply to current share** action that executes on the first click regardless of online Viewer count. While application is pending, the action is disabled and repeated requests are ignored. Quality and audio are rebuilt together while retaining the Portal session, selected source, link token, Viewer identities, and Viewer history
 
 The candidate media configuration gets one startup attempt. If it fails before
 reaching Sharing, the Host reports the apply failure and immediately restores

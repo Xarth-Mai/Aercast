@@ -320,7 +320,6 @@ struct App {
     monitor_size: Option<iced::Size>,
     confirm_refresh: bool,
     confirm_quit: bool,
-    confirm_apply_current: bool,
     confirm_block: Option<BlockConfirmation>,
     settings: settings::Settings,
     draft: SettingsDraft,
@@ -428,7 +427,6 @@ fn boot(
         monitor_size: None,
         confirm_refresh: false,
         confirm_quit: false,
-        confirm_apply_current: false,
         confirm_block: None,
         settings,
         draft,
@@ -625,7 +623,6 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             if send_command(app, Command::End) {
                 app.confirm_refresh = false;
                 app.confirm_quit = false;
-                app.confirm_apply_current = false;
                 app.applying_share = None;
                 app.phase = Phase::Ending;
             }
@@ -709,7 +706,6 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             let open_settings = page == Page::Settings && app.page != Page::Settings;
             app.page = page;
             app.confirm_block = None;
-            app.confirm_apply_current = false;
             if open_settings {
                 return scan_audio_applications(app);
             }
@@ -938,7 +934,6 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             app.settings_error = None;
             app.video_apply_error = None;
             app.network_apply_error = None;
-            app.confirm_apply_current = false;
         }
         Message::ApplyCurrentShare => {
             let Some(mut share) = saved_share(app) else {
@@ -960,15 +955,9 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             {
                 return Task::none();
             }
-            let online = app.viewers.iter().any(web::Viewer::online);
-            if online && !app.confirm_apply_current {
-                app.confirm_apply_current = true;
-                return Task::none();
-            }
             if send_command(app, Command::Apply(share.clone())) {
                 app.applying_share = Some(share);
                 app.apply_share_error = None;
-                app.confirm_apply_current = false;
             }
         }
         Message::VideoProbed(probe, result) => {
@@ -1118,15 +1107,11 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 app.media_idle = false;
                 app.confirm_refresh = false;
                 app.confirm_quit = false;
-                app.confirm_apply_current = false;
                 app.applying_share = None;
                 app.phase = Phase::Ending;
             }
             HostEvent::Viewers(viewers) => {
                 app.confirm_block = None;
-                if !viewers.iter().any(web::Viewer::online) {
-                    app.confirm_apply_current = false;
-                }
                 app.viewers = viewers;
             }
             HostEvent::NetworkApplied(result) => match result {
@@ -1163,7 +1148,6 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 app.viewers.clear();
                 app.confirm_refresh = false;
                 app.confirm_quit = false;
-                app.confirm_apply_current = false;
                 app.confirm_block = None;
                 app.approved_source = None;
                 app.media_idle = false;
@@ -1262,7 +1246,6 @@ fn apply_settings_candidate(app: &mut App, candidate: settings::Settings, video:
         app.video_apply_error = None;
         app.settings_error = None;
         app.network_apply_error = None;
-        app.confirm_apply_current = false;
     }
 }
 
@@ -2546,8 +2529,6 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     let primary = if sharing && (active_dirty || app.applying_share.is_some()) && !draft_dirty {
         let label = if app.applying_share.is_some() {
             "Applying to current share…"
-        } else if app.confirm_apply_current {
-            "Confirm apply to current share"
         } else {
             "Apply to current share"
         };

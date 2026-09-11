@@ -48,7 +48,6 @@ fn test_app() -> (App, mpsc::Receiver<Command>) {
             monitor_size: None,
             confirm_refresh: false,
             confirm_quit: false,
-            confirm_apply_current: false,
             confirm_block: None,
             settings,
             draft,
@@ -393,7 +392,7 @@ fn stale_apply_probe_cannot_commit_a_newer_draft_revision() {
 }
 
 #[test]
-fn current_share_apply_confirms_online_viewers_and_tracks_the_full_snapshot() {
+fn current_share_apply_is_immediate_and_tracks_the_full_snapshot() {
     let (mut app, mut commands) = test_app();
     let old = test_share(true);
     let saved = settings::Settings {
@@ -423,17 +422,13 @@ fn current_share_apply_confirms_online_viewers_and_tracks_the_full_snapshot() {
     app.viewers = test_viewers(1, true);
 
     drop(update_app(&mut app, Message::ApplyCurrentShare));
-    assert!(app.confirm_apply_current);
-    assert!(app.applying_share.is_none());
-    assert!(commands.try_recv().is_err());
-
-    drop(update_app(&mut app, Message::ApplyCurrentShare));
     assert_eq!(
         commands.try_recv().unwrap(),
         Command::Apply(expected.clone())
     );
     assert_eq!(app.applying_share, Some(expected.clone()));
-    assert!(!app.confirm_apply_current);
+    drop(update_app(&mut app, Message::ApplyCurrentShare));
+    assert!(commands.try_recv().is_err());
 
     drop(update_app(
         &mut app,
@@ -471,7 +466,6 @@ fn auto_fallback_encoder_is_not_dirty_and_survives_audio_apply() {
     app.phase = Phase::Sharing;
     app.active_share = Some(active.clone());
     drop(update_app(&mut app, Message::ApplyCurrentShare));
-    assert!(!app.confirm_apply_current);
     assert!(app.applying_share.is_none());
     assert!(commands.try_recv().is_err());
 
