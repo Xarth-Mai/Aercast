@@ -298,7 +298,7 @@ pub(crate) fn pipeline_description(
                 format!(" bitrate={bitrate} cpb-size={}", bitrate / 10)
             });
             format!(
-                "vapostproc name=video-converter add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,colorimetry=1:3:5:1,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,colorimetry=1:3:5:1,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=4{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au",
+                "vapostproc name=video-converter add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,colorimetry=1:3:5:1,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw(memory:VAMemory),format=NV12,colorimetry=1:3:5:1,framerate={fps}/1 ! vah264enc name=encoder rate-control=cbr target-usage=4{bitrate} key-int-max={fps} b-frames=0 ! video/x-h264,profile=high,stream-format=byte-stream,alignment=au",
                 width = video.width,
                 height = video.height,
                 fps = video.fps,
@@ -313,7 +313,7 @@ pub(crate) fn pipeline_description(
                 )
             });
             format!(
-                "videoconvert ! video/x-raw,format=RGBx ! videoconvertscale name=video-converter add-borders=true gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,colorimetry=1:3:5:1,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,colorimetry=1:3:5:1,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=superfast{bitrate} key-int-max={fps} ! video/x-h264,profile=constrained-baseline",
+                "videoconvert ! video/x-raw,format=RGBx ! videoconvertscale name=video-converter add-borders=true gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,colorimetry=1:3:5:1,width={width},height={height} ! imagefreeze is-live=true allow-replace=true ! video/x-raw,format=I420,colorimetry=1:3:5:1,framerate={fps}/1 ! x264enc name=encoder tune=zerolatency speed-preset=superfast{bitrate} key-int-max={fps} bframes=0 cabac=true dct8x8=true ! video/x-h264,profile=high",
                 width = video.width,
                 height = video.height,
                 fps = video.fps,
@@ -758,9 +758,11 @@ mod tests {
             "vah264enc name=encoder rate-control=cbr target-usage=4 bitrate=6000 cpb-size=600"
         ));
         assert!(va_api.contains("avenc_aac bitrate=160000"));
-        assert!(va_api.contains("profile=constrained-baseline,stream-format=byte-stream"));
+        assert!(va_api.contains("profile=high,stream-format=byte-stream"));
+        assert!(description.contains("bframes=0"));
+        assert!(va_api.contains("b-frames=0"));
         for description in [description, va_api] {
-            assert!(description.contains("profile=constrained-baseline"));
+            assert!(description.contains("profile=high"));
             assert_eq!(description.matches("colorimetry=1:3:5:1").count(), 2);
             if let Err(error) = gst::parse::launch(&description) {
                 assert_ne!(
@@ -769,6 +771,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires local GStreamer x264 plugin"]
+    fn software_high_profile_negotiates_without_b_frames() {
+        gst::init().unwrap();
+        let description = pipeline_description(
+            1,
+            0,
+            VideoPlan {
+                settings: settings::VideoSettings::default(),
+                encoder: Encoder::X264,
+            },
+            128,
+        );
+        let encoding = description
+            .split("x264enc name=encoder")
+            .nth(1)
+            .unwrap()
+            .split(" ! h264parse")
+            .next()
+            .unwrap();
+        let pipeline = build_pipeline(&format!(
+            "videotestsrc num-buffers=2 ! video/x-raw,format=I420,width=320,height=240,framerate=60/1 ! x264enc name=encoder{encoding} ! appsink name=encoded"
+        )).unwrap();
+        let sink = pipeline
+            .by_name("encoded")
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let sample = sink.try_pull_sample(gst::ClockTime::from_seconds(5));
+        pipeline.set_state(gst::State::Null).unwrap();
+        let sample = sample.expect("encoded frame");
+        assert_eq!(
+            sample
+                .caps()
+                .unwrap()
+                .structure(0)
+                .unwrap()
+                .get::<String>("profile")
+                .unwrap(),
+            "high"
+        );
+        assert_eq!(
+            pipeline
+                .by_name("encoder")
+                .unwrap()
+                .property::<u32>("bframes"),
+            0
+        );
     }
 
     #[test]
