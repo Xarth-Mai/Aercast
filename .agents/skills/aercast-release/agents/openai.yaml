@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aercast Release"
+  short_description: "Check, publish, and install Aercast releases"
+  default_prompt: "Use $aercast-release to publish the next Aercast patch release, update AUR, and install the verified package locally."
