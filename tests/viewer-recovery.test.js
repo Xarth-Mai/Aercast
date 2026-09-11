@@ -202,7 +202,7 @@ test('live correction ignores transient lag and spaces sustained corrections apa
     nextRead({ done: false, value: new Uint8Array([1]) });
     await b.advance(0);
   }
-  for (const [lag, rate] of [[1.3, 1], [2, 1], [2.01, 1.0008], [2.25, 1.02], [2.5, 1.04], [3, 1.08], [4, 1.08]]) {
+  for (const [lag, rate] of [[1.3, 1], [2, 1], [2.01, 1.0008], [2.25, 1.02], [2.5, 1.04], [2.625, 1.05], [4, 1.05]]) {
     await sample(0, lag);
     expect(b.video.playbackRate).toBeCloseTo(rate, 6);
   }
@@ -212,13 +212,13 @@ test('live correction ignores transient lag and spaces sustained corrections apa
   await sample(0, 6);
   await sample(2000, 6);
   expect(seeks).toHaveLength(0);
-  expect(b.video.playbackRate).toBe(1.08);
+  expect(b.video.playbackRate).toBe(1.05);
   await sample(0, 5);
   await sample(1000, 6);
   await sample(2000, 6);
   expect(seeks).toHaveLength(0);
   await sample(1000, 6);
-  expect(seeks).toEqual([end - 1.5]);
+  expect(seeks).toEqual([end - 1.75]);
   expect(b.video.playbackRate).toBe(1);
   await sample(1000, 6);
   await sample(3000, 6);
