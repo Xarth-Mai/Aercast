@@ -22,6 +22,7 @@ compositor, browser, or signal checks with mocks.
    ```sh
    scripts/verify_audio_graph.sh baseline ALLOWED_NODE EXCLUDED_NODE /tmp/aercast-links.json
    ```
+
 3. Run `cargo run`, invoke **Start Sharing**, and complete the real Portal source
    choice. Do not call the Portal backend directly or fake its response. Follow
    the current `AGENTS.md` rule for any permission-assisted confirmation. If it
