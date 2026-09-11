@@ -1751,11 +1751,7 @@ fn sidebar(app: &App) -> Element<'_, Message> {
                 sidebar_item(
                     Page::Settings,
                     include_bytes!("../assets/settings-symbolic.svg"),
-                    if app.draft.dirty(&app.settings) {
-                        "Settings · Changed".to_owned()
-                    } else {
-                        "Settings".to_owned()
-                    },
+                    "Settings".to_owned(),
                 ),
             ]
             .spacing(2),

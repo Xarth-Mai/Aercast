@@ -145,8 +145,7 @@ may use tabular figures when the active system font provides them.
 - **Sidebar navigation:** fixed left sidebar with an icon and text for every
   item. The active page uses `control`, primary text, and a two-pixel accent
   indicator; inactive items use `secondary` on transparent background with
-  `control` on hover. A compact **Changed** label accompanies Settings while
-  Draft differs from Saved.
+  `control` on hover. The Settings label remains fixed when Draft changes
 - **Text input:** `control`, subtle border, two-pixel accent focus ring;
   invalid input adds an icon and message.
 - **Grouped surface:** one flat `surface` container with `8px` radius and subtle
