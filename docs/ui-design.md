@@ -179,6 +179,8 @@ competing with page content.
   group. Active/Saved mismatch and its current-share action remain one clear
   operation rather than another settings card.
 
+Frame rate and bitrate remain side by side; the frame-rate heading is **Frame rate (FPS)** and its buttons show **30 / 60 / 120**. Encoder buttons remain in one row with **Auto / VA-API / x264** labels
+
 ## Browser Viewer
 
 The square-cornered native video fills the viewport with `contain` fitting and

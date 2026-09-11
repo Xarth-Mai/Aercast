@@ -2075,8 +2075,8 @@ fn settings_section<'a>(
 fn video_encoder_label(encoder: settings::VideoEncoder) -> &'static str {
     match encoder {
         settings::VideoEncoder::Auto => "Auto",
-        settings::VideoEncoder::VaApi => "VA-API hardware",
-        settings::VideoEncoder::X264 => "Software (x264)",
+        settings::VideoEncoder::VaApi => "VA-API",
+        settings::VideoEncoder::X264 => "x264",
     }
 }
 
@@ -2145,7 +2145,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
     let fps_options = FPS_OPTIONS.into_iter().fold(row![], |options, fps| {
         options.push(settings_option(
             app,
-            format!("{fps} FPS"),
+            fps.to_string(),
             app.draft.video_fps == fps,
             Message::VideoFps(fps),
         ))
@@ -2182,7 +2182,7 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         .spacing(12),
         row![
             column![
-                text("Frame rate")
+                text("Frame rate (FPS)")
                     .size(13)
                     .color(app.appearance.secondary_text()),
                 fps_options.spacing(8),
