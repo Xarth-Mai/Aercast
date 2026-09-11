@@ -4,6 +4,16 @@ This document keeps only the latest useful evidence and current blocker for
 Aercast compatibility, performance, and completion claims. It is not a test log
 or a product specification.
 
+## Temporary-instance settings check
+
+On 2026-09-12, `cargo test settings::tests -- --nocapture` passed four tests, including a temporary-instance check proving that saving creates no missing configuration directory and leaves an existing settings file byte-for-byte unchanged after notification, video and network edits. It also checks that the temporary flag survives candidate cloning and is absent from serialized settings. `cargo test temporary_settings -- --nocapture` passed two tests, including the GUI Apply and Network candidate flow retaining temporary status. These automated checks do not qualify real multi-instance GUI or media behavior
+
+## CLI and independent-instance checks
+
+On 2026-09-12, `cargo build` succeeded. With `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` unset, `target/debug/aercast help`, `version`, `unknown`, `--help`, `help new` and `new extra` passed six subprocess checks for stdout/stderr separation and exit codes. Version output was `Aercast v0.1.6+dev`, target `x86_64-unknown-linux-gnu`, profile `debug`, and matched local `rustc --version`. `cargo test command_line_accepts_only_one_known_word` and `cargo test tests::version_distinguishes_dev_and_release -- --exact` passed; release version formatting is unit-tested, not verified from a newly built release binary
+
+`dbus-run-session -- cargo test instance_ -- --ignored --nocapture` passed two isolated-bus tests for default activation, independent registration, activation routing and name release. `cargo test settings::tests -- --nocapture` passed three tests, and `cargo test occupied_startup_bind_recovers_without_rotating_the_token -- --nocapture` passed one port-recovery test. Socket tests required execution outside the sandbox after sandbox attempts failed with `EPERM`. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `git diff --check` passed. These checks do not qualify simultaneous real GUI, tray, Portal, audio or browser use across instances
+
 ## Current qualification
 
 Aercast v0.1.6 is tagged at `ace00fe` and AUR `944cdf0` has been published and installed locally as `0.1.6-1`. GitHub Release completion remains unverified because the user requested proceeding without waiting for Actions. The latest complete real Host/Viewer qualification remains the niri run at revision `073169b`; this release does not add real Portal, audio, browser, or device qualification

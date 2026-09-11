@@ -100,6 +100,52 @@ fn a_later_instance_activates_the_primary() {
 }
 
 #[test]
+#[ignore = "requires an isolated session bus"]
+fn new_instance_is_independent_of_default_activation() {
+    let (activation, mut primary_messages) = iced::futures::channel::mpsc::channel(0);
+    let primary = claim_instance(activation, &instance_name(false))
+        .unwrap()
+        .unwrap();
+    let (activation, mut new_messages) = iced::futures::channel::mpsc::channel(0);
+    let independent = claim_instance(activation, &instance_name(true))
+        .unwrap()
+        .unwrap();
+    let (activation, _) = iced::futures::channel::mpsc::channel(0);
+    assert!(
+        claim_instance(activation, &instance_name(false))
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        primary_messages.next().now_or_never(),
+        Some(Some(Message::Show))
+    ));
+    assert!(new_messages.next().now_or_never().is_none());
+    drop(primary);
+    let (activation, mut replacement_messages) = iced::futures::channel::mpsc::channel(0);
+    let _primary = claim_instance(activation, &instance_name(false))
+        .unwrap()
+        .unwrap();
+    drop(independent);
+    let (activation, _) = iced::futures::channel::mpsc::channel(0);
+    assert!(
+        claim_instance(activation, &instance_name(true))
+            .unwrap()
+            .is_some()
+    );
+    let (activation, _) = iced::futures::channel::mpsc::channel(0);
+    assert!(
+        claim_instance(activation, &instance_name(false))
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        replacement_messages.next().now_or_never(),
+        Some(Some(Message::Show))
+    ));
+}
+
+#[test]
 fn notifications_follow_user_visible_state_boundaries() {
     use Phase::{Ending, NetworkError, Selecting, Sharing, Starting, Waiting};
     use notification::Kind::{Error, Started, Stopped, ViewerJoined, ViewerLeft};
@@ -336,6 +382,35 @@ fn network_changes_block_sharing_and_commit_the_full_draft_transactionally() {
     assert!(!app.settings.notifications);
     assert!(!app.draft.dirty(&app.settings));
     assert!(app.pending_settings.is_none());
+}
+
+#[test]
+fn temporary_settings_apply_and_network_candidates_keep_their_lifetime() {
+    let (mut app, mut commands) = test_app();
+    app.settings.temporary = true;
+    app.draft = SettingsDraft::from_settings(&app.settings);
+    app.phase = Phase::Waiting;
+    drop(update_app(&mut app, Message::Notifications(false)));
+    drop(update_app(&mut app, Message::ApplySettings));
+    assert!(app.settings.temporary);
+    assert!(!app.settings.notifications);
+    assert!(app.settings_error.is_none());
+    assert!(!app.draft.dirty(&app.settings));
+    drop(update_app(
+        &mut app,
+        Message::NetworkPort("9000".to_owned()),
+    ));
+    drop(update_app(&mut app, Message::ApplySettings));
+    let Command::Network(candidate) = commands.try_recv().unwrap() else {
+        panic!("expected network settings");
+    };
+    assert!(candidate.temporary);
+    drop(update_app(
+        &mut app,
+        Message::Host(HostEvent::NetworkApplied(Ok(candidate))),
+    ));
+    assert!(app.settings.temporary);
+    assert!(app.draft.candidate().unwrap().temporary);
 }
 
 #[test]

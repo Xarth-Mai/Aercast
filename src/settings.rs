@@ -16,6 +16,8 @@ pub(crate) const DEFAULT_AUDIO_BITRATE_KBPS: u32 = 128;
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub(crate) struct Settings {
+    #[serde(skip)]
+    pub(crate) temporary: bool,
     pub(crate) system_audio: bool,
     pub(crate) audio_bitrate_kbps: u32,
     pub(crate) exclude_communication_audio: bool,
@@ -30,6 +32,7 @@ pub(crate) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            temporary: false,
             system_audio: true,
             audio_bitrate_kbps: DEFAULT_AUDIO_BITRATE_KBPS,
             exclude_communication_audio: true,
@@ -210,6 +213,9 @@ impl Settings {
     }
 
     fn save_to(&self, path: &Path) -> io::Result<()> {
+        if self.temporary {
+            return Ok(());
+        }
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("settings path has no parent"))?;
@@ -322,6 +328,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn temporary_settings_never_create_or_replace_files() {
+        let directory = env::temp_dir().join(format!("aercast-temporary-{}", std::process::id()));
+        let path = directory.join("settings.json");
+        let _ = fs::remove_dir_all(&directory);
+        let mut settings = Settings {
+            temporary: true,
+            ..Settings::default()
+        };
+        settings.save_to(&path).unwrap();
+        assert!(!directory.exists());
+        Settings::default().save_to(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        settings = Settings::load_from(&path).unwrap();
+        settings.temporary = true;
+        settings.notifications = false;
+        settings.video.fps = 30;
+        let candidate = settings.with_network("127.0.0.1", "9000", "").unwrap();
+        assert!(candidate.temporary);
+        candidate.save_to(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let encoded = serde_json::to_string(&candidate).unwrap();
+        assert!(!encoded.contains("temporary"));
+        let decoded: Settings = serde_json::from_str(&encoded).unwrap();
+        assert!(!decoded.temporary);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn settings_round_trip_and_failed_replace_preserves_the_last_file() {
         assert_eq!(
             settings_path(Some("/xdg".into()), Some("/home/test".into())).unwrap(),
@@ -345,6 +379,7 @@ mod tests {
         assert_eq!(defaults.video, VideoSettings::default());
         assert_eq!(defaults.bind().unwrap(), "127.0.0.1:8877".parse().unwrap());
         Settings {
+            temporary: false,
             system_audio: false,
             audio_bitrate_kbps: 160,
             exclude_communication_audio: false,

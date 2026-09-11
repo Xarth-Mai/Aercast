@@ -47,7 +47,7 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
 
 ### Desktop lifecycle
 
-- Aercast is one GUI process. Its Host window is an ordinary resizable,
+- Each Aercast instance is one GUI process. Its Host window is an ordinary resizable,
   tileable `normal` window with system decorations, `aercast` as its Wayland
   application ID, an initial `960×640` logical-pixel size hint, and no Host
   video preview. It has no maximum size and does not persist geometry; the
@@ -58,7 +58,7 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
 - Closing the Host window from the compositor hides it without stopping a
   share, discarding a Settings draft, or exiting. `iced::daemon` keeps the
   process alive. The compositor title bar is the only window-close control.
-- Only one process instance may run. A later desktop or command-line launch and
+- By default, one primary instance runs. A later desktop or command-line launch and
   tray activation bring the existing window in front and focus it once; the
   window does not remain always on top. Unsupported compositor activation is
   best-effort.
@@ -71,6 +71,16 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
   If both apply, one confirmation covers stopping the share and discarding the
   draft. Confirmed Quit revokes the token, disconnects Viewers, closes Portal
   and media state, removes desktop integrations, discards the draft, and exits.
+
+### Command-line entry points
+
+`aercast` starts or activates the default instance. `aercast help` prints English usage, `aercast version` prints the Cargo package version, target triple, build profile and Rust compiler version, and `aercast new` starts an independent process. Only one command word is accepted; flags, unknown words and additional arguments print an error and full help to stderr with exit code 2. Help and version print to stdout with exit code 0 before desktop or media initialization
+
+CLI and GUI sidebar version labels share the same formatter and use `v<package-version>+dev` for Cargo dev builds (`PROFILE=debug`) and `v<package-version>` for release builds. The profile remains a separate output field
+
+Build metadata is captured by a standard-library-only Cargo build script. It contains no Git metadata, CI build number, timestamp or machine identity
+
+An independent instance owns a process-specific D-Bus name, tray, share link and Portal session. Ordinary launches target only the default instance and create it if absent. Temporary instances read the existing settings at startup, but all subsequent changes stay in memory and never create or replace settings files. The temporary flag is process-only and is not serialized; it follows settings clones through media changes, Network Apply and Host restart. Default instances retain atomic settings persistence. The clean Settings footer in temporary instances says **Applied for this instance only**. Running instances do not reload changes from disk. A busy saved listen port uses the existing Network error and Apply recovery flow; no automatic port change occurs. Each instance cleans up only its own resources on exit
 
 ### Overview
 
@@ -208,7 +218,7 @@ options are not hidden behind Basic/Advanced modes or accordions.
 
 Settings maintains three explicit layers:
 
-- **Saved** is the complete settings value persisted on disk. Start Sharing
+- **Saved** is the complete applied settings value, persisted on disk for the default instance and held only in memory for a temporary instance. Start Sharing
   reads only Saved, never an uncommitted edit.
 - **Draft** is UI-only and receives every field, notification, audio-exclusion,
   and application-list edit. It survives page changes, hiding, and reopening
@@ -224,7 +234,7 @@ from Saved. Apply atomically commits the whole page:
   tied to the exact Draft revision that started it; a late result cannot commit
   or overwrite a newer Draft. Unsupported quality remains an error rather than
   being repaired or downgraded.
-- If Network is unchanged, the complete candidate is replace-written once. If
+- Persistence in this flow applies only to the default instance; temporary instances accept the candidate in memory without writing files. If Network is unchanged, the complete candidate is replace-written once for the default instance. If
   Network changed while stopped, Aercast first binds the candidate listener,
   then saves, then swaps listeners. A bind or save failure keeps both Saved and
   Draft unchanged.

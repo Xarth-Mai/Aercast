@@ -1,6 +1,5 @@
 use iced::futures::channel::mpsc::UnboundedSender;
 use media::VideoPlan;
-use std::io;
 
 mod accessibility;
 mod appearance;
@@ -69,31 +68,104 @@ enum HostEvent {
     Stopped(std::result::Result<(), String>),
 }
 
-fn main() -> Result<()> {
-    validate_arguments(std::env::args().skip(1))?;
-    ui::run()
+const HELP: &str = "Usage: aercast [help|version|new]
+
+Commands:
+  help     Show this help
+  version  Show version and build information
+  new      Start a temporary independent instance
+
+Without a command, start or activate the default instance.
+New instances load saved settings but never save changes.
+Change Network settings if the port is busy.";
+
+#[derive(Debug, PartialEq)]
+enum Launch {
+    Default,
+    Help,
+    Version,
+    New,
 }
 
-fn validate_arguments(mut args: impl Iterator<Item = String>) -> io::Result<()> {
-    if args.next().is_some() {
-        Err(io::Error::other("usage: aercast"))
-    } else {
-        Ok(())
+fn parse_arguments(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Launch> {
+    let command = match args.next() {
+        None => Launch::Default,
+        Some(value) => match value.to_str() {
+            Some("help") => Launch::Help,
+            Some("version") => Launch::Version,
+            Some("new") => Launch::New,
+            _ => return Err(format!("Unknown command: {}", value.to_string_lossy()).into()),
+        },
+    };
+    if let Some(extra) = args.next() {
+        return Err(format!("Unexpected argument: {}", extra.to_string_lossy()).into());
     }
+    Ok(command)
+}
+
+fn version_label(version: &str, profile: &str) -> String {
+    let suffix = if profile == "debug" { "+dev" } else { "" };
+    format!("v{version}{suffix}")
+}
+
+fn main() -> Result<()> {
+    match parse_arguments(std::env::args_os().skip(1)) {
+        Ok(Launch::Help) => println!("{HELP}"),
+        Ok(Launch::Version) => println!(
+            "Aercast {}\nTarget: {}\nProfile: {}\nCompiler: {}",
+            version_label(env!("CARGO_PKG_VERSION"), env!("AERCAST_PROFILE")),
+            env!("AERCAST_TARGET"),
+            env!("AERCAST_PROFILE"),
+            env!("AERCAST_RUSTC"),
+        ),
+        Ok(Launch::Default) => return ui::run(false),
+        Ok(Launch::New) => return ui::run(true),
+        Err(error) => {
+            eprintln!("{error}\n\n{HELP}");
+            std::process::exit(2);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn command_line_controls_are_rejected() {
-        assert!(validate_arguments(std::iter::empty()).is_ok());
-        for arguments in [
-            vec!["--exclude".to_owned(), "Discord".to_owned()],
-            vec!["--monitor".to_owned()],
-            vec!["--bind".to_owned(), "127.0.0.1:9000".to_owned()],
+    fn version_distinguishes_dev_and_release() {
+        assert_eq!(version_label("0.1.6", "debug"), "v0.1.6+dev");
+        assert_eq!(version_label("0.1.6", "release"), "v0.1.6");
+    }
+
+    #[test]
+    fn command_line_accepts_only_one_known_word() {
+        for (args, expected) in [
+            (vec![], Launch::Default),
+            (vec!["help"], Launch::Help),
+            (vec!["version"], Launch::Version),
+            (vec!["new"], Launch::New),
         ] {
-            assert!(validate_arguments(arguments.into_iter()).is_err());
+            assert_eq!(
+                parse_arguments(args.into_iter().map(Into::into)).unwrap(),
+                expected
+            );
         }
+        for args in [
+            vec!["unknown"],
+            vec!["-h"],
+            vec!["--help"],
+            vec!["-v"],
+            vec!["--version"],
+            vec!["-n"],
+            vec!["--new"],
+            vec!["help", "new"],
+            vec!["version", "version"],
+            vec!["new", "extra"],
+        ] {
+            assert!(parse_arguments(args.into_iter().map(Into::into)).is_err());
+        }
+        use std::os::unix::ffi::OsStringExt;
+        assert!(parse_arguments([std::ffi::OsString::from_vec(vec![0xff])].into_iter()).is_err());
     }
 }

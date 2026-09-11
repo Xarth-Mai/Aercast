@@ -348,12 +348,21 @@ struct App {
     quitting: bool,
 }
 
-pub(crate) fn run() -> Result<()> {
+fn instance_name(new: bool) -> String {
+    if new {
+        format!("{INSTANCE_NAME}.Instance{}", std::process::id())
+    } else {
+        INSTANCE_NAME.to_owned()
+    }
+}
+
+pub(crate) fn run(new: bool) -> Result<()> {
     let (activation, activations) = iced::futures::channel::mpsc::channel(0);
-    let Some(instance) = claim_instance(activation, INSTANCE_NAME)? else {
+    let Some(instance) = claim_instance(activation, &instance_name(new))? else {
         return Ok(());
     };
-    let settings = settings::Settings::load()?;
+    let mut settings = settings::Settings::load()?;
+    settings.temporary = new;
     gst::init()?;
     let instance = Cell::new(Some((activations, instance.into_inner())));
 
@@ -1766,9 +1775,12 @@ fn sidebar(app: &App) -> Element<'_, Message> {
                     .size(14)
                     .color(app.appearance.secondary_text()),
                 space().width(Length::Fill),
-                text(concat!("v", env!("CARGO_PKG_VERSION")))
-                    .size(14)
-                    .color(app.appearance.secondary_text()),
+                text(crate::version_label(
+                    env!("CARGO_PKG_VERSION"),
+                    env!("AERCAST_PROFILE"),
+                ))
+                .size(14)
+                .color(app.appearance.secondary_text()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
@@ -2523,6 +2535,8 @@ fn settings_view(app: &App) -> Element<'_, Message> {
         "Draft has unsaved changes".to_owned()
     } else if active_dirty {
         "Saved settings differ from the active share".to_owned()
+    } else if app.settings.temporary {
+        "Applied for this instance only".to_owned()
     } else {
         "Saved".to_owned()
     };
