@@ -32,8 +32,14 @@
   const status = document.querySelector("#status");
   const MediaSourceClass = self.ManagedMediaSource ?? self.MediaSource;
   const MUTED_KEY = "aercast-viewer-muted";
-  const LIVE_EDGE_DELAY = 1.0;
+  const LIVE_EDGE_DELAY = 1.5;
   const START_BUFFER = 1.5;
+  const CATCH_UP_LAG_SECONDS = 2.0;
+  const CATCH_UP_RATE_PER_SECOND = 0.08;
+  const MAX_PLAYBACK_RATE = 1.08;
+  const CORRECTION_LAG_SECONDS = 5.0;
+  const CORRECTION_PERSISTENCE_MS = 3000;
+  const CORRECTION_COOLDOWN_MS = 10000;
   const CONNECT_TIMEOUT = 10000;
   const PROGRESS_TIMEOUT = 15000;
   const STATUS_MESSAGES = {
@@ -330,6 +336,8 @@
     const reader = response.body.getReader();
     attempt.reader = reader;
     const stopWatching = watchPlayback(attempt);
+    let laggingSince = null;
+    let lastCorrectionAt = -Infinity;
     try {
       while (true) {
         const { done, value } = await withDeadline(reader.read(), attempt, PROGRESS_TIMEOUT, "Stream received no data");
@@ -342,17 +350,29 @@
           if (!attempt.positioned) {
             if (end - start < START_BUFFER) continue;
             seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
+            lastCorrectionAt = performance.now();
             video.playbackRate = 1.0;
-          } else if (!attempt.automaticPlay && !video.paused) {
+          } else if (!attempt.automaticPlay && !video.paused && !video.seeking && !document.hidden) {
             const lag = end - video.currentTime;
-            if (lag > 3.0) {
-              if (!video.seeking) seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
-              video.playbackRate = 1.0;
-            } else if (lag > 1.5) {
-              video.playbackRate = 1.0 + Math.min(0.15, lag * 0.08);
-            } else if (video.playbackRate !== 1.0) {
-              video.playbackRate = 1.0;
+            const now = performance.now();
+            if (lag > CORRECTION_LAG_SECONDS) {
+              laggingSince ??= now;
+              if (now - laggingSince >= CORRECTION_PERSISTENCE_MS && now - lastCorrectionAt >= CORRECTION_COOLDOWN_MS) {
+                seekTo(Math.max(start, end - LIVE_EDGE_DELAY));
+                lastCorrectionAt = now;
+                laggingSince = null;
+                video.playbackRate = 1.0;
+                continue;
+              }
+            } else {
+              laggingSince = null;
             }
+            video.playbackRate = lag > CATCH_UP_LAG_SECONDS
+              ? Math.min(MAX_PLAYBACK_RATE, 1.0 + (lag - CATCH_UP_LAG_SECONDS) * CATCH_UP_RATE_PER_SECOND)
+              : 1.0;
+          } else {
+            laggingSince = null;
+            video.playbackRate = 1.0;
           }
           if (!attempt.positioned) {
             attempt.positioned = true;

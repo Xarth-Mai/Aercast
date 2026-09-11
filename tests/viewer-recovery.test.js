@@ -170,3 +170,78 @@ test('an unopened media source times out and clears its timer', async () => {
   expect((await result).message).toMatch(/source did not open/);
   expect(b.timers.size).toBe(0);
 });
+
+test('live correction ignores transient lag and spaces sustained corrections apart', async () => {
+  const b = browser();
+  let nextRead;
+  let end = 106;
+  let time = 100;
+  const seeks = [];
+  Object.defineProperty(b.video, 'currentTime', {
+    get: () => time,
+    set: value => { time = value; seeks.push(value); },
+  });
+  b.video.getVideoPlaybackQuality = undefined;
+  b.context.buffer = { buffered: { length: 1, start: () => 0, end: () => end } };
+  b.context.response = { body: { getReader: () => ({
+    read: () => new Promise(resolve => { nextRead = resolve; }),
+  }) } };
+  b.run(`
+    attempt.positioned = true;
+    attempt.opened = Promise.resolve();
+    attempt.media = { addSourceBuffer: () => buffer };
+    append = async () => {};
+    reportTelemetry = async () => {};
+  `);
+  const result = b.run('consume(attempt, response, "video/mp4")');
+  await b.advance(0);
+  async function sample(ms, lag) {
+    time += ms / 1000;
+    await b.advance(ms);
+    end = time + lag;
+    nextRead({ done: false, value: new Uint8Array([1]) });
+    await b.advance(0);
+  }
+  for (const [lag, rate] of [[1.3, 1], [2, 1], [2.01, 1.0008], [2.25, 1.02], [2.5, 1.04], [3, 1.08], [4, 1.08]]) {
+    await sample(0, lag);
+    expect(b.video.playbackRate).toBeCloseTo(rate, 6);
+  }
+  await sample(0, 5);
+  await sample(4000, 5);
+  expect(seeks).toHaveLength(0);
+  await sample(0, 6);
+  await sample(2000, 6);
+  expect(seeks).toHaveLength(0);
+  expect(b.video.playbackRate).toBe(1.08);
+  await sample(0, 5);
+  await sample(1000, 6);
+  await sample(2000, 6);
+  expect(seeks).toHaveLength(0);
+  await sample(1000, 6);
+  expect(seeks).toEqual([end - 1.5]);
+  expect(b.video.playbackRate).toBe(1);
+  await sample(1000, 6);
+  await sample(3000, 6);
+  await sample(5000, 6);
+  expect(seeks).toHaveLength(1);
+  await sample(1000, 6);
+  expect(seeks).toHaveLength(2);
+  for (const [target, key] of [[b.video, 'paused'], [b.video, 'seeking'], [b.document, 'hidden']]) {
+    await sample(1000, 6);
+    target[key] = true;
+    await sample(1000, 6);
+    expect(b.video.playbackRate).toBe(1);
+    target[key] = false;
+    await sample(10000, 6);
+    const count = seeks.length;
+    await sample(2000, 6);
+    expect(seeks).toHaveLength(count);
+    await sample(1000, 6);
+    expect(seeks).toHaveLength(count + 1);
+  }
+  await sample(0, 1.2);
+  expect(b.video.playbackRate).toBe(1);
+  nextRead({ done: true });
+  await result;
+  expect(b.timers.size).toBe(0);
+});

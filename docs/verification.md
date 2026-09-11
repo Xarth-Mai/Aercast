@@ -19,6 +19,10 @@ Aercast v0.1.5 is tagged and its AUR package has passed a local upgrade install 
 | Host module split | The [module-split checks](#module-split-checks) at `f83a658` cover all runnable Rust tests and a real niri Portal capture start/stop | Partial source-build smoke only; selective audio and browser playback remain unqualified |
 | Desktop lifecycle polish | 2026-08-28 working tree: tray tooltip/count and first/last-Viewer notification contracts, isolated D-Bus single-instance activation, formatting, Clippy, and all 38 runnable Rust tests passed | The current source build has not passed real niri tray, notification, or window-activation checks |
 
+## Viewer correction check
+
+On 2026-09-12, `bun test tests/viewer-recovery.test.js` passed 13 tests with 251 assertions and `git diff --check` passed. The shipped Viewer script was exercised with browser API doubles to verify normal speed through 2 seconds of lag, continuous acceleration above 2 seconds capped at 1.08× from 3 seconds, a 1.5-second automatic-correction target, no automatic seek at 5 seconds of lag, transient lag rejection, sustained-lag correction above 5 seconds, a 10-second correction cooldown, normal-speed recovery, and timer reset during pause, seeking, and hidden-page appends. The new acceleration curve, correction target, 3-second persistence, and 10-second cooldown values have not been compared on a real iPhone; intermittent iOS stutter remains unresolved at the device-validation level. These checks do not establish decoder behavior, smooth playback, or end-to-end latency
+
 ## Encoder quality check
 
 Before the explicit full-range conversion change on 2026-09-12, GStreamer `1.28.7` and FFmpeg `n9.0.1` encoded the same 120-frame synthetic `testsrc2` input at 1280×720, 60 FPS, and 6 Mbps using x264 `ultrafast` and `superfast`. Both outputs decoded as Constrained Baseline, `yuv420p`, and zero B frames. Overall SSIM against the raw reference rose from `0.969337` to `0.969998`; luma SSIM slightly fell from `0.962865` to `0.962628`, so this is a small aggregate improvement on one synthetic sample, not a general visual-quality claim
