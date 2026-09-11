@@ -547,3 +547,43 @@ fn viewers_view_handles_identical_ips() {
     app.viewers[1].ip = "192.0.2.1".parse().unwrap();
     let _ = viewers_view(&app);
 }
+
+#[test]
+fn terminal_host_failure_allows_one_restart_without_discarding_draft() {
+    let (mut app, old_commands) = test_app();
+    app.draft.network_port = "9999".to_owned();
+    let original_draft = app.draft.clone();
+    let _ = update_app(&mut app, Message::RestartHost);
+    assert_eq!(app.phase, Phase::Waiting);
+    let _ = update_app(
+        &mut app,
+        Message::Host(HostEvent::Stopped(Err("audio failed".to_owned()))),
+    );
+    assert!(app.host_stopped);
+    assert!(app.commands.is_none());
+    assert!(app.link.is_empty());
+    assert!(old_commands.is_closed());
+    let restart = update_app(&mut app, Message::RestartHost);
+    assert_eq!(app.phase, Phase::Starting);
+    assert!(!app.host_stopped);
+    let commands = app.commands.as_ref().unwrap().clone();
+    let _ = update_app(&mut app, Message::RestartHost);
+    assert!(commands.same_channel(app.commands.as_ref().unwrap()));
+    assert_eq!(app.draft, original_draft);
+    let _ = update_app(
+        &mut app,
+        Message::Host(HostEvent::Waiting("new link".to_owned())),
+    );
+    let _ = update_app(&mut app, Message::Start);
+    assert_eq!(app.phase, Phase::Selecting);
+    drop(restart);
+
+    let (mut quitting, _) = test_app();
+    quitting.phase = Phase::Error("stopped".to_owned());
+    quitting.host_stopped = true;
+    quitting.commands = None;
+    quitting.quitting = true;
+    let _ = update_app(&mut quitting, Message::RestartHost);
+    assert!(quitting.commands.is_none());
+    assert!(quitting.host_stopped);
+}

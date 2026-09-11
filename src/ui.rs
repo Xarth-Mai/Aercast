@@ -207,6 +207,7 @@ impl std::fmt::Display for Quality {
 pub(crate) enum Message {
     Host(HostEvent),
     Start,
+    RestartHost,
     End,
     Copy,
     CopyFeedbackExpired(Instant),
@@ -403,11 +404,9 @@ fn boot(
     activations: Receiver<Message>,
     instance: zbus::Connection,
 ) -> (App, Task<Message>) {
-    let (events, incoming) = iced::futures::channel::mpsc::unbounded();
     let (notifications, notification_requests) = iced::futures::channel::mpsc::unbounded();
     let (tray_messages, tray_events) = iced::futures::channel::mpsc::unbounded();
-    let (commands, command_receiver) = mpsc::channel(8);
-    let host_settings = settings.clone();
+    let (commands, host_task) = start_host(settings.clone());
     let draft = SettingsDraft::from_settings(&settings);
     let video = settings.video;
     let video_probe = VideoProbe::Current(video);
@@ -468,20 +467,28 @@ fn boot(
             Task::perform(tray::run(tray_messages, tray_state), |result| {
                 Message::TrayStopped(result.map_err(|error| error.to_string()))
             }),
-            Task::run(incoming, Message::Host),
             Task::perform(probe_video_plan(video), move |result| {
                 Message::VideoProbed(video_probe, result)
             }),
-            Task::perform(
-                run_host(host_settings, events, command_receiver),
-                |result| {
-                    Message::Host(HostEvent::Stopped(
-                        result.map_err(|error| error.to_string()),
-                    ))
-                },
-            ),
+            host_task,
         ]),
     )
+}
+
+fn start_host(settings: settings::Settings) -> (mpsc::Sender<Command>, Task<Message>) {
+    let (commands, receiver) = mpsc::channel(8);
+    let (events, incoming) = iced::futures::channel::mpsc::unbounded();
+    let task = Task::batch([
+        Task::run(incoming, Message::Host),
+        Task::future(async move {
+            let result = run_host(settings, events.clone(), receiver).await;
+            let _ = events.unbounded_send(HostEvent::Stopped(
+                result.map_err(|error| error.to_string()),
+            ));
+        })
+        .discard(),
+    ]);
+    (commands, task)
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -575,6 +582,15 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
                 }),
                 iced::widget::operation::AbsoluteOffset { x: 0.0, y: delta },
             );
+        }
+        Message::RestartHost => {
+            if app.host_stopped && matches!(app.phase, Phase::Error(_)) {
+                let (commands, task) = start_host(app.settings.clone());
+                app.commands = Some(commands);
+                app.host_stopped = false;
+                app.phase = Phase::Starting;
+                return task;
+            }
         }
         Message::Start
             if app.phase != Phase::Waiting
@@ -1127,6 +1143,8 @@ fn update_app(app: &mut App, message: Message) -> Task<Message> {
             HostEvent::Stopped(result) => {
                 app.commands = None;
                 app.host_stopped = true;
+                app.link.clear();
+                app.copied_at = None;
                 app.viewers.clear();
                 app.confirm_refresh = false;
                 app.confirm_quit = false;
@@ -1366,6 +1384,7 @@ fn overview_view(app: &App) -> Element<'_, Message> {
         Phase::Selecting => ("Cancel", Some(Message::End)),
         Phase::Sharing => ("Stop Sharing", Some(Message::End)),
         Phase::Ending => ("Stopping…", None),
+        Phase::Error(_) if app.host_stopped => ("Restart Host", Some(Message::RestartHost)),
         _ => ("Start Sharing", can_start.then_some(Message::Start)),
     };
     let refresh_confirmation =

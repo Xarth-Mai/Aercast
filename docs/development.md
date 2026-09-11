@@ -99,7 +99,8 @@ PipeWire, Zen, Chromium, Safari, or constrained-network workflow. See the
   requires confirmation; it rotates the token without restarting capture,
   disconnects old streams, clears Viewer history, and makes all old token routes
   return the same `404`.
-- Process exit is the only other token invalidation boundary.
+- Process exit and an explicit Host restart after terminal failure also invalidate the token
+- After the Host task exits with an error, Overview retains the error and offers **Restart Host**. This restarts the HTTP/control backend using Saved settings, creates a new link, and returns to Ready without closing the app or discarding Draft. The old link is cleared when the backend exits. Capture resumes only after **Start Sharing** and a new Portal source choice; restart remains unavailable while the previous backend is running or the app is quitting
 - After the first complete media fragment, zero online Viewers starts a fixed
   two-second grace period. A Viewer connection cancels it; the transition from
   the last online Viewer to zero starts it again, while telemetry does not
@@ -315,6 +316,7 @@ as Block.
   audio, mux, appsink, unknown sources, and any concurrent non-whitelisted error
   do not trigger fallback. Explicit VA-API never falls back; a successful switch
   clears VA capture caps so x264 renegotiates.
+- Media failures, including an audio push failure observed while stopping after a GStreamer error, use the existing limit of three automatic media rebuilds with 500 ms between ordinary retries. Recovery retains the Portal selection and link. Concurrent audio and GStreamer errors retain both diagnostics and conservatively disable hardware-only fallback. A media error observed during an explicit control transition does not replace that control; actual audio cleanup failures remain terminal. Exhausted recovery retains the manual **Restart Host** action
 - HTTP state owns the token separately from replaceable media state. Viewer
   telemetry and Host controls use ordinary HTTP, not WebSocket.
 - Desktop integration uses iced Wayland/wgpu, `ksni`, direct `zbus`, ashpd, and

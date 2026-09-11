@@ -31,7 +31,8 @@ pub struct AudioCapture {
     thread: thread::JoinHandle<Result<(), AudioFailure>>,
 }
 
-enum AudioFailure {
+#[derive(Debug, PartialEq)]
+pub(crate) enum AudioFailure {
     Media(String),
     Cleanup(String),
 }
@@ -79,27 +80,32 @@ pub fn start(
 }
 
 impl AudioCapture {
-    pub fn stop(self, failure_reported: bool) -> Result<(), String> {
+    pub fn stop(self, failure_reported: bool) -> Result<(), AudioFailure> {
         let _ = self.stop.send(());
         match self.finished.recv_timeout(Duration::from_secs(6)) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
             Err(RecvTimeoutError::Timeout) => {
-                return Err("timed out while stopping selective audio".to_owned());
+                return Err(AudioFailure::Cleanup(
+                    "timed out while stopping selective audio".to_owned(),
+                ));
             }
         }
         stop_result(
             self.thread
                 .join()
-                .map_err(|_| "selective-audio thread panicked".to_owned())?,
+                .map_err(|_| AudioFailure::Cleanup("selective-audio thread panicked".to_owned()))?,
             failure_reported,
         )
     }
 }
 
-fn stop_result(result: Result<(), AudioFailure>, failure_reported: bool) -> Result<(), String> {
+fn stop_result(
+    result: Result<(), AudioFailure>,
+    failure_reported: bool,
+) -> Result<(), AudioFailure> {
     match result {
         Err(AudioFailure::Media(_)) if failure_reported => Ok(()),
-        Err(error) => Err(error.message().to_owned()),
+        Err(error) => Err(error),
         Ok(()) => Ok(()),
     }
 }
@@ -1260,9 +1266,14 @@ fn push_audio(stream: &pw::stream::Stream, appsrc: &gst_app::AppSrc) -> Result<b
         .set_duration(gst::ClockTime::from_nseconds(
             (size / FRAME_BYTES) as u64 * 1_000_000_000 / 48_000,
         ));
-    appsrc
-        .push_buffer(output)
-        .map_err(|error| format!("failed to feed selective audio to GStreamer: {error:?}"))?;
+    appsrc.push_buffer(output).map_err(|error| {
+        use gst::prelude::*;
+        format!(
+            "failed to feed selective audio to GStreamer: {error:?} (state={:?}, pending={:?})",
+            appsrc.current_state(),
+            appsrc.pending_state(),
+        )
+    })?;
     Ok(true)
 }
 

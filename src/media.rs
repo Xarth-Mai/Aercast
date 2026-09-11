@@ -157,9 +157,16 @@ pub(crate) async fn serve_video(
                         }
                     } => {
                         audio_failure_reported = error.is_some();
-                        Err(io::Error::other(error.unwrap_or_else(||
+                        let error = error.unwrap_or_else(||
                             "selective-audio thread stopped unexpectedly".to_owned()
-                        )).into())
+                        );
+                        match messages.next().now_or_never().flatten() {
+                            Some(message) => finish_audio_stop(
+                                queued_media_outcome(Some(message), &mut messages),
+                                Err(audio::AudioFailure::Media(error)),
+                            ),
+                            None => Err(io::Error::other(error).into()),
+                        }
                     },
                     message = messages.next() => {
                         queued_media_outcome(message, &mut messages)
@@ -176,16 +183,9 @@ pub(crate) async fn serve_video(
                 {
                     running = Ok(ShareStop::Failed(error.into()));
                 }
-                let stopped: Result<()> = audio_capture
-                    .map_or(Ok(()), |(audio, _)| audio.stop(audio_failure_reported))
-                    .map_err(|error| io::Error::other(error).into());
-                if let Err(error) = &stopped {
-                    eprintln!("Failed to clean up selective audio: {error}");
-                }
-                match stopped {
-                    Ok(()) => running,
-                    Err(error) => Ok(ShareStop::Failed(error)),
-                }
+                let stopped =
+                    audio_capture.map_or(Ok(()), |(audio, _)| audio.stop(audio_failure_reported));
+                finish_audio_stop(running, stopped)
             }
         },
     };
@@ -341,6 +341,29 @@ fn avc_codec(config: &[u8]) -> Option<String> {
         .then(|| format!("avc1.{:02x}{:02x}{:02x}", config[1], config[2], config[3]))
 }
 
+fn finish_audio_stop(
+    running: Result<ShareStop>,
+    stopped: std::result::Result<(), audio::AudioFailure>,
+) -> Result<ShareStop> {
+    match stopped {
+        Ok(()) => running,
+        Err(audio::AudioFailure::Cleanup(error)) => {
+            if let Err(primary) = &running {
+                eprintln!("Media failed before audio cleanup: {primary}");
+            }
+            eprintln!("Failed to clean up selective audio: {error}");
+            Ok(ShareStop::Failed(io::Error::other(error).into()))
+        }
+        Err(audio::AudioFailure::Media(error)) => {
+            eprintln!("Selective audio failed before cleanup completed: {error}");
+            match running {
+                Ok(stop) => Ok(stop),
+                Err(primary) => Err(io::Error::other(format!("{primary}; {error}")).into()),
+            }
+        }
+    }
+}
+
 fn queued_media_outcome(
     first: Option<gst::Message>,
     messages: &mut (impl futures_util::Stream<Item = gst::Message> + Unpin),
@@ -455,6 +478,40 @@ pub(crate) fn same_saved_media(left: &ShareSettings, right: &ShareSettings) -> b
 mod tests {
     use super::*;
     use crate::share_session::{MAX_MEDIA_RECOVERIES, should_fallback};
+    #[test]
+    fn concurrent_audio_failure_keeps_media_recovery_and_controls() {
+        let outcome = finish_audio_stop(
+            Err(io::Error::other("video source disconnected").into()),
+            Err(audio::AudioFailure::Media("Flushing".to_owned())),
+        );
+        let error = outcome.err().unwrap().to_string();
+        assert!(error.contains("video source disconnected"));
+        assert!(error.contains("Flushing"));
+        for stop in [
+            ShareStop::Sleep,
+            ShareStop::End,
+            ShareStop::Quit,
+            ShareStop::PortalClosed,
+        ] {
+            let expected = std::mem::discriminant(&stop);
+            let actual = finish_audio_stop(
+                Ok(stop),
+                Err(audio::AudioFailure::Media("Flushing".to_owned())),
+            )
+            .unwrap();
+            assert_eq!(std::mem::discriminant(&actual), expected);
+        }
+        assert!(matches!(
+            finish_audio_stop(
+                Err(io::Error::other("video failed").into()),
+                Err(audio::AudioFailure::Cleanup(
+                    "links still active".to_owned()
+                )),
+            ),
+            Ok(ShareStop::Failed(_))
+        ));
+    }
+
     fn gst_error<T: gst::message::MessageErrorDomain>(
         source: &str,
         error: T,

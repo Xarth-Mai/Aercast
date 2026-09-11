@@ -14,21 +14,21 @@ fn a_reported_audio_failure_is_not_a_cleanup_failure() {
             Err(AudioFailure::Cleanup("cleanup failure".to_owned())),
             true,
         ),
-        Err("cleanup failure".to_owned())
+        Err(AudioFailure::Cleanup("cleanup failure".to_owned()))
     );
 
     let mut failure = Some(AudioFailure::Media("reported media failure".to_owned()));
     record_cleanup_failure(&mut failure, "cleanup failure".to_owned());
     assert_eq!(
         stop_result(Err(failure.unwrap()), true),
-        Err("cleanup failure".to_owned())
+        Err(AudioFailure::Cleanup("cleanup failure".to_owned()))
     );
 
     let mut failure = Some(AudioFailure::Cleanup("first cleanup failure".to_owned()));
     record_cleanup_failure(&mut failure, "later cleanup failure".to_owned());
     assert_eq!(
         stop_result(Err(failure.unwrap()), true),
-        Err("first cleanup failure".to_owned())
+        Err(AudioFailure::Cleanup("first cleanup failure".to_owned()))
     );
 }
 

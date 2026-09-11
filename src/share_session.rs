@@ -155,8 +155,11 @@ pub(crate) async fn run_host(
     .await;
 
     if let Err(error) = outcome {
-        if let Some(server) = server {
+        if let Some(server) = server
+            && !server.task.is_finished()
+        {
             server.task.abort();
+            let _ = server.task.await;
         }
         return Err(error);
     }
